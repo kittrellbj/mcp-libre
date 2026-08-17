@@ -104,3 +104,7 @@ local_config.json
 # MCP specific
 mcp_test_*
 temp_documents/
+
+# Live-verification scratch (per-pass build/test artifacts, never committed)
+.scratch/
+.scratch_commit_msg*.txt
