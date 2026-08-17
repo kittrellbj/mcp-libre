@@ -1,7 +1,7 @@
 ﻿from pathlib import Path
 import zipfile
 
-repoDir = Path(r"E:\Tools\mcp-libre")
+repoDir = Path(__file__).resolve().parent
 pluginDir = repoDir / "plugin"
 buildDir = repoDir / "build"
 outputPath = buildDir / "libreoffice-mcp-extension-1.0.0.oxt"
@@ -12,6 +12,7 @@ files = [
     (pluginDir / "META-INF" / "manifest.xml", "META-INF/manifest.xml"),
 
     (pluginDir / "pythonpath" / "ai_interface.py", "pythonpath/ai_interface.py"),
+    (pluginDir / "pythonpath" / "host_trust.py", "pythonpath/host_trust.py"),
     (pluginDir / "pythonpath" / "mcp_server.py", "pythonpath/mcp_server.py"),
     (pluginDir / "pythonpath" / "registration.py", "pythonpath/registration.py"),
     (pluginDir / "pythonpath" / "uno_bridge.py", "pythonpath/uno_bridge.py"),

@@ -396,7 +396,7 @@ class UNOBridge:
             logger.error(f"Failed to get comments: {e}")
             return {"success": False, "error": str(e)}
 
-    def add_comment(self, text: str, author: str = "Claude", doc: Any = None) -> Dict[str, Any]:
+    def add_comment(self, text: str, author: str = "AI Assistant", doc: Any = None) -> Dict[str, Any]:
         """Add a comment at the current cursor position"""
         try:
             if doc is None:
