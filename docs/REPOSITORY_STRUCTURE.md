@@ -18,6 +18,7 @@ mcp-libre/
 │   │   ├── mcp_server.py           # Embedded MCP server
 │   │   ├── ai_interface.py         # HTTP API for AI assistants
 │   │   ├── host_trust.py           # Host/Origin trust check (DNS-rebinding guard) for ai_interface.py
+│   │   ├── uno_datetime.py         # com.sun.star.util.DateTime -> ISO-8601 string (unit-testable, no UNO needed)
 │   │   ├── registration.py         # Extension registration and lifecycle
 │   │   └── 📁 tools/               # Full-catalog tool scaffold (see docs/MCP_TOOLING_SCAFFOLD_PLAN.md)
 │   │       ├── registry.py         # @register_tool decorator (status=stub|implemented), merge_into()
@@ -26,7 +27,7 @@ mcp-libre/
 │   │       ├── runtime_state.py    # RuntimeState (real): session id, profile, bounded error history
 │   │       ├── context.py          # RuntimeContext install()/get_context() -- shared server state for handlers
 │   │       ├── core_runtime.py     # Phase A, IMPLEMENTED: discovery/capability/profile/diagnostics tools
-│   │       ├── document_lifecycle.py # Phase A, stub: open/save/convert/properties tools
+│   │       ├── document_lifecycle.py # Phase A, IMPLEMENTED: open/save/convert/properties tools
 │   │       ├── undo_view_selection.py # Phase A, stub: undo/redo/view/selection tools
 │   │       ├── styles.py           # Phase A, stub: style family/apply/formatting tools
 │   │       ├── writer_text.py      # Phase B, stub: paragraph/character editing, regex find/replace, comments
@@ -57,6 +58,8 @@ mcp-libre/
 │   ├── test_runtime_state.py       # RuntimeState unit tests (no live LibreOffice needed)
 │   ├── test_context.py             # tools.context unit tests (no live LibreOffice needed)
 │   ├── test_core_runtime.py        # core_runtime.py's 12 implemented tools, tested against fakes
+│   ├── test_document_lifecycle.py  # document_lifecycle.py's 22 implemented tools, tested against fakes
+│   ├── test_uno_datetime.py        # DateTime-to-ISO conversion unit tests (no live LibreOffice needed)
 │   └── test_host_trust.py          # Host/Origin trust check unit tests (no live LibreOffice needed)
 ├── 📁 examples/                    # Demo and example scripts
 │   ├── __init__.py                 # Examples package initialization

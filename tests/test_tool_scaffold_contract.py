@@ -271,12 +271,19 @@ def test_every_tool_has_a_valid_status():
         assert metadata["status"] in ("stub", "implemented"), f"{name} has invalid status {metadata['status']!r}"
 
 
-def test_core_runtime_tools_are_marked_implemented():
-    """The 12 core_runtime.py tools carry real logic now -- guard against one
-    silently reverting to status="stub" (e.g. a bad merge/rebase)."""
+# Modules whose tools have real logic now, not NOT_IMPLEMENTED stub bodies.
+# Update this set (and nothing else) as more modules get implemented.
+IMPLEMENTED_MODULES = ("core_runtime", "document_lifecycle")
+
+
+def test_implemented_modules_tools_are_marked_implemented():
+    """Every tool in an IMPLEMENTED_MODULES module carries real logic now --
+    guard against one silently reverting to status="stub" (e.g. a bad
+    merge/rebase)."""
     registry = get_registry()
-    for name in EXPECTED_BY_MODULE["core_runtime"]:
-        assert registry[name]["status"] == "implemented", f"{name} should be status='implemented'"
+    for module_name in IMPLEMENTED_MODULES:
+        for name in EXPECTED_BY_MODULE[module_name]:
+            assert registry[name]["status"] == "implemented", f"{name} (in {module_name}) should be status='implemented'"
 
 
 def test_stub_shape_contract():
@@ -335,7 +342,7 @@ if __name__ == "__main__":
         test_no_collisions_with_existing_compat_tools,
         test_every_tool_has_a_valid_priority,
         test_every_tool_has_a_valid_status,
-        test_core_runtime_tools_are_marked_implemented,
+        test_implemented_modules_tools_are_marked_implemented,
         test_stub_shape_contract,
         test_merge_into_does_not_overwrite_existing_tools_by_default,
         test_error_envelope_rejects_unknown_codes,

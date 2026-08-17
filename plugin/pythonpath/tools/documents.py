@@ -59,11 +59,18 @@ class DocumentRegistry:
         self._lock = threading.Lock()
         self._documents: Dict[str, Any] = {}
         # Reverse lookup so re-registering the same live object returns its
-        # existing id instead of minting a duplicate. Keyed by id(obj)
-        # (identity), which is only safe while the object is still
-        # referenced by self._documents -- fine here since that's the only
-        # place we ever drop a reference (see unregister_document).
-        self._ids_by_identity: Dict[int, str] = {}
+        # existing id instead of minting a duplicate. Keyed by the document
+        # object itself, NOT id(obj) -- live-verified that PyUNO mints a
+        # fresh Python-side proxy object (different id()) each time the
+        # same remote document is fetched (e.g. two separate
+        # desktop.getCurrentComponent() calls), which made id()-keying
+        # silently fail to dedup real documents. PyUNO proxies implement
+        # __eq__/__hash__ consistently for the same underlying UNO object,
+        # so using the object as the key works correctly for both real UNO
+        # documents and the plain-object fakes the test suite uses (whose
+        # default __eq__/__hash__ is identity-based already, so this is a
+        # no-op change for those).
+        self._ids_by_identity: Dict[Any, str] = {}
 
     def register_document(self, uno_document: Any, on_dispose: Optional[Callable[[str], None]] = None) -> str:
         """Assign and return a stable document_id for a UNO document object.
@@ -79,14 +86,13 @@ class DocumentRegistry:
             on_dispose: Reserved for the dispose-listener wiring described
                 in this module's docstring; unused today.
         """
-        identity = id(uno_document)
         with self._lock:
-            existing = self._ids_by_identity.get(identity)
+            existing = self._ids_by_identity.get(uno_document)
             if existing is not None:
                 return existing
             document_id = uuid.uuid4().hex
             self._documents[document_id] = uno_document
-            self._ids_by_identity[identity] = document_id
+            self._ids_by_identity[uno_document] = document_id
         return document_id
 
     def resolve_document(self, document_id: Optional[str] = None) -> Any:
@@ -125,7 +131,26 @@ class DocumentRegistry:
         with self._lock:
             document = self._documents.pop(document_id, None)
             if document is not None:
-                self._ids_by_identity.pop(id(document), None)
+                self._ids_by_identity.pop(document, None)
+
+    def replace_document(self, document_id: str, new_document: Any) -> None:
+        """Re-point an existing document_id at a new UNO object.
+
+        Used by reload_document_live: reloading a document closes the old
+        UNO component and loads a new one with a different object identity,
+        but the caller should be able to keep using the same document_id
+        afterward rather than getting a new one.
+
+        Raises:
+            DocumentNotFoundError: document_id is not currently registered.
+        """
+        with self._lock:
+            if document_id not in self._documents:
+                raise DocumentNotFoundError(document_id)
+            old_document = self._documents[document_id]
+            self._ids_by_identity.pop(old_document, None)
+            self._documents[document_id] = new_document
+            self._ids_by_identity[new_document] = document_id
 
     def list_documents(self) -> List[Dict[str, Any]]:
         """Return [{document_id, type, title, modified}, ...] for every registered document.

@@ -13,7 +13,7 @@ up exactly where it left off.
 | Spec section | Tool rows | Existing (P0) | New this pass | Status |
 |---|---|---|---|---|
 | Core runtime, discovery, capability negotiation | 12 | 0 | 12 | **Implemented** (`tools/core_runtime.py`) -- real logic, live-verified |
-| Document and session lifecycle | 27 | 5 | 22 | **Scaffolded** (`tools/document_lifecycle.py`) |
+| Document and session lifecycle | 27 | 5 | 22 | **Implemented** (`tools/document_lifecycle.py`) -- real logic, live-verified |
 | Undo, view, selection, events, orchestration | 14 | 0 | 14 | **Scaffolded** (`tools/undo_view_selection.py`) |
 | Styles and formatting infrastructure | 12 | 0 | 12 | **Scaffolded** (`tools/styles.py`) |
 | Writer - text, navigation, editing, search, review | 45 | 27 | 18 | **Scaffolded** (`tools/writer_text.py`) |
@@ -107,8 +107,9 @@ new `status` parameter) -- they're merged into `LibreOfficeMCPServer.tools`
 unconditionally, like the original 32, not gated behind
 `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS` anymore. `get_registry(status=...)` and
 `merge_into(..., registry=...)` let `mcp_server.py` merge "implemented"
-and "stub" tools separately; the remaining 354 scaffold tools are still
-`status="stub"` and still gated by the env var exactly as before.
+and "stub" tools separately; the remaining scaffold tools are still
+`status="stub"` and still gated by the env var exactly as before (see the
+document-lifecycle pass below for the current stub/implemented split).
 
 **New shared infrastructure this required:**
 
@@ -191,6 +192,110 @@ got a real 403 from the running server. Cleaned up afterward (stopped the
 MCP server via dispatch, terminated `soffice`, verified port 8765 was
 released, removed scratch scripts and the local `build/` artifact).
 
+## Real implementation pass: document lifecycle tools
+
+All 22 new `tools/document_lifecycle.py` tools now have real logic too,
+following the exact same pattern as core_runtime.py (`status="implemented"`,
+always-on, `tools.context.get_context()`). This pass added ~20 new
+`UNOBridge` methods (open/close/activate/save-as/save-copy/convert/
+statistics/properties/custom-properties/modified-state/refresh/reload/
+print/print-settings/list-filters) plus a small shared error-mapping
+helper (`_map_exception_to_code`) so a raised `FileNotFoundError`/
+`FileExistsError`/`ValueError`/`KeyError`/`NotImplementedError`/
+`PermissionError` from a `UNOBridge` method (or `DocumentRegistry`) maps
+onto the right spec error code without every tool body re-deriving it.
+
+**Auto-registration closes a gap from the core-runtime pass:** every tool
+that resolves "the active document" (`document_id` omitted) now registers
+it into `DocumentRegistry` if it wasn't already there (`_resolve_and_register`),
+so `get_session_state_live`'s `registered_document_handles` -- empty in
+the core-runtime pass because nothing ever called `register_document()` --
+now populates for real as documents get touched.
+
+**`DocumentRegistry` gained `replace_document(document_id, new_document)`**
+for `reload_document_live`: reloading closes the old UNO component and
+loads a new one with a different object identity, but the caller should
+keep using the same `document_id` afterward.
+
+**Three real bugs found and fixed by live-verifying against actual
+LibreOffice** (not just the fakes-based unit tests, which by construction
+couldn't have caught any of these -- they don't model real PyUNO object
+behavior):
+
+1. **`build-oxt-windows.py` nearly shipped `uno_datetime.py` missing**,
+   immediately after fixing the *first* instance of this bug class (the
+   whole `tools/` package missing, found during the core-runtime pass).
+   Root-caused it properly this time: replaced the hand-maintained file
+   list with a glob over all of `pythonpath/*.py` (plus `tools/*.py`), so
+   a new top-level module can never be silently left out of a build again.
+2. **`get_document_properties_live` returned raw UNO struct reprs for
+   dates** -- `str()` on a `com.sun.star.util.DateTime` produces
+   `"(com.sun.star.util.DateTime){ NanoSeconds = ... }"`, not a readable
+   date. Fixed by building an ISO-8601 string from the struct's own
+   fields. Extracted to `uno_datetime.py` (mirroring the `host_trust.py`
+   precedent) specifically so the conversion is unit-testable without a
+   live UNO context -- `tests/test_uno_datetime.py`, 6 tests.
+3. **`list_export_filters_live` returned an empty list.** Root cause:
+   `FilterFactory.getByName(name)` returns a tuple of `PropertyValue`
+   structs, not something `dict()` can convert directly -- `dict(entry)`
+   was silently raising inside a bare `except: continue` for every single
+   filter. Fixed to build the dict from `.Name`/`.Value` pairs properly
+   (the same pattern `get_print_settings` already used correctly).
+4. **A structural bug, not just a value bug:** `DocumentRegistry`'s
+   same-object dedup was keyed by Python `id(uno_document)`. Live-verified
+   that PyUNO mints a *fresh* Python-side proxy object (different `id()`)
+   every time the same remote document is fetched (e.g. two separate
+   `desktop.getCurrentComponent()` calls) -- but those proxies compare
+   `==` and hash consistently for the same underlying UNO object. Result:
+   opening a document, then resolving "the active document" a moment
+   later, silently minted a *second* `document_id` for the same real
+   document instead of returning the first one. Fixed by keying
+   `_ids_by_identity` off the object itself (using its `__eq__`/`__hash__`)
+   instead of `id()`. Added a regression test using a hand-built fake with
+   overridden `__eq__`/`__hash__` (simulating the PyUNO behavior) since
+   the plain-object fakes used everywhere else default to identity
+   semantics and wouldn't have caught this.
+5. **Minor, fixed alongside #2:** `get_print_settings_live` returned raw
+   `uno.Enum` reprs (`"<Enum instance ... ('PORTRAIT')>"`) and a raw
+   `Size` struct repr for `PaperOrientation`/`PaperFormat`/`PaperSize`.
+   Added `UNOBridge._uno_value_to_plain()` (Enum -> its `.value` string,
+   Size-shaped struct -> `{width, height}` dict) and live-verified clean
+   output afterward.
+
+**Live-verified end to end**, including real file I/O this time (not just
+HTTP calls returning success): opened a real `.odt` from disk via
+`open_document_live`; wrote a real file via `save_as_document_live` and
+`save_copy_live` (confirmed on disk with `ls`); converted a real `.odt` to
+a real `.pdf` via `convert_document_live` (confirmed the PDF existed and
+had plausible size); round-tripped a custom property through
+`set_custom_property_live` -> `get_custom_properties_live` ->
+`remove_custom_property_live`; `reload_document_live` correctly kept the
+same `document_id` pointing at the new component; `close_document_live`
+correctly unregistered its `document_id` (subsequent resolution correctly
+returned `OBJECT_NOT_FOUND`); `open_from_template_live` correctly created
+an untitled document from template content; `print_document_live` printed
+for real to a "Microsoft Print to PDF" virtual printer (~12s, no timeout);
+`GET /` showed `tools_count: 66` (32 + 12 + 22) throughout.
+
+**One environment-specific, documented (not a bug) observation:**
+`desktop.getCurrentComponent()` doesn't recognize a document as "active"
+purely from being loaded via `loadComponentFromURL` in this scripted/
+headless test harness -- `get_active_document_live` and similar
+active-document-only tools (`set_custom_property_live` before
+`activate_document_live` was called, etc.) correctly returned
+`NO_ACTIVE_DOCUMENT` until `activate_document_live` was called explicitly.
+In a normal interactive LibreOffice session this resolves naturally via
+real window/frame focus; scripted/headless callers (including future test
+harnesses) should call `activate_document_live` after opening/reloading a
+document if they need active-document resolution to work.
+
+**Testing:** `tests/test_document_lifecycle.py` (19 tests, fakes for
+`UNOBridge` plus the real `DocumentRegistry`/`RuntimeState`/`context`),
+`tests/test_uno_datetime.py` (6 tests), plus 2 new
+`tests/test_document_registry.py` tests (`replace_document`, and the
+proxy-identity regression test above). 95/95 passing under `pytest` across
+the full relevant suite.
+
 ## What was built
 
 **Shared plumbing (`plugin/pythonpath/tools/`):**
@@ -230,11 +335,12 @@ released, removed scratch scripts and the local `build/` artifact).
   module's stubs still ignore it -- wiring it into each of those is real
   tool-by-tool implementation work, not scaffolding.
 
-**Tool modules, 366 functions across 14 files (354 still stub, 12 real --
-`core_runtime.py`, see "Real implementation pass" above):**
+**Tool modules, 366 functions across 14 files (332 still stub, 34 real --
+`core_runtime.py` and `document_lifecycle.py`, see the two "Real
+implementation pass" sections above):**
 
 - Phase A: `core_runtime.py` (12, **implemented**), `document_lifecycle.py`
-  (22 new, on top of 5 pre-existing), `undo_view_selection.py` (14), `styles.py` (12).
+  (22 new, **implemented**, on top of 5 pre-existing), `undo_view_selection.py` (14), `styles.py` (12).
 - Phase B: `writer_text.py` (18 new, on top of 27 pre-existing),
   `writer_layout.py` (43), `writer_tables.py` (38).
 - Phase C: `drawing_objects.py` (31), `charts.py` (20), `calc_sheets.py`
@@ -270,16 +376,17 @@ extension.
 
 ## What is intentionally NOT done
 
-- **No UNO implementation in the remaining 354 tool stubs** (everything
-  outside `core_runtime.py`). They all return `NOT_IMPLEMENTED`.
-  Implementing them needs a working `uno`/`unohelper` environment inside
-  LibreOffice -- confirmed working end-to-end for `core_runtime.py`'s 12
-  (see "Real implementation pass" above); the same approach applies to
-  the rest, tool by tool.
+- **No UNO implementation in the remaining 332 tool stubs** (everything
+  outside `core_runtime.py`/`document_lifecycle.py`). They all return
+  `NOT_IMPLEMENTED`. Implementing them needs a working `uno`/`unohelper`
+  environment inside LibreOffice -- confirmed working end-to-end for 34
+  tools across two modules now (see both "Real implementation pass"
+  sections above); the same approach applies to the rest, tool by tool.
 - **`DocumentRegistry`'s dispose-listener eviction** -- see above.
-- **The 354 remaining stub tools are still not wired into the live server
+- **The 332 remaining stub tools are still not wired into the live server
   by default** -- see the `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS` env var gate
-  above. (The 12 `core_runtime.py` tools ARE always-on now, unconditionally.)
+  above. (The 34 `core_runtime.py`/`document_lifecycle.py` tools ARE
+  always-on now, unconditionally.)
 - **Undo-context tracking** (`begin_undo_context_live`/`end_undo_context_live`)
   -- still stubs, which is why `batch_execute_live`'s `undo_label` and
   `get_session_state_live`'s `pending_undo_context` can't be backed for real yet.
@@ -324,18 +431,21 @@ Not a blocker: `tools/` stays additive and reversible either way.
 ## Suggested next steps
 
 1. ~~Implement the 12 core-runtime tools against `DocumentRegistry`~~ --
-   done, live-verified, see "Real implementation pass" above.
-2. Implement `begin_undo_context_live`/`end_undo_context_live` for real --
+   done, live-verified, see "Real implementation pass: core runtime tools" above.
+2. ~~Implement `document_lifecycle.py`'s 22 tools for real~~ -- done,
+   live-verified (including real file I/O), see "Real implementation
+   pass: document lifecycle tools" above.
+3. Implement `begin_undo_context_live`/`end_undo_context_live` for real --
    `batch_execute_live` and `get_session_state_live` both have a
    documented gap waiting on this.
-3. Wire `mcp_server.py`'s HTTP layer (`ai_interface.py`) to surface
+4. Wire `mcp_server.py`'s HTTP layer (`ai_interface.py`) to surface
    `NOT_IMPLEMENTED` responses distinctly (e.g. HTTP 501) so a client can
    tell "not implemented yet" apart from a real runtime error while these
    phases are partially built out.
-4. Continue implementing real logic for `document_lifecycle.py` (open/
-   save/convert/properties) -- natural next target since `core_runtime.py`
-   now depends on some of the same document-resolution machinery, or
-   continue scaffolding Phases E-F (Base and database access, forms and
-   controls, Math formula documents, linguistic/accessibility/publishing
-   QA, security/scripts/events/advanced UNO escape hatch -- 86 more rows),
-   using the same `tools/registry.py` pattern established in Phases A-D.
+5. Natural next real-implementation target: `undo_view_selection.py` or
+   `styles.py` (both Phase A, both depend on the same document-resolution
+   machinery already built) -- or continue scaffolding Phases E-F (Base
+   and database access, forms and controls, Math formula documents,
+   linguistic/accessibility/publishing QA, security/scripts/events/
+   advanced UNO escape hatch -- 86 more rows), using the same
+   `tools/registry.py` pattern established in Phases A-D.

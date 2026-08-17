@@ -11,12 +11,6 @@ buildDir.mkdir(parents=True, exist_ok=True)
 files = [
     (pluginDir / "META-INF" / "manifest.xml", "META-INF/manifest.xml"),
 
-    (pluginDir / "pythonpath" / "ai_interface.py", "pythonpath/ai_interface.py"),
-    (pluginDir / "pythonpath" / "host_trust.py", "pythonpath/host_trust.py"),
-    (pluginDir / "pythonpath" / "mcp_server.py", "pythonpath/mcp_server.py"),
-    (pluginDir / "pythonpath" / "registration.py", "pythonpath/registration.py"),
-    (pluginDir / "pythonpath" / "uno_bridge.py", "pythonpath/uno_bridge.py"),
-
     (pluginDir / "Addons.xcu", "Addons.xcu"),
     (pluginDir / "ProtocolHandler.xcu", "ProtocolHandler.xcu"),
     (pluginDir / "description.xml", "description.xml"),
@@ -26,12 +20,18 @@ files = [
     (repoDir / "LICENSE", "LICENSE"),
 ]
 
-# The tools/ package (plugin/pythonpath/tools/*.py) is a hard import of
-# mcp_server.py -- glob it in rather than hand-listing every module, since
-# the tool scaffold keeps growing (see docs/MCP_TOOLING_SCAFFOLD_PLAN.md).
-# Excludes __pycache__ (never wanted in the .oxt).
-toolsDir = pluginDir / "pythonpath" / "tools"
-for sourcePath in sorted(toolsDir.glob("*.py")):
+# Every pythonpath/*.py module, plus the whole tools/ package, is globbed
+# in rather than hand-listed -- a hand-maintained list silently goes stale
+# the moment a new module is added (this bit twice: the tools/ package
+# was missing entirely until Phase A+D's real-implementation pass, then
+# uno_datetime.py was nearly missed the same way immediately after fixing
+# that). Every one of these is a hard import of mcp_server.py or something
+# it imports, so shipping the .oxt without one breaks the extension the
+# moment LibreOffice loads it. Excludes __pycache__ (never wanted here).
+pythonpathDir = pluginDir / "pythonpath"
+for sourcePath in sorted(pythonpathDir.glob("*.py")):
+    files.append((sourcePath, f"pythonpath/{sourcePath.name}"))
+for sourcePath in sorted((pythonpathDir / "tools").glob("*.py")):
     files.append((sourcePath, f"pythonpath/tools/{sourcePath.name}"))
 
 missingFiles = [

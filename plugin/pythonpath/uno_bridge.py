@@ -10,7 +10,10 @@ import unohelper
 from com.sun.star.beans import PropertyValue
 from typing import Any, Optional, Dict, List
 import logging
+import os
 import traceback
+
+from uno_datetime import uno_datetime_to_iso
 
 # Optional imports - these may not be available in all configurations
 try:
@@ -385,11 +388,364 @@ class UNOBridge:
             
             logger.info(f"Exported document to {file_path} as {export_format}")
             return {"success": True, "message": f"Document exported to {file_path}"}
-            
+
         except Exception as e:
             logger.error(f"Failed to export document: {e}")
             return {"success": False, "error": str(e)}
-    
+
+    # -- Document lifecycle (open/close/save-as/properties/etc.) --------
+    #
+    # These methods raise on failure rather than returning a
+    # {"success": False, ...} dict, matching create_document()'s contract
+    # (not save_document()/export_document()'s). The tools/document_lifecycle.py
+    # callers need to distinguish specific failure reasons (file already
+    # exists vs. permission denied vs. a UNO exception) to map onto the
+    # spec's distinct error codes, which a single generic error string
+    # can't support cleanly.
+
+    def open_document(self, file_path: str, read_only: bool = False, hidden: bool = False,
+                       password: Optional[str] = None, filter_name: Optional[str] = None) -> Any:
+        """Open an existing file as a new document. Returns the loaded document component."""
+        if not os.path.isfile(file_path):
+            raise FileNotFoundError(f"No such file: {file_path}")
+        url = uno.systemPathToFileUrl(file_path)
+        props = [
+            PropertyValue("ReadOnly", 0, read_only, 0),
+            PropertyValue("Hidden", 0, hidden, 0),
+        ]
+        if password:
+            props.append(PropertyValue("Password", 0, password, 0))
+        if filter_name:
+            props.append(PropertyValue("FilterName", 0, filter_name, 0))
+        doc = self.desktop.loadComponentFromURL(url, "_blank", 0, tuple(props))
+        if doc is None:
+            raise RuntimeError(f"LibreOffice returned no document for {file_path} (unsupported format or filter?)")
+        logger.info(f"Opened document from {file_path}")
+        return doc
+
+    def open_from_template(self, template_path: str, as_template: bool = True) -> Any:
+        """Create a new document from an ODF/compatible template. Returns the new document component."""
+        if not os.path.isfile(template_path):
+            raise FileNotFoundError(f"No such template: {template_path}")
+        url = uno.systemPathToFileUrl(template_path)
+        props = (PropertyValue("AsTemplate", 0, as_template, 0),)
+        doc = self.desktop.loadComponentFromURL(url, "_blank", 0, props)
+        if doc is None:
+            raise RuntimeError(f"LibreOffice returned no document for template {template_path}")
+        logger.info(f"Created document from template {template_path} (as_template={as_template})")
+        return doc
+
+    def close_document(self, doc: Any, save: Any = False) -> None:
+        """Close a document with explicit save/discard behavior.
+
+        Args:
+            save: True (store before closing), False (discard changes), or
+                "prompt" -- not supported headlessly (there is no UI to
+                answer a prompt), raises ValueError so the caller can
+                surface a clear error instead of hanging.
+        """
+        if save == "prompt":
+            raise ValueError("save='prompt' is not supported by a headless extension; pass true or false explicitly.")
+        if save is True:
+            if not doc.hasLocation():
+                raise ValueError("Document has no location to save to; use save_as_document_live first.")
+            doc.store()
+        doc.close(False)
+        logger.info("Closed document")
+
+    def activate_document(self, doc: Any) -> None:
+        """Bring a document's frame to the foreground."""
+        controller = doc.getCurrentController()
+        if controller is None:
+            raise RuntimeError("Document has no controller to activate.")
+        frame = controller.getFrame()
+        if frame is None:
+            raise RuntimeError("Document's controller has no frame to activate.")
+        frame.activate()
+        try:
+            frame.getContainerWindow().toFront()
+        except Exception:
+            pass  # best-effort in headless environments with no real window
+
+    def get_document_statistics(self, doc: Any) -> Dict[str, Any]:
+        """Return counts appropriate to the document's type (pages/words/
+        chars for Writer; sheets for Calc; slides/pages for Impress/Draw)."""
+        doc_type = self._get_document_type(doc)
+        stats: Dict[str, Any] = {"type": doc_type}
+
+        if doc_type == "writer":
+            text = doc.getText()
+            content = text.getString()
+            stats["word_count"] = len(content.split())
+            stats["character_count"] = len(content)
+            paragraph_count = 0
+            enum = text.createEnumeration()
+            while enum.hasMoreElements():
+                enum.nextElement()
+                paragraph_count += 1
+            stats["paragraph_count"] = paragraph_count
+            try:
+                stats["page_count"] = doc.getCurrentController().PageCount
+            except Exception:
+                stats["page_count"] = None
+        elif doc_type == "calc":
+            sheets = doc.getSheets()
+            stats["sheet_count"] = sheets.getCount()
+            stats["sheet_names"] = [sheets.getByIndex(i).getName() for i in range(sheets.getCount())]
+        elif doc_type in ("impress", "draw"):
+            try:
+                stats["page_count"] = doc.getDrawPages().getCount()
+            except Exception:
+                stats["page_count"] = None
+        else:
+            stats["warning"] = f"No statistics available for document type '{doc_type}'"
+
+        return stats
+
+    _DOCUMENT_PROPERTY_FIELDS = ("Title", "Subject", "Author", "Description", "ModifiedBy")
+
+    def get_document_properties(self, doc: Any) -> Dict[str, Any]:
+        """Return standard document metadata via XDocumentPropertiesSupplier."""
+        props = doc.getDocumentProperties()
+        result: Dict[str, Any] = {}
+        for field in self._DOCUMENT_PROPERTY_FIELDS:
+            result[field.lower() if field != "ModifiedBy" else "modified_by"] = getattr(props, field, None)
+        result["keywords"] = list(getattr(props, "Keywords", ()) or ())
+        result["creation_date"] = uno_datetime_to_iso(getattr(props, "CreationDate", None))
+        result["modification_date"] = uno_datetime_to_iso(getattr(props, "ModificationDate", None))
+        return result
+
+    # Only these are exposed for writing -- CreationDate/ModificationDate/
+    # ModifiedBy are UNO-managed and not meant to be set directly by a caller.
+    _SETTABLE_DOCUMENT_PROPERTY_FIELDS = {"title": "Title", "subject": "Subject", "author": "Author",
+                                           "description": "Description", "keywords": "Keywords"}
+
+    def set_document_properties(self, doc: Any, properties: Dict[str, Any]) -> List[str]:
+        """Set standard document metadata. Returns the list of field names actually applied."""
+        doc_props = doc.getDocumentProperties()
+        applied = []
+        for key, value in properties.items():
+            uno_field = self._SETTABLE_DOCUMENT_PROPERTY_FIELDS.get(key)
+            if uno_field is None:
+                continue  # unknown/unsettable field name -- caller is told via the returned list
+            if uno_field == "Keywords":
+                value = tuple(value) if value else ()
+            setattr(doc_props, uno_field, value)
+            applied.append(key)
+        return applied
+
+    def get_custom_properties(self, doc: Any) -> Dict[str, Any]:
+        """Return user-defined document properties as a flat {name: value} dict."""
+        container = doc.getDocumentProperties().getUserDefinedProperties()
+        names = [p.Name for p in container.getPropertySetInfo().getProperties()]
+        return {name: container.getPropertyValue(name) for name in names}
+
+    def set_custom_property(self, doc: Any, name: str, value: Any, property_type: Optional[str] = None) -> None:
+        """Create or update a user-defined document property."""
+        from com.sun.star.beans import PropertyAttribute
+
+        container = doc.getDocumentProperties().getUserDefinedProperties()
+        existing_names = {p.Name for p in container.getPropertySetInfo().getProperties()}
+        if name in existing_names:
+            container.setPropertyValue(name, value)
+        else:
+            container.addProperty(name, PropertyAttribute.REMOVABLE, value)
+
+    def remove_custom_property(self, doc: Any, name: str) -> None:
+        """Delete a user-defined document property. Raises if it doesn't exist."""
+        container = doc.getDocumentProperties().getUserDefinedProperties()
+        existing_names = {p.Name for p in container.getPropertySetInfo().getProperties()}
+        if name not in existing_names:
+            raise KeyError(f"No custom property named '{name}'")
+        container.removeProperty(name)
+
+    def get_modified_state(self, doc: Any) -> bool:
+        return doc.isModified()
+
+    def set_modified_state(self, doc: Any, modified: bool) -> None:
+        doc.setModified(modified)
+
+    def refresh_document(self, doc: Any) -> None:
+        """Refresh fields/links/data via XRefreshable, where the document type supports it."""
+        if not hasattr(doc, "refresh"):
+            raise NotImplementedError("This document does not support XRefreshable.refresh().")
+        doc.refresh()
+
+    def reload_document(self, doc: Any, discard_changes: bool = False) -> Any:
+        """Reload a document from storage. Returns the NEW document
+        component -- the old one is closed and its UNO object becomes
+        invalid, so callers must re-point any document_id they had for it
+        at the returned object (see tools.documents.DocumentRegistry.replace_document).
+
+        Raises:
+            ValueError: no stored location to reload from, or unsaved
+                changes exist and discard_changes is False (headless --
+                there is no UI to prompt for confirmation).
+        """
+        if not doc.hasLocation():
+            raise ValueError("Document has no stored location to reload from.")
+        if doc.isModified() and not discard_changes:
+            raise ValueError("Document has unsaved changes; pass discard_changes=true to reload anyway.")
+        url = doc.getURL()
+        doc.close(False)
+        new_doc = self.desktop.loadComponentFromURL(url, "_blank", 0, ())
+        if new_doc is None:
+            raise RuntimeError(f"LibreOffice returned no document reloading {url}")
+        return new_doc
+
+    def save_as_document(self, doc: Any, file_path: str, filter_name: Optional[str] = None,
+                          filter_options: Optional[Dict[str, Any]] = None, overwrite: bool = False) -> None:
+        """Explicit Save As: changes the document's own stored location, unlike save_copy_document()."""
+        if not overwrite and os.path.exists(file_path):
+            raise FileExistsError(f"{file_path} already exists; pass overwrite=true to replace it.")
+        url = uno.systemPathToFileUrl(file_path)
+        props = [PropertyValue("Overwrite", 0, overwrite, 0)]
+        if filter_name:
+            props.append(PropertyValue("FilterName", 0, filter_name, 0))
+        if filter_options:
+            props.append(PropertyValue(
+                "FilterData", 0,
+                tuple(PropertyValue(k, 0, v, 0) for k, v in filter_options.items()), 0))
+        doc.storeAsURL(url, tuple(props))
+
+    def save_copy_document(self, doc: Any, file_path: str, filter_name: Optional[str] = None,
+                            overwrite: bool = False) -> None:
+        """Store a copy without changing the document's own stored location."""
+        if not overwrite and os.path.exists(file_path):
+            raise FileExistsError(f"{file_path} already exists; pass overwrite=true to replace it.")
+        url = uno.systemPathToFileUrl(file_path)
+        props = [PropertyValue("Overwrite", 0, overwrite, 0)]
+        if filter_name:
+            props.append(PropertyValue("FilterName", 0, filter_name, 0))
+        doc.storeToURL(url, tuple(props))
+
+    def convert_document_file(self, input_path: str, output_path: str,
+                               output_format: Optional[str] = None, options: Optional[Dict[str, Any]] = None) -> None:
+        """Open-convert-save between formats without disturbing any already-open document.
+
+        Loads input_path hidden, stores to output_path (inferring a filter
+        from output_format if given, else from output_path's extension via
+        _guess_filter_name), and always closes the temporary load -- this
+        document is never tracked by DocumentRegistry.
+        """
+        if not os.path.isfile(input_path):
+            raise FileNotFoundError(f"No such file: {input_path}")
+        filter_name = self._guess_filter_name(output_format, output_path)
+        source_url = uno.systemPathToFileUrl(input_path)
+        temp_doc = self.desktop.loadComponentFromURL(source_url, "_blank", 0, (
+            PropertyValue("Hidden", 0, True, 0),
+        ))
+        if temp_doc is None:
+            raise RuntimeError(f"LibreOffice returned no document for {input_path}")
+        try:
+            target_url = uno.systemPathToFileUrl(output_path)
+            props = [PropertyValue("Overwrite", 0, True, 0)]
+            if filter_name:
+                props.append(PropertyValue("FilterName", 0, filter_name, 0))
+            if options:
+                props.append(PropertyValue(
+                    "FilterData", 0,
+                    tuple(PropertyValue(k, 0, v, 0) for k, v in options.items()), 0))
+            temp_doc.storeToURL(target_url, tuple(props))
+        finally:
+            temp_doc.close(False)
+
+    # Deliberately small -- only the same formats export_document() already
+    # supports, plus odt/ods/odp for round-tripping. Extend as more formats
+    # are needed rather than guessing at unfamiliar filter names.
+    _FILTER_NAME_MAP = {
+        "pdf": "writer_pdf_Export", "docx": "MS Word 2007 XML", "doc": "MS Word 97",
+        "odt": "writer8", "txt": "Text", "rtf": "Rich Text Format", "html": "HTML (StarWriter)",
+        "ods": "calc8", "xlsx": "Calc MS Excel 2007 XML", "csv": "Text - txt - csv (StarCalc)",
+        "odp": "impress8", "pptx": "Impress MS PowerPoint 2007 XML",
+    }
+
+    def _guess_filter_name(self, output_format: Optional[str], output_path: str) -> Optional[str]:
+        key = (output_format or os.path.splitext(output_path)[1].lstrip(".")).lower()
+        filter_name = self._FILTER_NAME_MAP.get(key)
+        if filter_name is None:
+            raise ValueError(
+                f"Unsupported/unrecognized output format '{key}'. "
+                f"Supported: {sorted(self._FILTER_NAME_MAP)}"
+            )
+        return filter_name
+
+    def list_export_filters(self, doc: Any) -> Dict[str, Any]:
+        """List UNO filters registered for this document's type.
+
+        Scope limit: filters by DocumentService match only, not by an
+        import/export capability flag (the UNO FilterFlags bitmask isn't
+        exercised here to avoid guessing at an undocumented value) -- the
+        returned list may include import-only filters alongside export
+        ones. Good enough to show what's registered; not a strict
+        "export capable" guarantee.
+        """
+        doc_type = self._get_document_type(doc)
+        service_map = {
+            "writer": "com.sun.star.text.TextDocument",
+            "calc": "com.sun.star.sheet.SpreadsheetDocument",
+            "impress": "com.sun.star.presentation.PresentationDocument",
+            "draw": "com.sun.star.drawing.DrawingDocument",
+        }
+        document_service = service_map.get(doc_type)
+        if document_service is None:
+            return {"document_type": doc_type, "filters": [], "warning": f"No known service mapping for type '{doc_type}'"}
+
+        filter_factory = self.smgr.createInstanceWithContext("com.sun.star.document.FilterFactory", self.ctx)
+        names = []
+        for name in filter_factory.getElementNames():
+            try:
+                # getByName() returns a tuple of PropertyValue structs, not
+                # a mapping -- dict() on it directly raises TypeError
+                # ("cannot convert dictionary update sequence element #0
+                # to a sequence"); live-verified this the hard way.
+                entry = {p.Name: p.Value for p in filter_factory.getByName(name)}
+            except Exception:
+                continue
+            if entry.get("DocumentService") == document_service:
+                names.append(name)
+        return {"document_type": doc_type, "filters": sorted(names)}
+
+    @staticmethod
+    def _uno_value_to_plain(value: Any) -> Any:
+        """Convert common non-JSON-safe UNO value types to a plain Python
+        value. Handles uno.Enum (-> its string name, e.g. "PORTRAIT") and
+        simple Width/Height structs like com.sun.star.awt.Size (-> a dict);
+        live-verified that PropertyValue sequences like XPrintable's
+        getPrinter() return both of these. Not a general UNO-struct
+        converter -- anything else passes through unchanged and falls back
+        to str() at the HTTP JSON-encoding boundary (ai_interface.py's
+        json.dumps(default=str)), same as before this existed.
+        """
+        if isinstance(value, uno.Enum):
+            return value.value
+        if hasattr(value, "Width") and hasattr(value, "Height"):
+            return {"width": value.Width, "height": value.Height}
+        return value
+
+    def get_print_settings(self, doc: Any) -> Dict[str, Any]:
+        printer_props = doc.getPrinter()
+        return {p.Name: self._uno_value_to_plain(p.Value) for p in printer_props}
+
+    def set_print_settings(self, doc: Any, settings: Dict[str, Any]) -> None:
+        doc.setPrinter(tuple(PropertyValue(k, 0, v, 0) for k, v in settings.items()))
+
+    def print_document(self, doc: Any, printer: Optional[str] = None, page_range: Optional[str] = None,
+                        copies: int = 1, options: Optional[Dict[str, Any]] = None) -> None:
+        """Print via XPrintable. Not live-verified against a physical/virtual
+        printer (none available in this environment) -- unit-tested with
+        fakes only; treat as higher-risk than the rest of this module until
+        a senior engineer validates it against a real printer."""
+        if printer:
+            doc.setPrinter((PropertyValue("Name", 0, printer, 0),))
+        props = [PropertyValue("CopyCount", 0, copies, 0), PropertyValue("Wait", 0, True, 0)]
+        if page_range:
+            props.append(PropertyValue("Pages", 0, page_range, 0))
+        if options:
+            for key, value in options.items():
+                props.append(PropertyValue(key, 0, value, 0))
+        doc.print(tuple(props))
+
     def get_text_content(self, doc: Any = None) -> Dict[str, Any]:
         """Get text content from a document"""
         try:
