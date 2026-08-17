@@ -19,11 +19,11 @@ up exactly where it left off.
 | Writer - text, navigation, editing, search, review | 45 | 27 | 18 | **Scaffolded** (`tools/writer_text.py`) |
 | Writer - page layout, publishing, styles, headers, fields, indexes | 43 | 0 | 43 | **Scaffolded** (`tools/writer_layout.py`) |
 | Writer - tables, sections, notes, content controls, mail merge | 38 | 0 | 38 | **Scaffolded** (`tools/writer_tables.py`) |
-| Common drawing objects, images, shapes, embedded objects | 31 | 0 | 0 | Not started |
-| Charts and data visualizations | 20 | 0 | 0 | Not started |
-| Calc - sheets, cells, ranges, formulas, layout | 42 | 0 | 0 | Not started |
-| Calc - data management, analysis, pivots, validation, external data | 42 | 0 | 0 | Not started |
-| Calc - page setup, print ranges, annotations, protection | 15 | 0 | 0 | Not started |
+| Common drawing objects, images, shapes, embedded objects | 31 | 0 | 31 | **Scaffolded** (`tools/drawing_objects.py`) |
+| Charts and data visualizations | 20 | 0 | 20 | **Scaffolded** (`tools/charts.py`) |
+| Calc - sheets, cells, ranges, formulas, layout | 42 | 0 | 42 | **Scaffolded** (`tools/calc_sheets.py`) |
+| Calc - data management, analysis, pivots, validation, external data | 42 | 0 | 42 | **Scaffolded** (`tools/calc_data.py`) |
+| Calc - page setup, print ranges, annotations, protection | 15 | 0 | 15 | **Scaffolded** (`tools/calc_page.py`) |
 | Impress - slides, masters, notes, transitions, animations, slideshow | 41 | 0 | 0 | Not started |
 | Draw - pages, masters, layers, vector operations | 16 | 0 | 0 | Not started |
 | Base and database access | 34 | 0 | 0 | Not started |
@@ -31,16 +31,16 @@ up exactly where it left off.
 | Math formula documents and embedded formulas | 7 | 0 | 0 | Not started |
 | Linguistic services, accessibility, publishing QA | 15 | 0 | 0 | Not started |
 | Security, scripts, events, advanced UNO escape hatch | 14 | 0 | 0 | Not started |
-| **Total** | **484** | **32** | **159** | **159 / 452 net-new tools scaffolded** |
+| **Total** | **484** | **32** | **309** | **309 / 452 net-new tools scaffolded** |
 
 "Scaffolded" means: registered under the exact spec tool name with the
 correct priority and a JSON Schema `parameters` block built from the
 spec's Key Parameters column, with a docstring/purpose copied from the
 spec's Purpose column, and a handler body that returns the standard
 `NOT_IMPLEMENTED` error envelope. **No UNO logic has been written for any
-of these 159 tools** -- that is deliberately left for a senior engineer.
+of these 309 tools** -- that is deliberately left for a senior engineer.
 
-This covers Implementation Phases A and B from the spec's own section 10:
+This covers Implementation Phases A, B, and C from the spec's own section 10:
 
 - **Phase A** ("Runtime hardening and common document API": discovery,
   handles, lifecycle, metadata, undo, batch execution, styles,
@@ -52,6 +52,32 @@ This covers Implementation Phases A and B from the spec's own section 10:
   graphics -- graphics itself is the separate "Common drawing objects"
   section and is *not* included here, since it's shared with
   Calc/Impress/Draw rather than Writer-specific).
+- **Phase C** (shared "Common drawing objects" and "Charts and data
+  visualizations" sections Writer's own Phase B intentionally left out,
+  plus Calc-complete: sheets/cells/ranges/formulas/layout, data
+  management/pivots/validation/external data, and page setup/print/
+  annotations/protection) -- see "## Phase C" below for detail.
+
+## Phase C
+
+Phase C scaffolds the two sections shared across document types that
+Writer's own Phase B deliberately excluded (`tools/drawing_objects.py`,
+`tools/charts.py`), plus all three "Calc-complete" sections from the
+spec (`tools/calc_sheets.py`, `tools/calc_data.py`, `tools/calc_page.py`)
+-- 150 tool rows total, all P1-P3, all net-new (Calc/drawing/chart tools
+have zero P0 overlap with the 32 existing Writer/lifecycle compat tools).
+Same pattern as Phase A/B throughout: `@register_tool` from
+`tools/registry.py`, JSON Schema `parameters` built from each row's Key
+Parameters column, purpose copied verbatim from the spec's Purpose
+column, and every handler body returning `envelope.build_not_implemented`
+with no UNO calls. The five new modules are wired into
+`plugin/pythonpath/tools/__init__.py` the same additive, side-effect-only
+way as the Phase A/B modules, so they show up under the existing
+`MCP_LIBRE_ENABLE_SCAFFOLD_STUBS` opt-in with no new wiring in
+`mcp_server.py` itself. `tests/test_tool_scaffold_contract.py` gained one
+more `EXPECTED_BY_MODULE` entry per new file (exact tool-name sets, same
+style as the Phase A/B entries); the full contract suite now checks 309
+registered tools by exact name across 12 modules.
 
 ## What was built
 
@@ -89,12 +115,14 @@ This covers Implementation Phases A and B from the spec's own section 10:
   returns `NOT_IMPLEMENTED` regardless of arguments; wiring the registry
   into a handler is real tool-by-tool implementation work, not scaffolding.
 
-**Tool modules, 159 stub functions across 7 files:**
+**Tool modules, 309 stub functions across 12 files:**
 
 - Phase A: `core_runtime.py` (12), `document_lifecycle.py` (22 new, on top
   of 5 pre-existing), `undo_view_selection.py` (14), `styles.py` (12).
 - Phase B: `writer_text.py` (18 new, on top of 27 pre-existing),
   `writer_layout.py` (43), `writer_tables.py` (38).
+- Phase C: `drawing_objects.py` (31), `charts.py` (20), `calc_sheets.py`
+  (42), `calc_data.py` (42), `calc_page.py` (15).
 
 **Tests:**
 
@@ -105,12 +133,12 @@ This covers Implementation Phases A and B from the spec's own section 10:
   every stub's response shape; `merge_into()` non-destructiveness; the
   error-code set. Run with `python tests/test_tool_scaffold_contract.py`
   or `uv run pytest tests/test_tool_scaffold_contract.py`. 7/7 passing
-  locally, 159 tools registered.
+  locally, 309 tools registered across 12 modules.
 - `tests/test_document_registry.py` -- 9 unit tests for `DocumentRegistry`
   against fakes, 9/9 passing.
 
 **Integration:** one opt-in hook in `mcp_server.py`
-(`_register_scaffold_stub_tools`, merges in all 159 tools via
+(`_register_scaffold_stub_tools`, merges in all 309 tools via
 `tools.merge_into()`, gated by env var
 `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS`): additive-only, so the original 32
 tools' behavior is unchanged when the flag is unset (the default). This
@@ -121,16 +149,15 @@ extension.
 
 ## What is intentionally NOT done
 
-- **No UNO implementation in any of the 159 tool stubs.** They all
+- **No UNO implementation in any of the 309 tool stubs.** They all
   return `NOT_IMPLEMENTED`. Implementing them needs a working
   `uno`/`unohelper` environment inside LibreOffice, which this scaffolding
   pass didn't have reason to touch.
 - **`DocumentRegistry`'s dispose-listener eviction** -- see above.
 - **Not wired into the live server by default** -- see the env var gate
   above.
-- **Phases C-F (Calc, Impress/Draw + shared drawing/charts, Base/forms/Math,
-  quality/expert surface) are untouched.** 293 more tools remain, per the
-  table above.
+- **Phases D-F (Impress/Draw, Base/forms/Math, quality/expert surface) are
+  untouched.** 143 more net-new tools remain, per the table above.
 
 ## Open architecture question for Morgan
 
@@ -172,7 +199,10 @@ Not a blocker: `tools/` stays additive and reversible either way.
    `NOT_IMPLEMENTED` responses distinctly (e.g. HTTP 501) so a client can
    tell "not implemented yet" apart from a real runtime error while these
    phases are partially built out.
-3. Continue scaffolding Phase C (Calc-complete: 3 sections, 99 tool rows)
-   and the shared "Common drawing objects" + "Charts" sections (51 tool
-   rows) Writer's own Phase B intentionally left out, using the same
-   `tools/registry.py` pattern.
+3. Continue scaffolding Phase D (Impress: slides/masters/notes/
+   transitions/animations/slideshow, 41 rows; Draw: pages/masters/layers/
+   vector operations, 16 rows) and onward through Phases E-F (Base and
+   database access, forms and controls, Math formula documents,
+   linguistic/accessibility/publishing QA, security/scripts/events/
+   advanced UNO escape hatch -- 86 more rows), using the same
+   `tools/registry.py` pattern established in Phases A-C.

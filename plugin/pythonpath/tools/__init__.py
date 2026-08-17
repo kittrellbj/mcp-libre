@@ -4,8 +4,12 @@ LibreOffice MCP Extension - tooling scaffold.
 This package holds stub implementations for the tool catalog defined in
 LibreOffice_MCP_Complete_Tooling_Specification.md. Currently covers
 Implementation Phase A ("Runtime hardening and common document API":
-discovery, handles, lifecycle, undo, styles) and Phase B - Writer complete
-(text/navigation/editing, page layout/publishing, tables/sections/notes).
+discovery, handles, lifecycle, undo, styles), Phase B - Writer complete
+(text/navigation/editing, page layout/publishing, tables/sections/notes),
+and Phase C - shared drawing/charts + Calc-complete (common drawing
+objects and embedded objects; charts and data visualizations; Calc
+sheets/cells/ranges/formulas/layout; Calc data management/pivots/
+validation/external data; Calc page setup/print/annotations/protection).
 See docs/MCP_TOOLING_SCAFFOLD_PLAN.md for the full 484-tool roadmap and
 what remains for later phases.
 
@@ -28,6 +32,11 @@ from . import styles  # noqa: F401
 from . import writer_text  # noqa: F401
 from . import writer_layout  # noqa: F401
 from . import writer_tables  # noqa: F401
+from . import drawing_objects  # noqa: F401
+from . import charts  # noqa: F401
+from . import calc_sheets  # noqa: F401
+from . import calc_data  # noqa: F401
+from . import calc_page  # noqa: F401
 from .registry import get_registry, merge_into
 
 __all__ = ["get_registry", "merge_into"]

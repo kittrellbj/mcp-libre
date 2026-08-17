@@ -125,6 +125,69 @@ EXPECTED_BY_MODULE = {
         "set_content_control_live", "delete_content_control_live", "preview_mail_merge_live",
         "mail_merge_live",
     },
+    # Phase C - shared "Common drawing objects, images, shapes, and embedded
+    # objects" section (Writer/Calc/Impress/Draw), not Writer-specific so it
+    # was intentionally left out of Phase B.
+    "drawing_objects": {
+        "list_shapes_live", "get_shape_live", "insert_shape_live", "delete_shape_live",
+        "duplicate_shape_live", "set_shape_geometry_live", "set_shape_style_live", "set_shape_text_live",
+        "format_shape_text_live", "set_shape_alt_text_live", "set_shape_z_order_live", "align_shapes_live",
+        "distribute_shapes_live", "group_shapes_live", "ungroup_shape_live", "combine_shapes_live",
+        "split_shape_live", "bind_shapes_live", "unbind_shape_live", "insert_connector_live",
+        "list_glue_points_live", "add_glue_point_live", "delete_glue_point_live", "insert_image_live",
+        "replace_image_live", "set_image_properties_live", "export_shape_live", "list_embedded_objects_live",
+        "insert_embedded_object_live", "activate_embedded_object_live", "delete_embedded_object_live",
+    },
+    # Phase C - "Charts and data visualizations" (Calc primarily; embedded
+    # charts in Writer/Impress/Draw).
+    "charts": {
+        "list_charts_live", "create_chart_live", "get_chart_live", "delete_chart_live",
+        "set_chart_type_live", "set_chart_data_live", "set_chart_title_live", "set_chart_legend_live",
+        "get_chart_series_live", "set_chart_series_live", "add_chart_series_live", "remove_chart_series_live",
+        "set_chart_axis_live", "set_chart_data_labels_live", "set_chart_gridlines_live",
+        "add_chart_trendline_live", "remove_chart_trendline_live", "set_chart_error_bars_live",
+        "set_chart_geometry_live", "export_chart_live",
+    },
+    # Phase C - Calc-complete, section 1: "Calc - sheets, cells, ranges,
+    # formulas, layout".
+    "calc_sheets": {
+        "list_sheets_live", "get_active_sheet_live", "activate_sheet_live", "insert_sheet_live",
+        "delete_sheet_live", "rename_sheet_live", "move_sheet_live", "copy_sheet_live", "hide_sheet_live",
+        "show_sheet_live", "get_cell_live", "set_cell_live", "get_range_live", "set_range_live",
+        "clear_range_live", "get_used_range_live", "insert_rows_live", "delete_rows_live",
+        "insert_columns_live", "delete_columns_live", "insert_cells_live", "delete_cells_live",
+        "copy_range_live", "move_range_live", "fill_series_live", "autofill_live", "set_range_format_live",
+        "get_range_format_live", "merge_cells_live", "unmerge_cells_live", "set_row_height_live",
+        "set_column_width_live", "hide_rows_live", "show_rows_live", "hide_columns_live", "show_columns_live",
+        "freeze_panes_live", "unfreeze_panes_live", "recalculate_live", "evaluate_formula_live",
+        "get_formula_dependencies_live", "get_formula_errors_live",
+    },
+    # Phase C - Calc-complete, section 2: "Calc - data management, analysis,
+    # pivots, validation, external data".
+    "calc_data": {
+        "list_named_ranges_live", "create_named_range_live", "update_named_range_live",
+        "delete_named_range_live", "sort_range_live", "apply_filter_live", "clear_filter_live",
+        "get_filter_state_live", "list_conditional_formats_live", "add_conditional_format_live",
+        "update_conditional_format_live", "delete_conditional_format_live", "get_data_validation_live",
+        "set_data_validation_live", "clear_data_validation_live", "create_subtotals_live",
+        "remove_subtotals_live", "list_pivot_tables_live", "create_pivot_table_live", "get_pivot_table_live",
+        "update_pivot_table_live", "refresh_pivot_table_live", "delete_pivot_table_live",
+        "list_scenarios_live", "create_scenario_live", "apply_scenario_live", "delete_scenario_live",
+        "goal_seek_live", "solver_solve_live", "list_database_ranges_live", "create_database_range_live",
+        "delete_database_range_live", "list_external_links_live", "create_external_link_live",
+        "refresh_external_link_live", "delete_external_link_live", "import_csv_to_range_live",
+        "export_range_to_csv_live", "group_rows_live", "ungroup_rows_live", "group_columns_live",
+        "ungroup_columns_live",
+    },
+    # Phase C - Calc-complete, section 3: "Calc - page setup, print ranges,
+    # annotations, protection".
+    "calc_page": {
+        "get_sheet_page_layout_live", "set_sheet_page_layout_live", "set_print_area_live",
+        "clear_print_area_live", "set_repeating_print_rows_live", "set_repeating_print_columns_live",
+        "add_cell_comment_live", "list_cell_comments_live", "delete_cell_comment_live", "protect_sheet_live",
+        "unprotect_sheet_live", "set_cell_protection_live", "list_number_formats_live",
+        "create_number_format_live", "apply_number_format_live",
+    },
 }
 
 EXPECTED_TOOL_NAMES = set().union(*EXPECTED_BY_MODULE.values())
