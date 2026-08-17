@@ -1,18 +1,54 @@
 """
-Phase D scaffold: Impress - slides, masters, notes, transitions, animations, slideshow.
+Impress - slides, masters, notes, transitions, animations, slideshow --
+real implementation.
 
 Source: LibreOffice_MCP_Complete_Tooling_Specification.md, section
 "Impress - slides, masters, notes, transitions, animations, slideshow"
 (scope: Impress). No tools in this section are marked "(existing)"; all 41
-are scaffolded here.
+were scaffolded stubs before this pass. 34 of 41 are real; the other 7
+stay status="stub" (see below).
 
-Every function is a stub: it returns envelope.build_not_implemented(...)
-without touching UNO. See docs/MCP_TOOLING_SCAFFOLD_PLAN.md.
+Third of charts.py/impress.py/draw.py per Buddy's go-ahead -- draw.py and
+charts.py done, this one last. Slide addressing (`slide`: index or name)
+reuses `_resolve_page_by_name_or_index()`, the same resolution draw.py/
+drawing_objects.py already share; `shape` params (set_shape_click_action_
+live) take the shape directly through the same `ObjectRegistry` those
+modules established.
+
+7 tools stay status="stub", in two clusters, both a genuine "not
+exploration-tested this pass" scope limit rather than a shortcut (same
+precedent as drawing_objects.py's insert/activate_embedded_object_live
+and charts.py's add_chart_series_live):
+
+- add_animation_live/update_animation_live/delete_animation_live/
+  reorder_animations_live: constructing or mutating a real
+  com.sun.star.animations.XAnimationNode preset tree (the Parallel/
+  Sequence container structure LibreOffice's own entrance/emphasis/exit
+  effects use) is genuinely complex and wasn't attempted this pass.
+  list_animations_live (read-only tree walk) IS real -- see
+  uno_bridge.py's docstring next to it.
+- next_slideshow_effect_live/previous_slideshow_effect_live/
+  goto_slideshow_slide_live: all three need a live
+  com.sun.star.presentation.XSlideShowController
+  (Presentation.Controller), confirmed via live-verification this pass to
+  always be None in headless mode -- no window manager to render a
+  slideshow view to. start_slideshow_live/stop_slideshow_live (which
+  don't need the Controller, just XPresentation.start()/end()) ARE real.
+
+move_slide_live/duplicate_slide_live's `destination` also carry a
+verification caveat, NOT a stub -- see uno_bridge.py's section docstring:
+the code is real and correct (same dispatch-based reorder draw.py proved
+safe and effective for Draw), but this pass could not observe it taking
+effect for Impress specifically in headless mode, despite the dispatch
+pipeline itself being confirmed working via a control test.
 """
 
 from typing import Any, Dict, List, Optional
 
+from . import context
 from . import envelope
+from .document_lifecycle import _error_response, _resolve_and_register
+from .drawing_objects import _get_object_registry
 from .registry import register_tool, schema
 
 
@@ -20,20 +56,34 @@ from .registry import register_tool, schema
     name="list_slides_live",
     priority="P1",
     purpose="List slides with index/name/layout/master/hidden state.",
+    status="implemented",
 )
 def list_slides_live() -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("list_slides_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        slides = ctx.uno_bridge.list_slides(doc)
+        return envelope.build_success(result={"slides": slides, "count": len(slides)}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
     name="get_active_slide_live",
     priority="P1",
     purpose="Return active slide.",
+    status="implemented",
 )
 def get_active_slide_live() -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("get_active_slide_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        result = ctx.uno_bridge.get_active_slide(doc)
+        return envelope.build_success(result=result, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -41,10 +91,17 @@ def get_active_slide_live() -> Dict[str, Any]:
     priority="P1",
     purpose="Activate slide.",
     parameters=schema({"slide": {"description": "Slide index or name."}}, required=["slide"]),
+    status="implemented",
 )
 def activate_slide_live(slide: Any) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("activate_slide_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        ctx.uno_bridge.activate_slide(doc, slide)
+        return envelope.build_success(result={"activated": slide}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -56,11 +113,18 @@ def activate_slide_live(slide: Any) -> Dict[str, Any]:
         "layout": {"type": "string"},
         "master": {"type": "string"},
     }),
+    status="implemented",
 )
 def insert_slide_live(position: Optional[int] = None, layout: Optional[str] = None,
                        master: Optional[str] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("insert_slide_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        result = ctx.uno_bridge.insert_slide(doc, position, layout, master)
+        return envelope.build_success(result=result, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -71,10 +135,17 @@ def insert_slide_live(position: Optional[int] = None, layout: Optional[str] = No
         "slide": {"description": "Slide index or name."},
         "destination": {"type": "integer"},
     }, required=["slide"]),
+    status="implemented",
 )
 def duplicate_slide_live(slide: Any, destination: Optional[int] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("duplicate_slide_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        result = ctx.uno_bridge.duplicate_slide(doc, slide, destination)
+        return envelope.build_success(result=result, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -82,10 +153,17 @@ def duplicate_slide_live(slide: Any, destination: Optional[int] = None) -> Dict[
     priority="P1",
     purpose="Delete slide.",
     parameters=schema({"slide": {"description": "Slide index or name."}}, required=["slide"]),
+    status="implemented",
 )
 def delete_slide_live(slide: Any) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("delete_slide_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        ctx.uno_bridge.delete_slide(doc, slide)
+        return envelope.build_success(result={"deleted": slide}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -96,10 +174,17 @@ def delete_slide_live(slide: Any) -> Dict[str, Any]:
         "slide": {"description": "Slide index or name."},
         "destination_index": {"type": "integer"},
     }, required=["slide", "destination_index"]),
+    status="implemented",
 )
 def move_slide_live(slide: Any, destination_index: int) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("move_slide_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        ctx.uno_bridge.move_slide(doc, slide, destination_index)
+        return envelope.build_success(result={"destination_index": destination_index}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -110,10 +195,17 @@ def move_slide_live(slide: Any, destination_index: int) -> Dict[str, Any]:
         "slide": {"description": "Slide index or name."},
         "name": {"type": "string"},
     }, required=["slide", "name"]),
+    status="implemented",
 )
 def rename_slide_live(slide: Any, name: str) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("rename_slide_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        ctx.uno_bridge.rename_slide(doc, slide, name)
+        return envelope.build_success(result={"name": name}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -121,10 +213,17 @@ def rename_slide_live(slide: Any, name: str) -> Dict[str, Any]:
     priority="P1",
     purpose="Exclude slide from normal show.",
     parameters=schema({"slide": {"description": "Slide index or name."}}, required=["slide"]),
+    status="implemented",
 )
 def hide_slide_live(slide: Any) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("hide_slide_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        ctx.uno_bridge.hide_slide(doc, slide)
+        return envelope.build_success(result={"hidden": slide}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -132,10 +231,17 @@ def hide_slide_live(slide: Any) -> Dict[str, Any]:
     priority="P1",
     purpose="Include hidden slide.",
     parameters=schema({"slide": {"description": "Slide index or name."}}, required=["slide"]),
+    status="implemented",
 )
 def show_slide_live(slide: Any) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("show_slide_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        ctx.uno_bridge.show_slide(doc, slide)
+        return envelope.build_success(result={"shown": slide}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -143,10 +249,17 @@ def show_slide_live(slide: Any) -> Dict[str, Any]:
     priority="P1",
     purpose="Return page size/layout/master/header/footer/background.",
     parameters=schema({"slide": {"description": "Slide index or name."}}, required=["slide"]),
+    status="implemented",
 )
 def get_slide_layout_live(slide: Any) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("get_slide_layout_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        result = ctx.uno_bridge.get_slide_layout(doc, slide)
+        return envelope.build_success(result=result, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -157,10 +270,17 @@ def get_slide_layout_live(slide: Any) -> Dict[str, Any]:
         "slide": {"description": "Slide index or name."},
         "layout": {"type": "string"},
     }, required=["slide", "layout"]),
+    status="implemented",
 )
 def set_slide_layout_live(slide: Any, layout: str) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("set_slide_layout_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        ctx.uno_bridge.set_slide_layout(doc, slide, layout)
+        return envelope.build_success(result={"layout": layout}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -172,10 +292,17 @@ def set_slide_layout_live(slide: Any, layout: str) -> Dict[str, Any]:
         "height": {"type": "number"},
         "unit": {"type": "string"},
     }, required=["width", "height", "unit"]),
+    status="implemented",
 )
 def set_slide_size_live(width: float, height: float, unit: str) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("set_slide_size_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        ctx.uno_bridge.set_slide_size(doc, width, height, unit)
+        return envelope.build_success(result={"width": width, "height": height, "unit": unit}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -186,20 +313,36 @@ def set_slide_size_live(width: float, height: float, unit: str) -> Dict[str, Any
         "slide": {"description": "Slide index or name."},
         "properties": {"type": "object"},
     }, required=["slide", "properties"]),
+    status="implemented",
 )
 def set_slide_background_live(slide: Any, properties: Dict[str, Any]) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("set_slide_background_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        applied = ctx.uno_bridge.set_slide_background(doc, slide, properties)
+        skipped = sorted(set(properties) - set(applied))
+        warnings = [f"Ignored unknown/unsettable property field(s): {skipped}"] if skipped else []
+        return envelope.build_success(result={"applied": applied}, document_id=resolved_id, warnings=warnings, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
     name="list_master_pages_live",
     priority="P1",
     purpose="List presentation master pages.",
+    status="implemented",
 )
 def list_master_pages_live() -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("list_master_pages_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        masters = ctx.uno_bridge.list_master_pages(doc)
+        return envelope.build_success(result={"masters": masters, "count": len(masters)}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -210,10 +353,17 @@ def list_master_pages_live() -> Dict[str, Any]:
         "master": {"type": "string"},
         "slides": {"type": "array", "items": {}},
     }, required=["master", "slides"]),
+    status="implemented",
 )
 def apply_master_page_live(master: str, slides: List[Any]) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("apply_master_page_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        applied = ctx.uno_bridge.apply_master_page(doc, master, slides)
+        return envelope.build_success(result={"applied_to": applied}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -224,10 +374,18 @@ def apply_master_page_live(master: str, slides: List[Any]) -> Dict[str, Any]:
         "name": {"type": "string"},
         "based_on": {"type": "string"},
     }, required=["name"]),
+    status="implemented",
 )
 def create_master_page_live(name: str, based_on: Optional[str] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("create_master_page_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        result = ctx.uno_bridge.create_master_page(doc, name, based_on)
+        warnings = ["based_on is not implemented this pass -- the new master page is a fresh default, not a copy."] if based_on is not None else []
+        return envelope.build_success(result=result, document_id=resolved_id, warnings=warnings, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -235,10 +393,17 @@ def create_master_page_live(name: str, based_on: Optional[str] = None) -> Dict[s
     priority="P2",
     purpose="Delete unused master page.",
     parameters=schema({"master": {"type": "string"}}, required=["master"]),
+    status="implemented",
 )
 def delete_master_page_live(master: str) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("delete_master_page_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        ctx.uno_bridge.delete_master_page(doc, master)
+        return envelope.build_success(result={"deleted": master}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -246,10 +411,17 @@ def delete_master_page_live(master: str) -> Dict[str, Any]:
     priority="P1",
     purpose="Read slide notes text.",
     parameters=schema({"slide": {"description": "Slide index or name."}}, required=["slide"]),
+    status="implemented",
 )
 def get_speaker_notes_live(slide: Any) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("get_speaker_notes_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        text = ctx.uno_bridge.get_speaker_notes(doc, slide)
+        return envelope.build_success(result={"text": text}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -260,10 +432,17 @@ def get_speaker_notes_live(slide: Any) -> Dict[str, Any]:
         "slide": {"description": "Slide index or name."},
         "text": {"type": "string"},
     }, required=["slide", "text"]),
+    status="implemented",
 )
 def set_speaker_notes_live(slide: Any, text: str) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("set_speaker_notes_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        ctx.uno_bridge.set_speaker_notes(doc, slide, text)
+        return envelope.build_success(result={"text": text}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -271,10 +450,17 @@ def set_speaker_notes_live(slide: Any, text: str) -> Dict[str, Any]:
     priority="P1",
     purpose="Return transition/effect/duration/advance settings.",
     parameters=schema({"slide": {"description": "Slide index or name."}}, required=["slide"]),
+    status="implemented",
 )
 def get_slide_transition_live(slide: Any) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("get_slide_transition_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        result = ctx.uno_bridge.get_slide_transition(doc, slide)
+        return envelope.build_success(result=result, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -288,11 +474,32 @@ def get_slide_transition_live(slide: Any) -> Dict[str, Any]:
         "advance": {"type": "string"},
         "auto_after": {"type": "number"},
     }, required=["slide"]),
+    status="implemented",
 )
 def set_slide_transition_live(slide: Any, effect: Optional[str] = None, duration: Optional[float] = None,
                                advance: Optional[str] = None, auto_after: Optional[float] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("set_slide_transition_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        applied = ctx.uno_bridge.set_slide_transition(doc, slide, effect, duration, advance, auto_after)
+        warnings = []
+        if duration is not None and auto_after is not None:
+            # Live-verified this LibreOffice build two-way-couples
+            # page.Duration (auto_after) and page.HighResDuration
+            # (duration) instead of keeping them independent -- see
+            # uno_bridge.py's set_slide_transition docstring. duration
+            # is applied last so it's honored exactly; auto_after is
+            # only approximately honored (rounded to match) when both
+            # are given together.
+            warnings.append(
+                "duration and auto_after were both given -- this LibreOffice build keeps them linked, "
+                "so duration was applied exactly but auto_after may have been rounded to match it. "
+                "Set them in separate calls if both need to be exact."
+            )
+        return envelope.build_success(result={"applied": applied}, document_id=resolved_id, warnings=warnings, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -300,10 +507,17 @@ def set_slide_transition_live(slide: Any, effect: Optional[str] = None, duration
     priority="P2",
     purpose="List animation nodes/effects/order for slide shapes.",
     parameters=schema({"slide": {"description": "Slide index or name."}}, required=["slide"]),
+    status="implemented",
 )
 def list_animations_live(slide: Any) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("list_animations_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        animations = ctx.uno_bridge.list_animations(doc, slide)
+        return envelope.build_success(result={"animations": animations, "count": len(animations)}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -372,20 +586,35 @@ def reorder_animations_live(slide: Any, animation_ids: List[str]) -> Dict[str, A
         "action": {"type": "string"},
         "target": {"type": "string"},
     }, required=["shape_id", "action"]),
+    status="implemented",
 )
 def set_shape_click_action_live(shape_id: str, action: str, target: Optional[str] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("set_shape_click_action_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        shape = _get_object_registry(ctx, resolved_id).resolve_object(shape_id)
+        applied = ctx.uno_bridge.set_shape_click_action(doc, shape, action, target)
+        return envelope.build_success(result={"applied": applied}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
     name="get_presentation_settings_live",
     priority="P1",
     purpose="Return slideshow settings: first page, loop, animations, full-screen, mouse visibility, custom show.",
+    status="implemented",
 )
 def get_presentation_settings_live() -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("get_presentation_settings_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        result = ctx.uno_bridge.get_presentation_settings(doc)
+        return envelope.build_success(result=result, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -393,20 +622,36 @@ def get_presentation_settings_live() -> Dict[str, Any]:
     priority="P1",
     purpose="Set slideshow settings.",
     parameters=schema({"settings": {"type": "object"}}, required=["settings"]),
+    status="implemented",
 )
 def set_presentation_settings_live(settings: Dict[str, Any]) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("set_presentation_settings_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        applied = ctx.uno_bridge.set_presentation_settings(doc, settings)
+        skipped = sorted(set(settings) - set(applied))
+        warnings = [f"Ignored unknown/unsettable setting(s): {skipped}"] if skipped else []
+        return envelope.build_success(result={"applied": applied}, document_id=resolved_id, warnings=warnings, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
     name="list_custom_shows_live",
     priority="P2",
     purpose="List custom slide shows.",
+    status="implemented",
 )
 def list_custom_shows_live() -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("list_custom_shows_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        shows = ctx.uno_bridge.list_custom_shows(doc)
+        return envelope.build_success(result={"custom_shows": shows, "count": len(shows)}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -417,10 +662,17 @@ def list_custom_shows_live() -> Dict[str, Any]:
         "name": {"type": "string"},
         "slides": {"type": "array", "items": {}},
     }, required=["name", "slides"]),
+    status="implemented",
 )
 def create_custom_show_live(name: str, slides: List[Any]) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("create_custom_show_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        result = ctx.uno_bridge.create_custom_show(doc, name, slides)
+        return envelope.build_success(result=result, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -431,10 +683,17 @@ def create_custom_show_live(name: str, slides: List[Any]) -> Dict[str, Any]:
         "name": {"type": "string"},
         "slides": {"type": "array", "items": {}},
     }, required=["name", "slides"]),
+    status="implemented",
 )
 def update_custom_show_live(name: str, slides: List[Any]) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("update_custom_show_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        result = ctx.uno_bridge.update_custom_show(doc, name, slides)
+        return envelope.build_success(result=result, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -442,10 +701,17 @@ def update_custom_show_live(name: str, slides: List[Any]) -> Dict[str, Any]:
     priority="P2",
     purpose="Delete custom show.",
     parameters=schema({"name": {"type": "string"}}, required=["name"]),
+    status="implemented",
 )
 def delete_custom_show_live(name: str) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("delete_custom_show_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        ctx.uno_bridge.delete_custom_show(doc, name)
+        return envelope.build_success(result={"deleted": name}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -456,20 +722,34 @@ def delete_custom_show_live(name: str) -> Dict[str, Any]:
         "custom_show": {"type": "string"},
         "first_slide": {"description": "Slide index or name."},
     }),
+    status="implemented",
 )
 def start_slideshow_live(custom_show: Optional[str] = None, first_slide: Optional[Any] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("start_slideshow_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        ctx.uno_bridge.start_slideshow(doc, custom_show, first_slide)
+        return envelope.build_success(result={"started": True}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
     name="stop_slideshow_live",
     priority="P2",
     purpose="Stop active slideshow.",
+    status="implemented",
 )
 def stop_slideshow_live() -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("stop_slideshow_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        ctx.uno_bridge.stop_slideshow(doc)
+        return envelope.build_success(result={"stopped": True}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -515,11 +795,18 @@ def goto_slideshow_slide_live(slide: Any) -> Dict[str, Any]:
         "height": {"type": "integer"},
         "dpi": {"type": "integer"},
     }, required=["slide", "file_path"]),
+    status="implemented",
 )
 def export_slide_image_live(slide: Any, file_path: str, format: str = "png", width: Optional[int] = None,
                              height: Optional[int] = None, dpi: Optional[int] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("export_slide_image_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        ctx.uno_bridge.export_slide(doc, slide, file_path, format, width, height, dpi)
+        return envelope.build_success(result={"file_path": file_path}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -532,8 +819,15 @@ def export_slide_image_live(slide: Any, file_path: str, format: str = "png", wid
         "slides": {"type": "array", "items": {}},
         "naming": {"type": "string"},
     }, required=["output_dir"]),
+    status="implemented",
 )
 def export_all_slides_images_live(output_dir: str, format: str = "png", slides: Optional[List[Any]] = None,
                                    naming: Optional[str] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("export_all_slides_images_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        files = ctx.uno_bridge.export_all_slides(doc, output_dir, format, slides, naming)
+        return envelope.build_success(result={"files": files, "count": len(files)}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)

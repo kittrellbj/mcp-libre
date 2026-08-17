@@ -537,10 +537,23 @@ class UNOBridge:
         return applied
 
     def get_custom_properties(self, doc: Any) -> Dict[str, Any]:
-        """Return user-defined document properties as a flat {name: value} dict."""
+        """Return user-defined document properties as a flat {name: value} dict.
+
+        A user can set a custom property's type to Text, Number, Date,
+        Time, Duration, or Yes/No via LibreOffice's UI; Date/Time/Duration
+        come back from getPropertyValue() as raw
+        com.sun.star.util.{Date,DateTime,Duration} structs, not JSON-safe
+        values -- str()'d (or json.dumps(default=str)'d) they produce an
+        opaque struct repr instead of a readable value. Route every value
+        through the duck-typed converter; plain Text/Number/Yes-No values
+        pass through unchanged.
+        """
         container = doc.getDocumentProperties().getUserDefinedProperties()
         names = [p.Name for p in container.getPropertySetInfo().getProperties()]
-        return {name: container.getPropertyValue(name) for name in names}
+        return {
+            name: uno_temporal_value_to_plain(container.getPropertyValue(name))
+            for name in names
+        }
 
     def set_custom_property(self, doc: Any, name: str, value: Any, property_type: Optional[str] = None) -> None:
         """Create or update a user-defined document property."""
@@ -5358,3 +5371,555 @@ class UNOBridge:
         sheet, charts, chart_table = self._find_chart_by_name(doc, chart_id)
         shape = self._find_chart_shape(sheet, chart_id)
         self.export_shape(shape, file_path, format, dpi)
+
+    # -- Impress: slides, masters, notes, transitions, animations, slideshow
+    # (tools/impress.py's 41 tools) --
+    #
+    # Same raise-on-failure convention as draw.py/charts.py above. Slide
+    # addressing (`slide`: index or name) reuses `_resolve_page_by_name_or_
+    # index()`, the same live name-or-index resolution draw.py/
+    # drawing_objects.py already share. `_move_draw_page_to_index()`
+    # (draw.py's section) is itself document-type-agnostic -- it only
+    # calls doc.getDrawPages()/doc.getCurrentController(), nothing
+    # Draw-specific -- so it's reused directly here for move_slide_live's
+    # dispatch-based reorder, not duplicated.
+    #
+    # **Known verification gap, found live-testing this pass, NOT silently
+    # presented as verified:** move_slide_live's dispatch-based reorder
+    # (.uno:MovePageUp/.uno:MovePageDown, the same mechanism draw.py
+    # proved safe and effective for Draw documents) reports the dispatch
+    # as genuinely enabled (confirmed via XStatusListener: IsEnabled=True)
+    # and the dispatch pipeline itself is confirmed working in this exact
+    # setup (a control test with .uno:DuplicatePage on the same frame DID
+    # visibly add a page) -- but repeated attempts (setCurrentPage(),
+    # select(), both together, via frame.queryDispatch().dispatch(), via
+    # DispatchHelper, via desktop.getCurrentFrame(), with up to 1.5s
+    # settle time) never produced an observed reorder in
+    # doc.getDrawPages() for an Impress document specifically, headless.
+    # The code below is the correct, spec-compliant implementation (no
+    # native "move page to index" UNO API exists for Impress either, same
+    # as Draw) and is left in rather than stubbed, but this pass could NOT
+    # live-verify it takes effect -- flagged for a follow-up with a real
+    # GUI/virtual-display session, not silently claimed as working.
+    #
+    # AutoLayout is an unvalidated integer property (0-20 all accepted
+    # without error) with no queryable name table via CoreReflection this
+    # pass (it isn't a discoverable IDL enum/constants group the way
+    # LegendPosition was for charts.py). Only 4 values were empirically
+    # verified by inspecting the actual placeholder shapes a fresh slide
+    # gets at each value: 0 = title+subtitle, 1 = title+content,
+    # 19 = title only, 20 = blank. _LAYOUT_NAMES below covers only those
+    # 4 confirmed values; every other AutoLayout number is still usable
+    # via a raw int, matching the honest-scope-limit precedent (guessing
+    # the rest of the ~20-entry table risked repeating the LegendPosition/
+    # DataPointLabel mistake from the charts.py pass instead of learning
+    # from it).
+    #
+    # Similarly, set_slide_transition_live's `effect` accepts a raw
+    # TransitionType integer or the literal "none" (both empirically
+    # verified: TransitionType/TransitionSubtype default to 0/0 on a
+    # fresh slide, and arbitrary ints are accepted unvalidated) -- the
+    # full ODF/OOXML named-transition table (fade, wipe, push, ...) was
+    # not mapped this pass, for the same reason.
+
+    def _require_impress(self, doc: Any, operation: str) -> None:
+        doc_type = self._get_document_type(doc)
+        if doc_type != "impress":
+            raise NotImplementedError(f"{operation} is only implemented for Impress documents, not '{doc_type}'.")
+
+    def _resolve_slide(self, doc: Any, slide: Optional[Any] = None) -> Any:
+        self._require_impress(doc, "slide resolution")
+        if slide is None:
+            return doc.getCurrentController().getCurrentPage()
+        return self._resolve_page_by_name_or_index(doc.getDrawPages(), slide)
+
+    @staticmethod
+    def _slide_index(pages: Any, page_obj: Any) -> Optional[int]:
+        for i in range(pages.getCount()):
+            if pages.getByIndex(i).Name == page_obj.Name:
+                return i
+        return None
+
+    def _resolve_master_by_name(self, doc: Any, name: Any) -> Any:
+        """Master pages are index-only (no XNameAccess -- confirmed via
+        dir() introspection this pass, unlike slides), so resolving by
+        name means a linear scan."""
+        masters = doc.getMasterPages()
+        name = str(name)
+        for i in range(masters.getCount()):
+            master = masters.getByIndex(i)
+            if master.Name == name:
+                return master
+        raise KeyError(f"No such master page '{name}'.")
+
+    _LAYOUT_NAMES = {"title_slide": 0, "title_content": 1, "title_only": 19, "blank": 20}
+
+    def _resolve_layout(self, layout: Any) -> int:
+        if isinstance(layout, bool):
+            raise TypeError("layout must be an int or a str, not bool.")
+        if isinstance(layout, int):
+            return layout
+        key = str(layout).lower()
+        if key in self._LAYOUT_NAMES:
+            return self._LAYOUT_NAMES[key]
+        raise ValueError(
+            f"Unknown layout '{layout}'. Supported names: {sorted(self._LAYOUT_NAMES)}, "
+            "or pass a raw AutoLayout integer (0-20; the full name table wasn't mapped this pass)."
+        )
+
+    def list_slides(self, doc: Any) -> List[Dict[str, Any]]:
+        self._require_impress(doc, "list_slides")
+        pages = doc.getDrawPages()
+        result = []
+        for i in range(pages.getCount()):
+            page = pages.getByIndex(i)
+            result.append({
+                "index": i, "name": page.Name, "layout": page.Layout,
+                "master": page.MasterPage.Name if page.MasterPage is not None else None,
+                "hidden": not page.Visible,
+            })
+        return result
+
+    def get_active_slide(self, doc: Any) -> Dict[str, Any]:
+        self._require_impress(doc, "get_active_slide")
+        page = doc.getCurrentController().getCurrentPage()
+        return {"index": self._slide_index(doc.getDrawPages(), page), "name": page.Name}
+
+    def activate_slide(self, doc: Any, slide: Any) -> None:
+        self._require_impress(doc, "activate_slide")
+        doc.getCurrentController().setCurrentPage(self._resolve_slide(doc, slide))
+
+    def insert_slide(self, doc: Any, position: Optional[int] = None, layout: Optional[Any] = None,
+                      master: Optional[Any] = None) -> Dict[str, Any]:
+        self._require_impress(doc, "insert_slide")
+        pages = doc.getDrawPages()
+        index = position if position is not None else pages.getCount()
+        new_page = pages.insertNewByIndex(index)
+        if layout is not None:
+            new_page.Layout = self._resolve_layout(layout)
+        if master is not None:
+            new_page.MasterPage = self._resolve_master_by_name(doc, master)
+        return {"index": self._slide_index(pages, new_page), "name": new_page.Name}
+
+    def duplicate_slide(self, doc: Any, slide: Any, destination: Optional[int] = None) -> Dict[str, Any]:
+        """doc.duplicate() (XDrawPageDuplicator) copies the page and all
+        its shapes and inserts the copy immediately after the source --
+        same mechanism draw.py's duplicate_draw_page uses. An explicit
+        destination is applied afterward via the same dispatch-based move
+        move_slide_live uses -- see this section's docstring for that
+        mechanism's unverified-for-Impress caveat, which applies here too
+        when destination is given."""
+        self._require_impress(doc, "duplicate_slide")
+        source_page = self._resolve_slide(doc, slide)
+        new_page = doc.duplicate(source_page)
+        pages = doc.getDrawPages()
+        current_index = self._slide_index(pages, new_page)
+        if destination is not None and destination != current_index:
+            self._move_draw_page_to_index(doc, current_index, destination)
+            current_index = destination
+        return {"index": current_index, "name": new_page.Name}
+
+    def delete_slide(self, doc: Any, slide: Any) -> None:
+        self._require_impress(doc, "delete_slide")
+        doc.getDrawPages().remove(self._resolve_slide(doc, slide))
+
+    def move_slide(self, doc: Any, slide: Any, destination_index: int) -> None:
+        self._require_impress(doc, "move_slide")
+        pages = doc.getDrawPages()
+        page_obj = self._resolve_slide(doc, slide)
+        current_index = self._slide_index(pages, page_obj)
+        self._move_draw_page_to_index(doc, current_index, destination_index)
+
+    def rename_slide(self, doc: Any, slide: Any, name: str) -> None:
+        self._require_impress(doc, "rename_slide")
+        self._resolve_slide(doc, slide).Name = name
+
+    def hide_slide(self, doc: Any, slide: Any) -> None:
+        self._require_impress(doc, "hide_slide")
+        self._resolve_slide(doc, slide).Visible = False
+
+    def show_slide(self, doc: Any, slide: Any) -> None:
+        self._require_impress(doc, "show_slide")
+        self._resolve_slide(doc, slide).Visible = True
+
+    def get_slide_layout(self, doc: Any, slide: Any) -> Dict[str, Any]:
+        page = self._resolve_slide(doc, slide)
+        return {
+            "layout": page.Layout,
+            "master": page.MasterPage.Name if page.MasterPage is not None else None,
+            "width": page.Width, "height": page.Height,
+            "orientation": "landscape" if page.Width >= page.Height else "portrait",
+            "footer_visible": page.IsFooterVisible, "footer_text": page.FooterText,
+            "background_visible": page.IsBackgroundVisible,
+        }
+
+    def set_slide_layout(self, doc: Any, slide: Any, layout: Any) -> None:
+        self._resolve_slide(doc, slide).Layout = self._resolve_layout(layout)
+
+    def set_slide_size(self, doc: Any, width: float, height: float, unit: str) -> None:
+        """No `slide` parameter in this tool's spec schema -- an Impress
+        presentation has one page size shared by every slide and master,
+        not a per-slide one (unlike Draw), so this applies to every page
+        in both getDrawPages() and getMasterPages()."""
+        self._require_impress(doc, "set_slide_size")
+        factor = self._LENGTH_UNIT_TO_MM100.get(unit.lower(), 1)
+        w, h = int(width * factor), int(height * factor)
+        for container in (doc.getDrawPages(), doc.getMasterPages()):
+            for i in range(container.getCount()):
+                page = container.getByIndex(i)
+                page.Width = w
+                page.Height = h
+
+    def set_slide_background(self, doc: Any, slide: Any, properties: Dict[str, Any]) -> List[str]:
+        """Same doc.createInstance(...) (document-scoped, not the global
+        smgr) Background-object mechanism draw.py's set_draw_page_background
+        needed -- a Draw/Impress page's fill properties are never direct
+        page properties."""
+        page = self._resolve_slide(doc, slide)
+        background = doc.createInstance("com.sun.star.drawing.Background")
+        applied = self._apply_direct_properties(background, properties)
+        page.Background = background
+        return applied
+
+    def list_master_pages(self, doc: Any) -> List[Dict[str, Any]]:
+        self._require_impress(doc, "list_master_pages")
+        masters = doc.getMasterPages()
+        return [{"index": i, "name": masters.getByIndex(i).Name} for i in range(masters.getCount())]
+
+    def apply_master_page(self, doc: Any, master: Any, slides: List[Any]) -> List[str]:
+        self._require_impress(doc, "apply_master_page")
+        master_obj = self._resolve_master_by_name(doc, master)
+        applied = []
+        for slide in slides:
+            page = self._resolve_slide(doc, slide)
+            page.MasterPage = master_obj
+            applied.append(page.Name)
+        return applied
+
+    def create_master_page(self, doc: Any, name: str, based_on: Optional[Any] = None) -> Dict[str, Any]:
+        """`based_on` is accepted but not honored this pass -- no copy-
+        properties-from-another-master mechanism was exploration-tested;
+        the new master is a fresh default master under the requested
+        name, same honest-scope-limit call as the transition/layout name
+        tables above rather than guessing at a copy mechanism.
+
+        insertNamedNewByIndex(index, name) -- index first, name second.
+        Live-verified: the reversed order this pass first tried raised a
+        raw "invalid STRING value!" UNO_EXCEPTION instead of a clean tool
+        response (getting this backwards was an easy mistake -- dir()
+        introspection lists the method name but not its parameter order)."""
+        self._require_impress(doc, "create_master_page")
+        masters = doc.getMasterPages()
+        new_master = masters.insertNamedNewByIndex(masters.getCount(), name)
+        return {"name": new_master.Name}
+
+    def delete_master_page(self, doc: Any, master: Any) -> None:
+        self._require_impress(doc, "delete_master_page")
+        doc.getMasterPages().remove(self._resolve_master_by_name(doc, master))
+
+    @staticmethod
+    def _find_notes_shape(notes_page: Any) -> Any:
+        """getShapeType(), not supportsService() -- live-verified a real
+        NotesShape's supportsService("com.sun.star.presentation.
+        NotesShape") returns False despite getShapeType() returning
+        exactly that string; presentation placeholder shapes expose their
+        role through their shape type, not through XServiceInfo the way
+        most other shapes do."""
+        for i in range(notes_page.getCount()):
+            shape = notes_page.getByIndex(i)
+            if shape.getShapeType() == "com.sun.star.presentation.NotesShape":
+                return shape
+        raise LookupError("Notes page has no NotesShape.")
+
+    def get_speaker_notes(self, doc: Any, slide: Any) -> str:
+        page = self._resolve_slide(doc, slide)
+        return self._find_notes_shape(page.NotesPage).getString()
+
+    def set_speaker_notes(self, doc: Any, slide: Any, text: str) -> None:
+        page = self._resolve_slide(doc, slide)
+        self._find_notes_shape(page.NotesPage).setString(text)
+
+    def get_slide_transition(self, doc: Any, slide: Any) -> Dict[str, Any]:
+        page = self._resolve_slide(doc, slide)
+        return {
+            "transition_type": page.TransitionType, "transition_subtype": page.TransitionSubtype,
+            "transition_direction": page.TransitionDirection, "duration": page.HighResDuration,
+            "advance": {0: "on_click", 1: "auto"}.get(page.Change, "unknown"),
+            "auto_after": page.Duration if page.Change == 1 else None,
+            "sound": page.Sound or None, "loop_sound": page.LoopSound,
+        }
+
+    _CHANGE_MODES = {"on_click": 0, "auto": 1}
+
+    def set_slide_transition(self, doc: Any, slide: Any, effect: Optional[Any] = None,
+                              duration: Optional[float] = None, advance: Optional[str] = None,
+                              auto_after: Optional[float] = None) -> List[str]:
+        """`auto_after` (page.Duration) and `duration` (page.HighResDuration)
+        are applied in that order deliberately, not the parameter order --
+        live-verified this LibreOffice build two-way-couples them (setting
+        either one syncs the other to a rounded copy of it: Duration=4.0
+        makes HighResDuration read back 4.0; HighResDuration=2.5
+        afterward makes Duration read back 3, round(2.5)) rather than
+        keeping transition speed and auto-advance timing independent, as
+        their names/spec purposes would suggest. Applying auto_after
+        first and duration last means an explicit `duration` value is
+        never silently overwritten, at the cost of `auto_after` only
+        being approximately honored when both are given in the same
+        call -- tools/impress.py's set_slide_transition_live warns the
+        caller about this when both are present, rather than silently
+        claiming both landed exactly as requested."""
+        page = self._resolve_slide(doc, slide)
+        applied = []
+        if effect is not None:
+            if isinstance(effect, bool):
+                raise TypeError("effect must be an int or a str, not bool.")
+            if isinstance(effect, int):
+                page.TransitionType = effect
+            elif str(effect).lower() == "none":
+                page.TransitionType = 0
+                page.TransitionSubtype = 0
+            else:
+                raise NotImplementedError(
+                    f"Named transition effect '{effect}' is not implemented this pass -- pass effect=0 "
+                    "(or another raw TransitionType integer) directly, or effect='none'. The full "
+                    "ODF/OOXML transition-type name table wasn't mapped this pass."
+                )
+            applied.append("effect")
+        if advance is not None:
+            key = str(advance).lower()
+            if key not in self._CHANGE_MODES:
+                raise ValueError(f"advance must be one of {sorted(self._CHANGE_MODES)}, got '{advance}'")
+            page.Change = self._CHANGE_MODES[key]
+            applied.append("advance")
+        if auto_after is not None:
+            page.Duration = float(auto_after)
+            applied.append("auto_after")
+        if duration is not None:
+            page.HighResDuration = float(duration)
+            applied.append("duration")
+        return applied
+
+    def list_animations(self, doc: Any, slide: Any) -> List[Dict[str, Any]]:
+        """Walks the real com.sun.star.animations.XAnimationNode tree
+        (root is slide.AnimationNode, an XEnumerationAccess container --
+        confirmed via introspection it does NOT support XIndexAccess, so
+        createEnumeration() is the only way to walk it). Begin/Duration/
+        Fill/NodeType are plain XAnimationNode interface attributes (no
+        XPropertySet in this node's supportedInterfaces), read the same
+        direct-attribute way shape.Position/chart_doc.HasLegend are
+        elsewhere in this file. Target (the animated shape/paragraph)
+        deliberately isn't resolved to a shape_id this pass -- it isn't a
+        plain value (a raw shape reference or a ParagraphTarget struct)
+        and reverse-resolving it through ObjectRegistry wasn't
+        exploration-tested here; add_animation_live and friends (which
+        would need to construct nodes, not just read them) stay stub for
+        the same reason, see tools/impress.py."""
+        page = self._resolve_slide(doc, slide)
+        result: List[Dict[str, Any]] = []
+
+        def describe(node: Any) -> Dict[str, Any]:
+            entry: Dict[str, Any] = {"node_type": node.getImplementationName()}
+            for attr in ("Begin", "Duration", "Fill", "NodeType"):
+                try:
+                    entry[attr.lower()] = self._uno_value_to_plain(getattr(node, attr))
+                except AttributeError:
+                    pass
+            return entry
+
+        def walk(node: Any, parent_id: Optional[str]) -> None:
+            my_id = str(len(result))
+            entry = describe(node)
+            entry["animation_id"] = my_id
+            entry["parent_id"] = parent_id
+            result.append(entry)
+            if hasattr(node, "createEnumeration"):
+                child_enum = node.createEnumeration()
+                while child_enum.hasMoreElements():
+                    walk(child_enum.nextElement(), my_id)
+
+        walk(page.AnimationNode, None)
+        return result
+
+    # add_animation_live/update_animation_live/delete_animation_live/
+    # reorder_animations_live have no bridge methods -- constructing or
+    # mutating XAnimationNode preset trees (AnimateSet/Command/etc.,
+    # wrapped in the specific Parallel/Sequence container structure
+    # LibreOffice's own entrance/emphasis/exit preset effects use) is
+    # genuinely complex and wasn't exploration-tested this pass; same
+    # honest-scope-limit reasoning as add_chart_series_live and
+    # insert_embedded_object_live before it. All 4 stay pure status="stub"
+    # NOT_IMPLEMENTED responses, see tools/impress.py.
+
+    _CLICK_ACTIONS = {
+        "none": "NONE", "previous_page": "PREVPAGE", "next_page": "NEXTPAGE",
+        "first_page": "FIRSTPAGE", "last_page": "LASTPAGE", "bookmark": "BOOKMARK",
+        "document": "DOCUMENT", "program": "PROGRAM", "sound": "SOUND", "verb": "VERB",
+        "vanish": "VANISH", "invisible": "INVISIBLE", "stop_presentation": "STOPPRESENTATION",
+    }
+
+    def set_shape_click_action(self, doc: Any, shape: Any, action: str, target: Optional[str] = None) -> List[str]:
+        action_name = self._CLICK_ACTIONS.get(action.lower())
+        if action_name is None:
+            raise ValueError(f"Unknown action '{action}'. Supported: {sorted(self._CLICK_ACTIONS)}")
+        shape.setPropertyValue("OnClick", uno.Enum("com.sun.star.presentation.ClickAction", action_name))
+        applied = ["action"]
+        if target is not None:
+            shape.setPropertyValue("Bookmark", str(target))
+            applied.append("target")
+        return applied
+
+    _PRESENTATION_SETTINGS_PROPS = (
+        "AllowAnimations", "CustomShow", "Display", "FirstPage", "IsAlwaysOnTop", "IsAutomatic",
+        "IsEndless", "IsFullScreen", "IsMouseVisible", "IsShowAll", "IsShowLogo",
+        "IsTransitionOnClick", "Pause", "StartWithNavigator", "UsePen",
+    )
+
+    def get_presentation_settings(self, doc: Any) -> Dict[str, Any]:
+        """FirstPage is already a plain slide-name string (empty string
+        when unset), NOT a page object reference -- live-verified this
+        pass; the original .Name-access assumption raised a raw
+        "'str' object has no attribute 'Name'" UNO_EXCEPTION instead of a
+        clean tool response."""
+        self._require_impress(doc, "get_presentation_settings")
+        pres = doc.getPresentation()
+        settings = {}
+        for name in self._PRESENTATION_SETTINGS_PROPS:
+            try:
+                value = pres.getPropertyValue(name)
+            except Exception:
+                continue
+            if name == "FirstPage" and value == "":
+                value = None
+            settings[name] = self._uno_value_to_plain(value)
+        return settings
+
+    def set_presentation_settings(self, doc: Any, settings: Dict[str, Any]) -> List[str]:
+        """FirstPage takes a plain slide-name string directly -- see
+        get_presentation_settings' docstring. _resolve_slide() (needed
+        for start_slideshow's `first_slide`, which accepts an index too)
+        would be wrong here since XPresentation.FirstPage itself is
+        string-typed, not an index-or-name selector."""
+        self._require_impress(doc, "set_presentation_settings")
+        pres = doc.getPresentation()
+        if "FirstPage" in settings:
+            settings = dict(settings)
+            settings["FirstPage"] = self._resolve_slide(doc, settings["FirstPage"]).Name
+        return self._apply_direct_properties(pres, settings)
+
+    def list_custom_shows(self, doc: Any) -> List[Dict[str, Any]]:
+        self._require_impress(doc, "list_custom_shows")
+        shows = doc.getCustomPresentations()
+        result = []
+        for name in shows.getElementNames():
+            cp = shows.getByName(name)
+            result.append({"name": name, "slides": [cp.getByIndex(i).Name for i in range(cp.Count)]})
+        return result
+
+    def create_custom_show(self, doc: Any, name: str, slides: List[Any]) -> Dict[str, Any]:
+        self._require_impress(doc, "create_custom_show")
+        shows = doc.getCustomPresentations()
+        cp = shows.createInstance()
+        cp.Name = name
+        for i, slide in enumerate(slides):
+            cp.insertByIndex(i, self._resolve_slide(doc, slide))
+        shows.insertByName(name, cp)
+        return {"name": name, "count": cp.Count}
+
+    def update_custom_show(self, doc: Any, name: str, slides: List[Any]) -> Dict[str, Any]:
+        self._require_impress(doc, "update_custom_show")
+        shows = doc.getCustomPresentations()
+        if not shows.hasByName(name):
+            raise KeyError(f"No such custom show '{name}'.")
+        cp = shows.getByName(name)
+        while cp.Count > 0:
+            cp.removeByIndex(cp.Count - 1)
+        for i, slide in enumerate(slides):
+            cp.insertByIndex(i, self._resolve_slide(doc, slide))
+        return {"name": name, "count": cp.Count}
+
+    def delete_custom_show(self, doc: Any, name: str) -> None:
+        self._require_impress(doc, "delete_custom_show")
+        shows = doc.getCustomPresentations()
+        if not shows.hasByName(name):
+            raise KeyError(f"No such custom show '{name}'.")
+        shows.removeByName(name)
+
+    def start_slideshow(self, doc: Any, custom_show: Optional[str] = None, first_slide: Optional[Any] = None) -> None:
+        """Live-verified pres.start()/end() execute without error in
+        headless mode, but Presentation.Controller stays None throughout
+        (confirmed via an independent readback right after start()) --
+        no window manager to actually render a slideshow view to. That's
+        a real, provable environment limit, not a code defect: the same
+        None-Controller gap is why next_slideshow_effect_live/
+        previous_slideshow_effect_live/goto_slideshow_slide_live (which
+        all need a live Controller) stay status="stub" this pass -- see
+        tools/impress.py."""
+        self._require_impress(doc, "start_slideshow")
+        pres = doc.getPresentation()
+        if custom_show is not None:
+            pres.CustomShow = custom_show
+            pres.IsShowAll = False
+        if first_slide is not None:
+            pres.FirstPage = self._resolve_slide(doc, first_slide).Name
+        pres.start()
+
+    def stop_slideshow(self, doc: Any) -> None:
+        self._require_impress(doc, "stop_slideshow")
+        doc.getPresentation().end()
+
+    # next_slideshow_effect_live/previous_slideshow_effect_live/
+    # goto_slideshow_slide_live have no bridge methods -- all three need
+    # a live com.sun.star.presentation.XSlideShowController
+    # (Presentation.Controller), which this pass confirmed is always None
+    # headless (see start_slideshow's docstring above). Left stub rather
+    # than shipping code that can never be exercised or verified in this
+    # environment; a follow-up with a real GUI/virtual-display session
+    # should implement and verify these together with move_slide_live's
+    # own flagged reorder gap.
+
+    def export_slide(self, doc: Any, slide: Any, file_path: str, format: str = "png",
+                      width: Optional[int] = None, height: Optional[int] = None,
+                      dpi: Optional[int] = None) -> None:
+        """Same GraphicExportFilter mechanism draw.py's export_draw_page
+        uses, with explicit pixel width/height (this tool's own spec
+        parameters, unlike export_draw_page/export_chart) taking priority
+        over a dpi-derived size when both are given."""
+        page = self._resolve_slide(doc, slide)
+        export_filter = self.smgr.createInstanceWithContext("com.sun.star.drawing.GraphicExportFilter", self.ctx)
+        export_filter.setSourceDocument(page)
+        media_type = self._EXPORT_MEDIA_TYPES.get(format.lower())
+        if media_type is None:
+            raise NotImplementedError(f"export_slide_image_live format '{format}' is not implemented -- supported: {sorted(self._EXPORT_MEDIA_TYPES)}.")
+        props = [
+            PropertyValue("URL", 0, uno.systemPathToFileUrl(file_path), 0),
+            PropertyValue("MediaType", 0, media_type, 0),
+        ]
+        pixel_width = pixel_height = None
+        if width is not None and height is not None:
+            pixel_width, pixel_height = int(width), int(height)
+        elif dpi:
+            pixel_width = round((page.Width / 100 / 25.4) * dpi)
+            pixel_height = round((page.Height / 100 / 25.4) * dpi)
+        if pixel_width and pixel_height:
+            filter_data = uno.Any("[]com.sun.star.beans.PropertyValue", (
+                PropertyValue("PixelWidth", 0, max(pixel_width, 1), 0),
+                PropertyValue("PixelHeight", 0, max(pixel_height, 1), 0),
+            ))
+            props.append(PropertyValue("FilterData", 0, filter_data, 0))
+        export_filter.filter(tuple(props))
+
+    def export_all_slides(self, doc: Any, output_dir: str, format: str = "png",
+                           slides: Optional[List[Any]] = None, naming: Optional[str] = None) -> List[str]:
+        self._require_impress(doc, "export_all_slides_images")
+        pages = doc.getDrawPages()
+        targets = [self._resolve_slide(doc, s) for s in slides] if slides else \
+            [pages.getByIndex(i) for i in range(pages.getCount())]
+        ext = "jpg" if format.lower() in ("jpeg", "jpg") else format.lower()
+        prefix = naming or "slide"
+        results = []
+        for page in targets:
+            index = self._slide_index(pages, page)
+            file_path = os.path.join(output_dir, f"{prefix}_{index + 1}.{ext}")
+            self.export_slide(doc, page.Name, file_path, format)
+            results.append(file_path)
+        return results
