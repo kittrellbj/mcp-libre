@@ -1,11 +1,11 @@
 Version 1.0.0 - Initial Release
 
-- Embedded MCP server functionality within LibreOffice
+- LibreOffice-native HTTP tool bridge designed for MCP integration (custom REST API, not native MCP JSON-RPC)
 - Real-time document manipulation capabilities
 - HTTP API for external AI assistant connections
-- Support for Writer, Calc, and Impress documents
+- General document lifecycle support (create/open/save/export) across Writer, Calc, Impress, and Draw, plus a Writer-focused live editing surface
 - Direct UNO API integration for optimal performance
-- Compatible with Claude Desktop and other MCP clients
+- Trusted-localhost-only HTTP interface with no authentication; pairing with an MCP client requires an MCP-to-REST adapter
 
 Breaking Changes:
 - This is the initial release, no breaking changes
@@ -22,8 +22,8 @@ Bug Fixes:
 - N/A (initial release)
 
 Known Issues:
-- Extension requires LibreOffice 7.0 or higher
-- HTTP server starts automatically on localhost:8765
+- Tested on LibreOffice 24.2 and later
+- HTTP server must be started manually from Tools > MCP Server > Start MCP Server; it does not auto-start with LibreOffice
 
 For support and documentation, visit:
-https://github.com/yourusername/mcp-libre
+https://github.com/kittrellbj/mcp-libre

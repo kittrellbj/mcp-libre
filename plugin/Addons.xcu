@@ -114,7 +114,7 @@
                     <value xml:lang="en-US">MCP Extension Help</value>
                 </prop>
                 <prop oor:name="URL" oor:type="xs:string">
-                    <value>https://github.com/yourusername/mcp-libre</value>
+                    <value>https://github.com/kittrellbj/mcp-libre</value>
                 </prop>
                 <prop oor:name="Target" oor:type="xs:string">
                     <value>_blank</value>

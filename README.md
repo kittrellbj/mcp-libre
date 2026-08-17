@@ -41,7 +41,7 @@ Benefits:
 - Immediate visual feedback in LibreOffice
 - No document reload cycle for edits
 - Direct UNO API access
-- Support for multiple open LibreOffice documents
+- Enumerates all open documents; v1.0.0 editing operations target the active document
 - Local-only HTTP interface
 - Tools menu controls for starting, stopping, restarting, and checking the MCP server
 
@@ -124,7 +124,7 @@ Required:
 Clone this fork:
 
 ```bash
-git clone https://github.com/YOUR_GITHUB_USERNAME/mcp-libre.git
+git clone https://github.com/kittrellbj/mcp-libre.git
 cd mcp-libre
 ```
 
@@ -157,8 +157,9 @@ Adjust the LibreOffice path if your installation is located elsewhere.
 PowerShell example:
 
 ```powershell
+$RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
 & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension
-& "E:\LibreOffice\program\unopkg.com" add "E:\Tools\mcp-libre\build\libreoffice-mcp-extension-1.0.0.oxt"
+& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-1.0.0.oxt"
 ```
 
 Removing an extension that is not already installed may report that no matching extension exists. That is harmless.
@@ -208,7 +209,8 @@ A healthy server should return JSON from both endpoints.
 A convenient rebuild/reinstall command in PowerShell is:
 
 ```powershell
-python "E:\Tools\mcp-libre\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "E:\Tools\mcp-libre\build\libreoffice-mcp-extension-1.0.0.oxt"
+$RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
+python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-1.0.0.oxt"
 ```
 
 Then reopen LibreOffice and start the MCP server from the Tools menu.
@@ -217,7 +219,7 @@ For console logging:
 
 ```powershell
 & "E:\LibreOffice\program\soffice.com" --writer 2>&1 |
-    Tee-Object -FilePath "E:\Tools\mcp-libre\libreoffice-mcp.log"
+    Tee-Object -FilePath "$RepoDir\libreoffice-mcp.log"
 ```
 
 ---
@@ -778,7 +780,7 @@ For Windows native extension changes, verify at minimum:
 
 ## v1.0.0
 
-First working Windows native extension baseline.
+Known-working Windows native extension baseline, validated end-to-end on Windows.
 
 Includes:
 

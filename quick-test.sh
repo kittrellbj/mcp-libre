@@ -67,7 +67,7 @@ check_status() {
         echo "✅ LibreOffice found: $(libreoffice --version | head -1)"
     else
         echo "❌ LibreOffice not found in PATH"
-        echo "   Please install LibreOffice 7.0 or higher"
+        echo "   Please install LibreOffice (tested on 24.2 and later)"
         return 1
     fi
     

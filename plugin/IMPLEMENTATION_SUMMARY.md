@@ -3,10 +3,10 @@
 ## ✅ What We've Built
 
 ### **Complete LibreOffice Extension**
-- **Native MCP Server Integration**: Embedded MCP server running directly inside LibreOffice
-- **Direct UNO API Access**: 10x performance improvement over external server
+- **LibreOffice-Native HTTP Tool Bridge**: Designed for MCP integration, running directly inside LibreOffice (custom REST API, not native MCP JSON-RPC)
+- **Direct UNO API Access**: Plausibly faster than the external server's subprocess/file round-tripping (no benchmark numbers published)
 - **Real-time Document Manipulation**: Live editing with instant visual feedback
-- **HTTP API Interface**: External AI assistant connectivity on localhost:8765
+- **HTTP API Interface**: External AI assistant connectivity on localhost:8765, trusted-localhost-only with no authentication
 
 ### **Core Architecture**
 ```
@@ -19,7 +19,7 @@ AI Assistant → HTTP API (localhost:8765) → LibreOffice Plugin → UNO API �
 - Direct integration with LibreOffice UNO API
 - Document creation, text insertion, formatting
 - Save/export functionality
-- Multi-document support
+- Enumerates all open documents; editing operations target the active document
 
 #### 2. **Embedded MCP Server** (`pythonpath/mcp_server.py`)
 - All MCP tools ported to use UNO API
@@ -33,7 +33,7 @@ AI Assistant → HTTP API (localhost:8765) → LibreOffice Plugin → UNO API �
 
 #### 4. **Extension Registration** (`pythonpath/registration.py`)
 - LibreOffice extension lifecycle management
-- Auto-start functionality
+- Manual start via Tools → MCP Server → Start MCP Server (does not auto-start with LibreOffice)
 - Menu integration
 
 #### 5. **LibreOffice Integration**
@@ -48,11 +48,11 @@ AI Assistant → HTTP API (localhost:8765) → LibreOffice Plugin → UNO API �
 | `create_document_live` | Create documents in LibreOffice | Instant GUI appearance |
 | `insert_text_live` | Insert text at cursor/position | Real-time visual updates |
 | `format_text_live` | Apply formatting to selected text | Live formatting preview |
-| `get_document_info_live` | Get active document information | Multi-document support |
+| `get_document_info_live` | Get active document information | Targets the active document |
 | `get_text_content_live` | Extract text from active document | Direct memory access |
 | `save_document_live` | Save active document | No file I/O overhead |
 | `export_document_live` | Export to PDF/DOCX/etc. | Instant export |
-| `list_open_documents` | List all open documents | NEW - Multi-doc support |
+| `list_open_documents` | List all open documents | NEW - enumeration of open documents |
 
 ### **Installation & Management**
 
@@ -72,7 +72,7 @@ cd plugin/
 ### **AI Assistant Integration**
 
 #### **Direct HTTP API**
-- **Claude Desktop**: HTTP-based MCP client configuration
+- **Claude Desktop**: not yet functional against this REST API without an MCP-to-REST adapter or a real Streamable HTTP MCP endpoint; use the external server (`src/libremcp.py`) for working Claude Desktop integration today
 - **Super Assistant**: Direct connection (no proxy needed)
 - **Custom Clients**: RESTful API on localhost:8765
 
@@ -97,7 +97,7 @@ curl -X POST http://localhost:8765/tools/insert_text_live \
 | **Performance** | File I/O based | Memory operations |
 | **Real-time Updates** | File-based | Live object manipulation |
 | **Visual Feedback** | None | Instant GUI updates |
-| **Multi-document** | File operations | All open documents |
+| **Multi-document** | File operations | Enumerates all open documents; edits target the active one |
 | **Startup Time** | LibreOffice launch | Already running |
 | **Advanced Features** | Limited | Full LibreOffice access |
 | **Integration** | External tool | Native extension |
@@ -131,10 +131,10 @@ plugin/
 ## 🎯 Benefits Achieved
 
 ### **For Users**
-- **Dramatically Improved Performance**: 10x faster document operations
+- **Improved Performance**: direct UNO access is plausibly faster than the external server's subprocess/file round-tripping
 - **Real-time Visual Feedback**: See AI changes instantly in LibreOffice
 - **Native Experience**: Integrated LibreOffice functionality
-- **Multi-document Workflow**: Work with all open documents
+- **Multi-document Awareness**: Enumerate all open documents; editing operations target the active one
 - **Professional Installation**: Standard extension format
 
 ### **For Developers**
@@ -145,8 +145,8 @@ plugin/
 - **Comprehensive Testing**: Automated test suite
 
 ### **For AI Assistants**
-- **Simple HTTP API**: RESTful interface on localhost:8765
-- **Rich Functionality**: All MCP tools with enhanced capabilities
+- **Simple HTTP API**: RESTful interface on localhost:8765 (not native MCP JSON-RPC; requires an MCP-to-REST adapter to use from an MCP client)
+- **Rich Functionality**: Document lifecycle tools across Writer, Calc, Impress, and Draw, plus a Writer-focused live editing surface
 - **Real-time Operations**: Live document manipulation
 - **Multi-client Support**: Concurrent AI assistant connections
 
@@ -159,8 +159,8 @@ plugin/
 4. **Enhanced Features**: New capabilities only available in plugin
 
 ### **Migration Benefits**
-- **Performance**: 10x improvement in document operations
-- **Features**: Real-time editing and multi-document support
+- **Performance**: direct UNO access is plausibly faster than subprocess/file round-tripping
+- **Features**: Real-time editing and multi-document enumeration (edits still target the active document)
 - **Reliability**: Direct API access (no subprocess overhead)
 - **Integration**: Native LibreOffice menu controls
 
@@ -182,7 +182,7 @@ This implementation represents a **major evolution** of the LibreOffice MCP proj
 
 ### **From Single → Multi-document**
 - **Before**: One document at a time via file paths
-- **After**: All open documents simultaneously
+- **After**: Enumerates all open documents; editing operations still target the active document
 
 ## 🚀 Future Possibilities
 
@@ -211,9 +211,9 @@ The plugin architecture opens up exciting new possibilities:
 We've successfully transformed the LibreOffice MCP project from an external tool into a **professional, high-performance LibreOffice extension** that provides:
 
 ✅ **Native Integration**: First-class LibreOffice functionality  
-✅ **Superior Performance**: 10x improvement over external server  
+✅ **Improved Performance**: direct UNO access, plausibly faster than the external server's subprocess/file round-tripping  
 ✅ **Real-time Capabilities**: Live document editing with visual feedback  
-✅ **Advanced Features**: Full UNO API access and multi-document support  
+✅ **Advanced Features**: Full UNO API access, document enumeration, and active-document live editing  
 ✅ **Professional Packaging**: Standard extension format  
 ✅ **Easy Installation**: Automated setup and testing  
 ✅ **Comprehensive Documentation**: Complete user and developer guides  
