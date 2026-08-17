@@ -91,7 +91,8 @@ mcp-libre/
 │   ├── QUICK_START.md              # Quick start guide
 │   ├── REPOSITORY_STRUCTURE.md     # This file
 │   ├── SUPER_ASSISTANT_SETUP.md    # Super Assistant setup guide
-│   └── TROUBLESHOOTING.md          # Troubleshooting guide
+│   ├── TROUBLESHOOTING.md          # Troubleshooting guide
+│   └── WRITERAGENT_COMPARISON_MATRIX.md # WriterAgent-better/ours-better/both/neither matrix + spec-gap list
 ├── 📄 README.md                    # Main project documentation
 ├── 📄 LICENSE                      # MIT License
 ├── 📄 pyproject.toml               # Python project configuration

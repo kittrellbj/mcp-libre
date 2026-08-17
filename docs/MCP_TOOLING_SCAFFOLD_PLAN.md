@@ -776,6 +776,22 @@ not a JSON-RPC error -- confirms the two-layer model), unknown method
 **Testing:** `tests/test_mcp_jsonrpc.py`, 22 new tests. 212/212 passing
 under `pytest` across the full relevant suite (190 prior + 22 new).
 
+## WriterAgent comparison matrix
+
+Closes Brian's original 8-item WriterAgent request, items 1/2/6: see
+`docs/WRITERAGENT_COMPARISON_MATRIX.md` for the full WriterAgent-better/
+ours-better/both/neither/unknown table across Writer, Calc, Impress,
+Draw, runtime/lifecycle, multi-doc targeting, MCP transport, security,
+undo/batching, object identity, and testing -- plus a standalone,
+confidence-graded list of WriterAgent capabilities absent from the spec
+document itself (vision/screenshot understanding, embeddings/RAG over
+document content, a notebook-cell interface, and a Calc analysis engine
+-- DuckDB, symbolic math, forecasting, solver/optimization -- are the
+high-confidence findings). Widest deltas: WriterAgent's MCP transport is
+production-hardened where `mcp-libre`'s is a correct first pass (no
+concurrency control yet); `mcp-libre`'s undo-context transactions are a
+real capability WriterAgent's simple shared-stack undo doesn't have.
+
 ## What was built
 
 **Shared plumbing (`plugin/pythonpath/tools/`):**
