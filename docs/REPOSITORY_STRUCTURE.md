@@ -29,7 +29,7 @@ mcp-libre/
 │   │       ├── core_runtime.py     # Phase A, IMPLEMENTED: discovery/capability/profile/diagnostics tools
 │   │       ├── document_lifecycle.py # Phase A, IMPLEMENTED: open/save/convert/properties tools
 │   │       ├── undo_view_selection.py # Phase A, 12/14 IMPLEMENTED: undo/redo/view/zoom/selection/locking (document-events pair still stub)
-│   │       ├── styles.py           # Phase A, stub: style family/apply/formatting tools
+│   │       ├── styles.py           # Phase A, IMPLEMENTED: style family/apply/formatting tools
 │   │       ├── writer_text.py      # Phase B, stub: paragraph/character editing, regex find/replace, comments
 │   │       ├── writer_layout.py    # Phase B, stub: page layout, headers/footers, fields, bookmarks, indexes
 │   │       ├── writer_tables.py    # Phase B, stub: tables, sections, footnotes/endnotes, content controls, mail merge
@@ -60,6 +60,7 @@ mcp-libre/
 │   ├── test_core_runtime.py        # core_runtime.py's 12 implemented tools, tested against fakes
 │   ├── test_document_lifecycle.py  # document_lifecycle.py's 22 implemented tools, tested against fakes
 │   ├── test_undo_view_selection.py # undo_view_selection.py's 12 implemented tools, tested against fakes
+│   ├── test_styles.py              # styles.py's 12 implemented tools, tested against fakes
 │   ├── test_uno_datetime.py        # DateTime-to-ISO conversion unit tests (no live LibreOffice needed)
 │   └── test_host_trust.py          # Host/Origin trust check unit tests (no live LibreOffice needed)
 ├── 📁 examples/                    # Demo and example scripts

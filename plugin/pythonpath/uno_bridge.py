@@ -830,6 +830,266 @@ class UNOBridge:
         this as a nesting count, not a boolean."""
         doc.unlockControllers()
 
+    # -- Styles and formatting -----------------------------------------
+
+    # Family -> UNO service name, for creating a brand-new style instance
+    # via doc.createInstance(). Only these 6 families are covered this
+    # pass (reasonably well-established UNO service names); an
+    # unrecognized family raises NotImplementedError rather than guessing.
+    _STYLE_FAMILY_SERVICES = {
+        "ParagraphStyles": "com.sun.star.style.ParagraphStyle",
+        "CharacterStyles": "com.sun.star.style.CharacterStyle",
+        "PageStyles": "com.sun.star.style.PageStyle",
+        "FrameStyles": "com.sun.star.style.FrameStyle",
+        "NumberingStyles": "com.sun.star.style.NumberingStyle",
+        "CellStyles": "com.sun.star.style.CellStyle",
+    }
+
+    # Family -> the text-range property that actually applies a style of
+    # that family. Only Writer's two most common families are covered
+    # this pass (high-confidence UNO property names, live-verified);
+    # apply_style for any other family raises UNSUPPORTED_CAPABILITY
+    # rather than guessing at a property name that could silently apply
+    # the wrong thing.
+    _STYLE_FAMILY_APPLY_PROPERTY = {
+        "ParagraphStyles": "ParaStyleName",
+        "CharacterStyles": "CharStyleName",
+    }
+
+    def _get_style_family(self, doc: Any, family: str) -> Any:
+        """Return the XNameContainer for one style family via XStyleFamiliesSupplier.
+
+        Raises:
+            KeyError: `family` isn't a family this document has.
+        """
+        families = doc.getStyleFamilies()
+        if not families.hasByName(family):
+            raise KeyError(f"No such style family '{family}'. Available: {sorted(families.getElementNames())}")
+        return families.getByName(family)
+
+    def list_style_families(self, doc: Any) -> Dict[str, Any]:
+        return {"families": sorted(doc.getStyleFamilies().getElementNames())}
+
+    def list_styles(self, doc: Any, family: str) -> Dict[str, Any]:
+        family_container = self._get_style_family(doc, family)
+        styles = []
+        for i in range(family_container.getCount()):
+            style = family_container.getByIndex(i)
+            styles.append({
+                "name": style.Name,
+                "is_user_defined": style.isUserDefined() if hasattr(style, "isUserDefined") else None,
+                "is_in_use": style.isInUse() if hasattr(style, "isInUse") else None,
+            })
+        return {"family": family, "styles": styles}
+
+    def get_style(self, doc: Any, family: str, style_name: str) -> Dict[str, Any]:
+        family_container = self._get_style_family(doc, family)
+        if not family_container.hasByName(style_name):
+            raise KeyError(f"No such style '{style_name}' in family '{family}'.")
+        style = family_container.getByName(style_name)
+        return {
+            "name": style.Name,
+            "parent_style": getattr(style, "ParentStyle", None) or None,
+            "is_user_defined": style.isUserDefined() if hasattr(style, "isUserDefined") else None,
+            "is_in_use": style.isInUse() if hasattr(style, "isInUse") else None,
+        }
+
+    def create_style(self, doc: Any, family: str, style_name: str, parent_style: Optional[str] = None,
+                      properties: Optional[Dict[str, Any]] = None) -> List[str]:
+        """Create a user style. Returns the list of `properties` keys actually applied."""
+        family_container = self._get_style_family(doc, family)
+        if family_container.hasByName(style_name):
+            raise FileExistsError(f"Style '{style_name}' already exists in family '{family}'.")
+        service_name = self._STYLE_FAMILY_SERVICES.get(family)
+        if service_name is None:
+            raise NotImplementedError(f"create_style is not implemented for family '{family}'.")
+        new_style = doc.createInstance(service_name)
+        family_container.insertByName(style_name, new_style)
+        if parent_style:
+            new_style.ParentStyle = parent_style
+        applied = []
+        for key, value in (properties or {}).items():
+            try:
+                new_style.setPropertyValue(key, value)
+                applied.append(key)
+            except Exception:
+                pass
+        return applied
+
+    def clone_style(self, doc: Any, family: str, source_style: str, new_style_name: str) -> None:
+        """Clone an existing style: create new_style_name in the same family
+        with the same parent, then copy every directly-set (non-default,
+        non-readonly) property value from the source."""
+        family_container = self._get_style_family(doc, family)
+        if not family_container.hasByName(source_style):
+            raise KeyError(f"No such style '{source_style}' in family '{family}'.")
+        if family_container.hasByName(new_style_name):
+            raise FileExistsError(f"Style '{new_style_name}' already exists in family '{family}'.")
+        service_name = self._STYLE_FAMILY_SERVICES.get(family)
+        if service_name is None:
+            raise NotImplementedError(f"clone_style is not implemented for family '{family}'.")
+
+        source = family_container.getByName(source_style)
+        clone = doc.createInstance(service_name)
+        family_container.insertByName(new_style_name, clone)
+        if getattr(source, "ParentStyle", None):
+            clone.ParentStyle = source.ParentStyle
+
+        info = source.getPropertySetInfo()
+        for prop in info.getProperties():
+            try:
+                if source.getPropertyState(prop.Name) != uno.Enum("com.sun.star.beans.PropertyState", "DIRECT_VALUE"):
+                    continue
+                clone.setPropertyValue(prop.Name, source.getPropertyValue(prop.Name))
+            except Exception:
+                continue
+
+    def update_style(self, doc: Any, family: str, style_name: str, properties: Dict[str, Any]) -> List[str]:
+        """Update style properties. Returns the list of keys actually applied."""
+        family_container = self._get_style_family(doc, family)
+        if not family_container.hasByName(style_name):
+            raise KeyError(f"No such style '{style_name}' in family '{family}'.")
+        style = family_container.getByName(style_name)
+        applied = []
+        for key, value in properties.items():
+            try:
+                style.setPropertyValue(key, value)
+                applied.append(key)
+            except Exception:
+                pass
+        return applied
+
+    def rename_style(self, doc: Any, family: str, old_name: str, new_name: str) -> None:
+        family_container = self._get_style_family(doc, family)
+        if not family_container.hasByName(old_name):
+            raise KeyError(f"No such style '{old_name}' in family '{family}'.")
+        if family_container.hasByName(new_name):
+            raise FileExistsError(f"A style named '{new_name}' already exists in family '{family}'.")
+        style = family_container.getByName(old_name)
+        if not hasattr(style, "setName"):
+            raise NotImplementedError(f"Styles in family '{family}' do not support renaming.")
+        style.setName(new_name)
+
+    def delete_style(self, doc: Any, family: str, style_name: str) -> None:
+        family_container = self._get_style_family(doc, family)
+        if not family_container.hasByName(style_name):
+            raise KeyError(f"No such style '{style_name}' in family '{family}'.")
+        style = family_container.getByName(style_name)
+        if hasattr(style, "isUserDefined") and not style.isUserDefined():
+            raise ValueError(f"'{style_name}' is a built-in style and cannot be deleted.")
+        family_container.removeByName(style_name)
+
+    def _resolve_text_target(self, doc: Any, target: Optional[Any]) -> Any:
+        """Resolve `target` to a Writer text range.
+
+        target=None -> the first range of the current selection.
+        target={"start": int, "end": int} -> a 0-based character range,
+        built the same way select_text_range() already does.
+
+        This is the concrete resolution chosen for apply_style_live/
+        get_direct_formatting_live/clear_direct_formatting_live/
+        copy_formatting_live's previously-undecided `target` shape --
+        Writer text ranges only this pass; other document types raise
+        WRONG_DOCUMENT_TYPE via the caller's _get_document_type check.
+        """
+        if target is None:
+            controller = self._get_controller(doc)
+            selection = controller.getSelection()
+            if selection is None or not hasattr(selection, "getCount") or selection.getCount() == 0:
+                raise ValueError("No current selection and no target given.")
+            return selection.getByIndex(0)
+        if isinstance(target, dict) and "start" in target and "end" in target:
+            start, end = target["start"], target["end"]
+            if start < 0 or end < start:
+                raise ValueError(f"Invalid target range: start={start}, end={end}")
+            text = doc.getText()
+            cursor = text.createTextCursor()
+            cursor.gotoStart(False)
+            if start > 0:
+                cursor.goRight(start, False)
+            length = end - start
+            if length > 0:
+                cursor.goRight(length, True)
+            return cursor
+        raise ValueError("target must be omitted (use current selection) or {'start': int, 'end': int}.")
+
+    def apply_style(self, doc: Any, family: str, style_name: str, target: Optional[Any] = None) -> None:
+        doc_type = self._get_document_type(doc)
+        if doc_type != "writer":
+            raise NotImplementedError(f"apply_style is only implemented for Writer documents this pass, not '{doc_type}'.")
+        family_container = self._get_style_family(doc, family)
+        if not family_container.hasByName(style_name):
+            raise KeyError(f"No such style '{style_name}' in family '{family}'.")
+        apply_property = self._STYLE_FAMILY_APPLY_PROPERTY.get(family)
+        if apply_property is None:
+            raise NotImplementedError(f"apply_style is not implemented for family '{family}'.")
+        text_range = self._resolve_text_target(doc, target)
+        text_range.setPropertyValue(apply_property, style_name)
+
+    def get_direct_formatting(self, doc: Any, target: Optional[Any] = None) -> Dict[str, Any]:
+        """Return every property whose PropertyState is DIRECT_VALUE on the
+        target text range.
+
+        Scope note: Writer text ranges implement both CharacterProperties
+        and ParagraphProperties, so this can include structural/paragraph-
+        level properties (e.g. ParaStyleName, PageStyleName) alongside
+        genuine direct character-formatting overrides -- not filtered down
+        to a curated "formatting-only" subset, just JSON-safe DIRECT_VALUE
+        properties. Object-reference properties (e.g. a paragraph's own
+        TextParagraph self-reference) are excluded via _is_json_safe
+        rather than dumped as an opaque repr string.
+        """
+        doc_type = self._get_document_type(doc)
+        if doc_type != "writer":
+            raise NotImplementedError(f"get_direct_formatting is only implemented for Writer documents this pass, not '{doc_type}'.")
+        text_range = self._resolve_text_target(doc, target)
+        direct_value = uno.Enum("com.sun.star.beans.PropertyState", "DIRECT_VALUE")
+        overrides = {}
+        for prop in text_range.getPropertySetInfo().getProperties():
+            try:
+                if text_range.getPropertyState(prop.Name) != direct_value:
+                    continue
+                plain_value = self._uno_value_to_plain(text_range.getPropertyValue(prop.Name))
+                if self._is_json_safe(plain_value):
+                    overrides[prop.Name] = plain_value
+            except Exception:
+                continue
+        return {"direct_formatting": overrides}
+
+    def clear_direct_formatting(self, doc: Any, target: Optional[Any] = None) -> None:
+        doc_type = self._get_document_type(doc)
+        if doc_type != "writer":
+            raise NotImplementedError(f"clear_direct_formatting is only implemented for Writer documents this pass, not '{doc_type}'.")
+        text_range = self._resolve_text_target(doc, target)
+        if not hasattr(text_range, "setAllPropertiesToDefault"):
+            raise NotImplementedError("This target does not support clearing direct formatting (XMultiPropertyStates).")
+        text_range.setAllPropertiesToDefault()
+
+    def copy_formatting(self, doc: Any, source: Any, target: Any, include: Optional[List[str]] = None) -> List[str]:
+        """Copy every directly-set (non-default) property from source to
+        target. Returns the list of property names actually copied."""
+        doc_type = self._get_document_type(doc)
+        if doc_type != "writer":
+            raise NotImplementedError(f"copy_formatting is only implemented for Writer documents this pass, not '{doc_type}'.")
+        source_range = self._resolve_text_target(doc, source)
+        target_range = self._resolve_text_target(doc, target)
+        direct_value = uno.Enum("com.sun.star.beans.PropertyState", "DIRECT_VALUE")
+        applied = []
+        for prop in source_range.getPropertySetInfo().getProperties():
+            if include and prop.Name not in include:
+                continue
+            try:
+                if source_range.getPropertyState(prop.Name) != direct_value:
+                    continue
+                value = source_range.getPropertyValue(prop.Name)
+                if not self._is_json_safe(self._uno_value_to_plain(value)):
+                    continue  # skip object-reference properties (e.g. TextParagraph self-reference)
+                target_range.setPropertyValue(prop.Name, value)
+                applied.append(prop.Name)
+            except Exception:
+                continue
+        return applied
+
     def refresh_document(self, doc: Any) -> None:
         """Refresh fields/links/data via XRefreshable, where the document type supports it."""
         if not hasattr(doc, "refresh"):
@@ -987,6 +1247,23 @@ class UNOBridge:
         if hasattr(value, "Width") and hasattr(value, "Height"):
             return {"width": value.Width, "height": value.Height}
         return value
+
+    @staticmethod
+    def _is_json_safe(value: Any) -> bool:
+        """True if `value` is a plain type json.dumps can serialize without
+        falling back to ai_interface.py's json.dumps(default=str) -- which
+        would silently dump a UNO object reference's opaque repr string
+        (live-verified this happening for a Writer paragraph's
+        TextParagraph property, a self-reference to the paragraph object
+        itself, when enumerating all properties on a text range).
+        """
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return True
+        if isinstance(value, (list, tuple)):
+            return all(UNOBridge._is_json_safe(v) for v in value)
+        if isinstance(value, dict):
+            return all(isinstance(k, str) and UNOBridge._is_json_safe(v) for k, v in value.items())
+        return False
 
     def get_print_settings(self, doc: Any) -> Dict[str, Any]:
         printer_props = doc.getPrinter()

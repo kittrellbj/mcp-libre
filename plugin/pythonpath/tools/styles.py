@@ -1,22 +1,44 @@
 """
-Phase A scaffold: Styles and formatting infrastructure.
+Styles and formatting infrastructure -- real implementation.
 
 Source: LibreOffice_MCP_Complete_Tooling_Specification.md, section
 "Styles and formatting infrastructure" (scope: Writer, Calc, Impress, Draw;
 partial Base).
 
-UNO basis per spec: XStyleFamiliesSupplier, StyleFamilies, PageStyle/
-PageProperties, character/paragraph/cell/graphic styles. `target` in
-apply_style_live/get_direct_formatting_live/etc. is left untyped
-(Any/Optional[str]) pending a decision on the shared "target selector"
-shape used across the whole catalog (current selection vs. an explicit
-range/object id) -- see docs/MCP_TOOLING_SCAFFOLD_PLAN.md, flagged for
-Morgan.
+All 12 tools are real (status="implemented"), following the same pattern
+as core_runtime.py/document_lifecycle.py/undo_view_selection.py:
+tools.context.get_context() for live UNOBridge/DocumentRegistry/
+RuntimeState, _resolve_and_register/_error_response reused from
+document_lifecycle.py. Only list_style_families_live takes an optional
+document_id per the spec's own parameter list -- every other tool here
+always resolves the active document (matching spec exactly, same
+precedent as e.g. document_lifecycle.py's save_as_document_live/
+print_document_live).
+
+Family/style CRUD (list_style_families_live, list_styles_live,
+get_style_live, create_style_live, clone_style_live, update_style_live,
+rename_style_live, delete_style_live) works across any document type that
+implements XStyleFamiliesSupplier (Writer/Calc/Impress/Draw all do) --
+create/clone are limited to the 6 families UNOBridge._STYLE_FAMILY_SERVICES
+covers; an unrecognized family raises UNSUPPORTED_CAPABILITY rather than
+guessing at a UNO service name.
+
+`target` resolution (previously left undecided, flagged for Morgan in an
+earlier pass) is now concretely resolved for apply_style_live/
+get_direct_formatting_live/clear_direct_formatting_live/
+copy_formatting_live: omitted means the current selection; an explicit
+{"start": int, "end": int} means a 0-based Writer character range (the
+same convention the existing select_text_range_live legacy tool uses).
+These four tools are Writer-only this pass -- see
+UNOBridge._resolve_text_target's docstring; other document types raise
+UNSUPPORTED_CAPABILITY via NotImplementedError.
 """
 
 from typing import Any, Dict, List, Optional
 
+from . import context
 from . import envelope
+from .document_lifecycle import _error_response, _resolve_and_register
 from .registry import register_tool, schema
 
 
@@ -25,10 +47,17 @@ from .registry import register_tool, schema
     priority="P1",
     purpose="List style families supported by the active document.",
     parameters=schema({"document_id": {"type": "string"}}),
+    status="implemented",
 )
 def list_style_families_live(document_id: Optional[str] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("list_style_families_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx, document_id)
+        result = ctx.uno_bridge.list_style_families(doc)
+        return envelope.build_success(result=result, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start, document_id=document_id)
 
 
 @register_tool(
@@ -36,10 +65,17 @@ def list_style_families_live(document_id: Optional[str] = None) -> Dict[str, Any
     priority="P1",
     purpose="List styles in a family with user-defined/in-use flags.",
     parameters=schema({"family": {"type": "string"}}, required=["family"]),
+    status="implemented",
 )
 def list_styles_live(family: str) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("list_styles_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        result = ctx.uno_bridge.list_styles(doc, family)
+        return envelope.build_success(result=result, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -50,10 +86,17 @@ def list_styles_live(family: str) -> Dict[str, Any]:
         "family": {"type": "string"},
         "style_name": {"type": "string"},
     }, required=["family", "style_name"]),
+    status="implemented",
 )
 def get_style_live(family: str, style_name: str) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("get_style_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        result = ctx.uno_bridge.get_style(doc, family, style_name)
+        return envelope.build_success(result=result, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -66,11 +109,24 @@ def get_style_live(family: str, style_name: str) -> Dict[str, Any]:
         "parent_style": {"type": "string"},
         "properties": {"type": "object"},
     }, required=["family", "style_name"]),
+    status="implemented",
 )
 def create_style_live(family: str, style_name: str, parent_style: Optional[str] = None,
                        properties: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("create_style_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        applied = ctx.uno_bridge.create_style(doc, family, style_name, parent_style=parent_style, properties=properties)
+        requested = set((properties or {}).keys())
+        skipped = sorted(requested - set(applied))
+        warnings = [f"Ignored unknown/unsettable property field(s): {skipped}"] if skipped else []
+        return envelope.build_success(
+            result={"created": style_name, "applied_properties": applied}, document_id=resolved_id,
+            warnings=warnings, elapsed_ms=envelope.elapsed_ms_since(start),
+        )
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -82,10 +138,17 @@ def create_style_live(family: str, style_name: str, parent_style: Optional[str] 
         "source_style": {"type": "string"},
         "new_style": {"type": "string"},
     }, required=["family", "source_style", "new_style"]),
+    status="implemented",
 )
 def clone_style_live(family: str, source_style: str, new_style: str) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("clone_style_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        ctx.uno_bridge.clone_style(doc, family, source_style, new_style)
+        return envelope.build_success(result={"cloned": new_style, "from": source_style}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -97,10 +160,22 @@ def clone_style_live(family: str, source_style: str, new_style: str) -> Dict[str
         "style_name": {"type": "string"},
         "properties": {"type": "object"},
     }, required=["family", "style_name", "properties"]),
+    status="implemented",
 )
 def update_style_live(family: str, style_name: str, properties: Dict[str, Any]) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("update_style_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        applied = ctx.uno_bridge.update_style(doc, family, style_name, properties)
+        skipped = sorted(set(properties) - set(applied))
+        warnings = [f"Ignored unknown/unsettable property field(s): {skipped}"] if skipped else []
+        return envelope.build_success(
+            result={"applied": applied}, document_id=resolved_id, warnings=warnings,
+            elapsed_ms=envelope.elapsed_ms_since(start),
+        )
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -112,10 +187,17 @@ def update_style_live(family: str, style_name: str, properties: Dict[str, Any]) 
         "old_name": {"type": "string"},
         "new_name": {"type": "string"},
     }, required=["family", "old_name", "new_name"]),
+    status="implemented",
 )
 def rename_style_live(family: str, old_name: str, new_name: str) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("rename_style_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        ctx.uno_bridge.rename_style(doc, family, old_name, new_name)
+        return envelope.build_success(result={"renamed_to": new_name}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -126,10 +208,17 @@ def rename_style_live(family: str, old_name: str, new_name: str) -> Dict[str, An
         "family": {"type": "string"},
         "style_name": {"type": "string"},
     }, required=["family", "style_name"]),
+    status="implemented",
 )
 def delete_style_live(family: str, style_name: str) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("delete_style_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        ctx.uno_bridge.delete_style(doc, family, style_name)
+        return envelope.build_success(result={"deleted": style_name}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -139,34 +228,55 @@ def delete_style_live(family: str, style_name: str) -> Dict[str, Any]:
     parameters=schema({
         "family": {"type": "string"},
         "style_name": {"type": "string"},
-        "target": {"description": "Current selection when omitted; otherwise an explicit range/object selector."},
+        "target": {"description": "Current selection when omitted; otherwise {'start': int, 'end': int} for a 0-based Writer character range."},
     }, required=["family", "style_name"]),
+    status="implemented",
 )
 def apply_style_live(family: str, style_name: str, target: Optional[Any] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("apply_style_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        ctx.uno_bridge.apply_style(doc, family, style_name, target=target)
+        return envelope.build_success(result={"applied": style_name, "family": family}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
     name="get_direct_formatting_live",
     priority="P2",
     purpose="Return direct formatting overrides on current/explicit target.",
-    parameters=schema({"target": {"description": "Current selection when omitted; otherwise an explicit range/object selector."}}),
+    parameters=schema({"target": {"description": "Current selection when omitted; otherwise {'start': int, 'end': int} for a 0-based Writer character range."}}),
+    status="implemented",
 )
 def get_direct_formatting_live(target: Optional[Any] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("get_direct_formatting_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        result = ctx.uno_bridge.get_direct_formatting(doc, target=target)
+        return envelope.build_success(result=result, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
     name="clear_direct_formatting_live",
     priority="P1",
     purpose="Clear direct formatting and preserve style-driven formatting.",
-    parameters=schema({"target": {"description": "Current selection when omitted; otherwise an explicit range/object selector."}}),
+    parameters=schema({"target": {"description": "Current selection when omitted; otherwise {'start': int, 'end': int} for a 0-based Writer character range."}}),
+    status="implemented",
 )
 def clear_direct_formatting_live(target: Optional[Any] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("clear_direct_formatting_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        ctx.uno_bridge.clear_direct_formatting(doc, target=target)
+        return envelope.build_success(result={"cleared": True}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -174,11 +284,18 @@ def clear_direct_formatting_live(target: Optional[Any] = None) -> Dict[str, Any]
     priority="P2",
     purpose="Copy formatting/style attributes between two targets.",
     parameters=schema({
-        "source": {"description": "Explicit range/object selector to copy formatting from."},
-        "target": {"description": "Explicit range/object selector to copy formatting to."},
-        "include": {"type": "array", "items": {"type": "string"}, "description": "Optional subset of attribute groups to copy."},
+        "source": {"description": "{'start': int, 'end': int} Writer character range to copy formatting from."},
+        "target": {"description": "{'start': int, 'end': int} Writer character range to copy formatting to."},
+        "include": {"type": "array", "items": {"type": "string"}, "description": "Optional subset of UNO property names to copy."},
     }, required=["source", "target"]),
+    status="implemented",
 )
 def copy_formatting_live(source: Any, target: Any, include: Optional[List[str]] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("copy_formatting_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        applied = ctx.uno_bridge.copy_formatting(doc, source, target, include=include)
+        return envelope.build_success(result={"applied": applied, "applied_count": len(applied)}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)

@@ -15,7 +15,7 @@ up exactly where it left off.
 | Core runtime, discovery, capability negotiation | 12 | 0 | 12 | **Implemented** (`tools/core_runtime.py`) -- real logic, live-verified |
 | Document and session lifecycle | 27 | 5 | 22 | **Implemented** (`tools/document_lifecycle.py`) -- real logic, live-verified |
 | Undo, view, selection, events, orchestration | 14 | 0 | 14 | **12/14 Implemented** (`tools/undo_view_selection.py`) -- real logic, live-verified; document-events (2 tools) still stub, separate pass |
-| Styles and formatting infrastructure | 12 | 0 | 12 | **Scaffolded** (`tools/styles.py`) |
+| Styles and formatting infrastructure | 12 | 0 | 12 | **Implemented** (`tools/styles.py`) -- real logic, live-verified |
 | Writer - text, navigation, editing, search, review | 45 | 27 | 18 | **Scaffolded** (`tools/writer_text.py`) |
 | Writer - page layout, publishing, styles, headers, fields, indexes | 43 | 0 | 43 | **Scaffolded** (`tools/writer_layout.py`) |
 | Writer - tables, sections, notes, content controls, mail merge | 38 | 0 | 38 | **Scaffolded** (`tools/writer_tables.py`) |
@@ -382,6 +382,103 @@ document-event tools are asserted to still be `status="stub"`). 129/129
 passing under `pytest` across the full relevant suite after both
 sub-passes.
 
+## Real implementation pass: styles and formatting tools
+
+All 12 `tools/styles.py` tools implemented for real in one pass (unlike
+the split undo/view-selection pass, styles didn't need to be broken up --
+no cross-module architectural holes depended on it). Family/style CRUD
+(`list_style_families_live`, `list_styles_live`, `get_style_live`,
+`create_style_live`, `clone_style_live`, `update_style_live`,
+`rename_style_live`, `delete_style_live`) works across any document type
+implementing `XStyleFamiliesSupplier` (Writer/Calc/Impress/Draw all do);
+`create_style_live`/`clone_style_live` are limited to 6 families with a
+known UNO service name (`ParagraphStyles`, `CharacterStyles`,
+`PageStyles`, `FrameStyles`, `NumberingStyles`, `CellStyles`) --
+live-verified LibreOffice 26.2 also exposes a 7th, `TableStyles`, which
+correctly raises `UNSUPPORTED_CAPABILITY` for create/clone rather than
+guessing at its service name.
+
+**Resolved the `target` selector question** left open for Morgan since
+the original Phase A scaffolding pass: for `apply_style_live`/
+`get_direct_formatting_live`/`clear_direct_formatting_live`/
+`copy_formatting_live`, omitted `target` means the current selection;
+an explicit `{"start": int, "end": int}` means a 0-based Writer character
+range, reusing the exact cursor-building code the existing
+`select_text_range_live` legacy tool already uses. These four tools are
+Writer-only this pass (`WRONG_DOCUMENT_TYPE`-shaped `UNSUPPORTED_CAPABILITY`
+for other types via the same `NotImplementedError` mapping pattern as
+`refresh_document`/`apply_style`).
+
+**Caught before committing (not a live bug, a self-review catch):** an
+early draft added an undocumented `document_id` parameter to 11 of the 12
+tools. Only `list_style_families_live` has `document_id` in the spec's
+own parameter list -- every other styles tool is scoped to the active
+document only, matching the precedent already set by
+`document_lifecycle.py`'s `save_as_document_live`/`print_document_live`.
+Caught by re-checking the original Phase A stub signatures before writing
+tests, not by live testing -- a reminder that live verification and
+careful spec re-reading catch different classes of mistake.
+
+**Two real bugs found and fixed by live-verifying:**
+
+1. `clone_style_live` needed the `com.sun.star.beans.PropertyState`
+   `DIRECT_VALUE` enum for comparison (`uno.Enum("com.sun.star.beans.PropertyState",
+   "DIRECT_VALUE")`) -- live-verified this construction pattern works and
+   that clone_style_live genuinely copies direct property values (checked
+   independently via a raw UNO script reading `CharHeight`/`CharWeight` off
+   both the source and cloned style after cloning, not just trusting the
+   tool's own success response).
+2. `get_direct_formatting_live` initially dumped a raw UNO object repr for
+   any property whose value is itself an object reference (e.g. a Writer
+   paragraph's `TextParagraph` self-reference property came back as
+   `"pyuno object (com.sun.star.text.XTextContent)0x...{implementationName=SwXParagraph, ...}"`)
+   -- `_uno_value_to_plain()` doesn't know how to convert an arbitrary
+   object reference, and nothing filtered out what it couldn't convert.
+   Added `UNOBridge._is_json_safe()` to exclude any property whose
+   (converted) value isn't a plain JSON-serializable type, applied to both
+   `get_direct_formatting_live` and `copy_formatting_live` (the latter
+   also skips copying such properties rather than attempting -- and
+   presumably failing -- to set them on the target).
+   **Scope note surfaced by this:** Writer text ranges implement both
+   `CharacterProperties` and `ParagraphProperties`, so `get_direct_formatting_live`'s
+   `DIRECT_VALUE` filter still includes structural paragraph-level
+   properties (`ParaStyleName`, `PageStyleName`, etc.) alongside genuine
+   character-formatting overrides -- not curated down to a
+   "formatting-only" subset, documented in the method's own docstring
+   rather than silently narrowed (which risked hiding real overrides
+   behind a wrong guess at which properties "count").
+
+**Also confirmed pre-existing, not caused by this pass:** the original
+32 tools' `format_text_live` returned `"No Writer document available"`
+against a document this session had just opened, activated, and
+successfully read/selected text on with other legacy tools. Root cause:
+`uno_bridge.py`'s `format_text()` checks `_is_instance(doc, XTextDocument)`
+(a literal Python `isinstance()` against the imported UNO type), not the
+more robust `supportsService()` duck-typing pattern `_get_document_type()`
+uses elsewhere -- exactly the fragility spec section 6 itself warns
+against ("Prefer supportsService... over Python isinstance() where UNO
+bridge types are unreliable"). Not fixed here (preserving the original 32
+exactly, per spec section 6's own compatibility requirement); worked
+around for this pass's live testing by setting direct character
+formatting via a raw UNO script instead of the broken legacy tool.
+
+**Live-verified end to end, including independent verification (not just
+trusting the tool's own success response):** created a custom paragraph
+style with real properties, cloned it and confirmed via raw UNO script
+that `CharHeight`/`CharWeight` genuinely matched between original and
+clone; applied a style to an explicit character range and confirmed via
+raw UNO script that the paragraph's real `ParaStyleName` changed; set
+real direct character formatting (bold/color) via UNO script, read it
+back through `get_direct_formatting_live`, cleared it and confirmed it
+was genuinely gone, then copied it to a different range and confirmed the
+values landed there too. `tools_count: 90` (78 + 12) throughout.
+
+**Testing:** `tests/test_styles.py`, 17 new tests (fakes modeling style
+families as plain dicts and text ranges as `{start, end}` keys -- real
+UNO service names, property names, and `PropertyState` enum comparisons
+are live-verified instead, not something a fake can usefully assert).
+146/146 passing under `pytest` across the full relevant suite.
+
 ## What was built
 
 **Shared plumbing (`plugin/pythonpath/tools/`):**
@@ -421,14 +518,15 @@ sub-passes.
   module's stubs still ignore it -- wiring it into each of those is real
   tool-by-tool implementation work, not scaffolding.
 
-**Tool modules, 366 functions across 14 files (320 still stub, 46 real --
-`core_runtime.py`, `document_lifecycle.py`, and 12/14 of
-`undo_view_selection.py`, see the "Real implementation pass" sections
-above):**
+**Tool modules, 366 functions across 14 files (308 still stub, 58 real --
+all of Phase A -- `core_runtime.py`, `document_lifecycle.py`, `styles.py`,
+and 12/14 of `undo_view_selection.py` -- see the "Real implementation
+pass" sections above):**
 
 - Phase A: `core_runtime.py` (12, **implemented**), `document_lifecycle.py`
   (22 new, **implemented**, on top of 5 pre-existing), `undo_view_selection.py`
-  (14, **12 implemented** -- document-events pair still stub), `styles.py` (12).
+  (14, **12 implemented** -- document-events pair still stub), `styles.py`
+  (12, **implemented**).
 - Phase B: `writer_text.py` (18 new, on top of 27 pre-existing),
   `writer_layout.py` (43), `writer_tables.py` (38).
 - Phase C: `drawing_objects.py` (31), `charts.py` (20), `calc_sheets.py`
@@ -464,21 +562,21 @@ extension.
 
 ## What is intentionally NOT done
 
-- **No UNO implementation in the remaining 320 tool stubs** (everything
-  outside `core_runtime.py`/`document_lifecycle.py` and 12/14 of
-  `undo_view_selection.py`). They all return `NOT_IMPLEMENTED`.
-  Implementing them needs a working `uno`/`unohelper` environment inside
-  LibreOffice -- confirmed working end-to-end for 46 tools across three
-  modules now (see the "Real implementation pass" sections above); the
-  same approach applies to the rest, tool by tool.
+- **No UNO implementation in the remaining 308 tool stubs** (everything
+  outside all of Phase A except the document-events pair). They all
+  return `NOT_IMPLEMENTED`. Implementing them needs a working
+  `uno`/`unohelper` environment inside LibreOffice -- confirmed working
+  end-to-end for 58 tools across four modules now (see the "Real
+  implementation pass" sections above); the same approach applies to the
+  rest, tool by tool.
 - **`DocumentRegistry`'s dispose-listener eviction** -- see above.
 - **`get_document_events_live`/`wait_for_document_event_live`** -- still
   stub; deliberately deferred to their own pass (persistent listener
   lifecycle/concurrency, a different concern from the rest of
   `undo_view_selection.py`).
-- **The 320 remaining stub tools are still not wired into the live server
+- **The 308 remaining stub tools are still not wired into the live server
   by default** -- see the `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS` env var gate
-  above. (The 46 implemented tools ARE always-on now, unconditionally.)
+  above. (The 58 implemented tools ARE always-on now, unconditionally.)
 - **Undo-context tracking** (`begin_undo_context_live`/`end_undo_context_live`)
   -- still stubs, which is why `batch_execute_live`'s `undo_label` and
   `get_session_state_live`'s `pending_undo_context` can't be backed for real yet.
@@ -530,17 +628,22 @@ Not a blocker: `tools/` stays additive and reversible either way.
 3. ~~Implement `undo_view_selection.py`'s undo + view/selection/locking
    tools (12 of 14) for real~~ -- done, live-verified, see "Real
    implementation pass: undo, view, selection, and locking tools" above.
-4. Implement `get_document_events_live`/`wait_for_document_event_live` --
+4. ~~Implement `styles.py`'s 12 tools for real~~ -- done, live-verified,
+   see "Real implementation pass: styles and formatting tools" above.
+   All of Phase A is now real except the document-events pair.
+5. Implement `get_document_events_live`/`wait_for_document_event_live` --
    the deliberately-deferred pair from step 3, needs a persistent
    listener with its own lifecycle/concurrency design, not just another
-   synchronous UNO call.
-5. Wire `mcp_server.py`'s HTTP layer (`ai_interface.py`) to surface
+   synchronous UNO call. The only real-implementation gap left in Phase A.
+6. Wire `mcp_server.py`'s HTTP layer (`ai_interface.py`) to surface
    `NOT_IMPLEMENTED` responses distinctly (e.g. HTTP 501) so a client can
    tell "not implemented yet" apart from a real runtime error while these
    phases are partially built out.
-6. Natural next real-implementation target: `styles.py` (Phase A, depends
-   on the same document-resolution machinery already built) -- or
-   continue scaffolding Phases E-F (Base and database access, forms and
-   controls, Math formula documents, linguistic/accessibility/publishing
-   QA, security/scripts/events/advanced UNO escape hatch -- 86 more rows),
-   using the same `tools/registry.py` pattern established in Phases A-D.
+7. Phase A is otherwise complete -- natural next step is either the
+   document-events pair (step 5) or starting Phase B's real
+   implementation (`writer_text.py`/`writer_layout.py`/`writer_tables.py`,
+   126 tool rows), or continuing to scaffold Phases E-F (Base and database
+   access, forms and controls, Math formula documents, linguistic/
+   accessibility/publishing QA, security/scripts/events/advanced UNO
+   escape hatch -- 86 more rows), using the same `tools/registry.py`
+   pattern established throughout.
