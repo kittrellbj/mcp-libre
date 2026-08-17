@@ -8,6 +8,7 @@ via the UNO API, providing real-time document manipulation capabilities.
 import asyncio
 import json
 import logging
+import os
 from typing import Dict, Any, Optional, List
 import uno_bridge
 
@@ -15,17 +16,44 @@ import uno_bridge
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Set MCP_LIBRE_ENABLE_PHASE_A_STUBS=1 to also advertise the Phase A tool
+# scaffold from tools/ (see docs/MCP_TOOLING_SCAFFOLD_PLAN.md). Off by
+# default: every stub currently returns a NOT_IMPLEMENTED error, so this
+# should stay opt-in until stub bodies gain real implementations.
+_ENABLE_PHASE_A_STUBS_ENV = "MCP_LIBRE_ENABLE_PHASE_A_STUBS"
+
 
 class LibreOfficeMCPServer:
     """Embedded MCP server for LibreOffice plugin"""
-    
+
     def __init__(self):
         """Initialize the MCP server"""
         self.uno_bridge = uno_bridge.UNOBridge()
         self.tools = {}
         self._register_tools()
+        self._register_phase_a_stub_tools()
         logger.info("LibreOffice MCP Server initialized")
-    
+
+    def _register_phase_a_stub_tools(self):
+        """Merge in the opt-in Phase A tool scaffold, if enabled.
+
+        Additive only: existing tool names are never overwritten (see
+        tools.registry.merge_into), so the original 32 compatibility tools
+        keep their current behavior regardless of this flag.
+        """
+        if not os.environ.get(_ENABLE_PHASE_A_STUBS_ENV):
+            return
+        try:
+            import tools as phase_a_tools
+        except ImportError as e:
+            logger.warning(f"{_ENABLE_PHASE_A_STUBS_ENV} is set but the tools scaffold failed to import: {e}")
+            return
+        added = phase_a_tools.merge_into(self.tools)
+        logger.warning(
+            f"{_ENABLE_PHASE_A_STUBS_ENV} is set: registered {len(added)} Phase A stub tools "
+            "that return NOT_IMPLEMENTED until a senior engineer fills them in."
+        )
+
     def _register_tools(self):
         """Register all available MCP tools"""
         

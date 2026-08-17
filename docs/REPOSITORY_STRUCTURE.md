@@ -17,7 +17,15 @@ mcp-libre/
 │   │   ├── uno_bridge.py           # UNO API bridge for LibreOffice
 │   │   ├── mcp_server.py           # Embedded MCP server
 │   │   ├── ai_interface.py         # HTTP API for AI assistants
-│   │   └── registration.py         # Extension registration and lifecycle
+│   │   ├── registration.py         # Extension registration and lifecycle
+│   │   └── 📁 tools/               # Full-catalog tool scaffold (see docs/MCP_TOOLING_SCAFFOLD_PLAN.md)
+│   │       ├── registry.py         # @register_tool decorator, merge_into()
+│   │       ├── envelope.py         # {success, result, error, document_id, elapsed_ms} builders
+│   │       ├── documents.py        # DocumentRegistry stub (stable document_id handles)
+│   │       ├── core_runtime.py     # Phase A: discovery/capability/profile tools
+│   │       ├── document_lifecycle.py # Phase A: open/save/convert/properties tools
+│   │       ├── undo_view_selection.py # Phase A: undo/redo/view/selection tools
+│   │       └── styles.py           # Phase A: style family/apply/formatting tools
 │   ├── Addons.xcu                  # LibreOffice menu configuration
 │   ├── ProtocolHandler.xcu         # Protocol handler configuration
 │   ├── description.xml             # Extension description
@@ -30,7 +38,8 @@ mcp-libre/
 ├── 📁 tests/                       # Test files
 │   ├── __init__.py                 # Test package initialization
 │   ├── test_client.py              # Interactive MCP client test
-│   └── test_insert_fix.py          # Specific function tests
+│   ├── test_insert_fix.py          # Specific function tests
+│   └── test_phase_a_stubs.py       # Tool scaffold contract tests (no live LibreOffice needed)
 ├── 📁 examples/                    # Demo and example scripts
 │   ├── __init__.py                 # Examples package initialization
 │   ├── demo_editing.py             # Document editing demonstrations
