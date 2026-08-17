@@ -470,6 +470,42 @@ def test_implemented_writer_layout_tools_are_marked_implemented():
         assert registry[name]["status"] == "stub", f"{name} should still be status='stub' (no real code path this pass, see module docstring)"
 
 
+# writer_tables.py is also a mixed module: 37 of its 38 tools are real.
+# The remaining 1 (mail_merge_live) stays status="stub" -- the real
+# com.sun.star.text.MailMerge service's own Model property is read-only
+# and its DocumentURL-based execute() path needs a DataSourceName
+# resolvable through com.sun.star.sdb.DatabaseContext, which refuses to
+# register an ad hoc DataSource without a persisted .odb file (see module
+# docstring); preview_mail_merge_live (the real data-connection half) IS
+# real.
+IMPLEMENTED_WRITER_TABLES_TOOL_NAMES = {
+    "list_tables_live", "insert_table_live", "get_table_live", "get_table_range_live",
+    "set_table_range_live", "insert_table_rows_live", "delete_table_rows_live",
+    "insert_table_columns_live", "delete_table_columns_live", "merge_table_cells_live",
+    "split_table_cell_live", "set_table_format_live", "set_table_cell_format_live",
+    "sort_table_live", "delete_table_live", "convert_text_to_table_live",
+    "convert_table_to_text_live", "list_sections_live", "insert_section_live",
+    "update_section_live", "delete_section_live", "add_footnote_live",
+    "list_footnotes_live", "update_footnote_live", "delete_footnote_live",
+    "add_endnote_live", "list_endnotes_live", "update_endnote_live",
+    "delete_endnote_live", "get_note_settings_live", "set_note_settings_live",
+    "list_content_controls_live", "insert_content_control_live", "get_content_control_live",
+    "set_content_control_live", "delete_content_control_live", "preview_mail_merge_live",
+}
+
+
+def test_implemented_writer_tables_tools_are_marked_implemented():
+    """Same guard as test_implemented_modules_tools_are_marked_implemented,
+    for the 37 individually-implemented tools in the mixed
+    writer_tables.py module (see IMPLEMENTED_WRITER_TABLES_TOOL_NAMES)."""
+    registry = get_registry()
+    for name in IMPLEMENTED_WRITER_TABLES_TOOL_NAMES:
+        assert registry[name]["status"] == "implemented", f"{name} should be status='implemented'"
+    still_stub = EXPECTED_BY_MODULE["writer_tables"] - IMPLEMENTED_WRITER_TABLES_TOOL_NAMES
+    for name in still_stub:
+        assert registry[name]["status"] == "stub", f"{name} should still be status='stub' (no real code path this pass, see module docstring)"
+
+
 def test_stub_shape_contract():
     """Every remaining stub, called with placeholder args, returns the
     spec's NOT_IMPLEMENTED error envelope. Tools with status="implemented"
@@ -534,6 +570,7 @@ if __name__ == "__main__":
         test_implemented_impress_tools_are_marked_implemented,
         test_implemented_calc_data_tools_are_marked_implemented,
         test_implemented_writer_layout_tools_are_marked_implemented,
+        test_implemented_writer_tables_tools_are_marked_implemented,
         test_stub_shape_contract,
         test_merge_into_does_not_overwrite_existing_tools_by_default,
         test_error_envelope_rejects_unknown_codes,

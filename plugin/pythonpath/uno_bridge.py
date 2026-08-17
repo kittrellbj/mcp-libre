@@ -14,6 +14,7 @@ from com.sun.star.util import NumberFormat
 from typing import Any, Optional, Dict, List
 import logging
 import os
+import re
 import traceback
 
 from uno_datetime import uno_datetime_to_iso
@@ -7739,3 +7740,621 @@ class UNOBridge:
             lnp.RestartAtEachPage = bool(restart_each_page)
             applied.append("restart_each_page")
         return applied
+
+    # ------------------------------------------------------------------
+    # writer_tables.py: tables, sections, notes, content controls, mail
+    # merge. Tables/sections resolve through their own UNO-native unique
+    # Name (`getTextTables()`/`getTextSections()` are both real
+    # `XNameAccess` containers, confirmed live) -- no ObjectRegistry, same
+    # category as bookmarks/Writer's own page styles per
+    # docs/OBJECT_HANDLE_DESIGN.md. Footnotes/endnotes/content controls
+    # have no natural unique name and resolve through ObjectRegistry --
+    # live-verified a narrower version of calc_data.py's pivot-table
+    # id-churn gap (same shape writer_layout.py's document indexes turned
+    # out to have): two separate list_*_live fetches for the SAME object
+    # return the SAME id (`doc.getFootnotes().getByIndex(0) == doc.
+    # getFootnotes().getByIndex(0)` is True, confirmed for all three
+    # categories), but the id an insert/add call itself returns does NOT
+    # match a subsequent list_*_live's id for that same object. Every id
+    # still works correctly for its own later get/update/delete call.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _table_column_index_to_letters(index0: int) -> str:
+        letters = ""
+        n = index0 + 1
+        while n > 0:
+            n, remainder = divmod(n - 1, 26)
+            letters = chr(65 + remainder) + letters
+        return letters
+
+    @staticmethod
+    def _table_column_letters_to_index(letters: str) -> int:
+        index = 0
+        for ch in letters:
+            index = index * 26 + (ord(ch.upper()) - 64)
+        return index - 1
+
+    _TABLE_CELL_NAME_RE = re.compile(r"^([A-Za-z]+)(\d+)$")
+
+    def _parse_table_cell_name(self, name: str) -> Any:
+        match = self._TABLE_CELL_NAME_RE.match(name.strip())
+        if not match:
+            raise ValueError(f"Invalid table cell name '{name}' -- expected e.g. 'A1'.")
+        col = self._table_column_letters_to_index(match.group(1))
+        row = int(match.group(2)) - 1
+        return col, row
+
+    def _resolve_table(self, doc: Any, table_id: str) -> Any:
+        self._require_writer(doc, "_resolve_table")
+        tables = doc.getTextTables()
+        if not tables.hasByName(table_id):
+            raise KeyError(f"No such table {table_id!r}.")
+        return tables.getByName(table_id)
+
+    def _resolve_char_range_string(self, doc: Any, range_string: Optional[str]) -> Any:
+        """Not an established Writer convention elsewhere in this codebase
+        (writer_text.py's/writer_layout.py's own range-shaped params are all
+        {"start": int, "end": int} dicts, e.g. add_bookmark) --
+        convert_text_to_table_live/insert_content_control_live are the
+        only two tools in the whole catalog scaffolded with `range` as a
+        bare string, with no format ever specified. Documented choice
+        made this pass: "<start>-<end>", 0-based character offsets from
+        document start, end exclusive -- same offsets add_bookmark
+        already uses, just string-packed instead of dict-packed. None
+        means use the current selection, consistent with
+        _resolve_text_target()."""
+        text_obj = doc.getText()
+        if range_string is None:
+            controller = self._get_controller(doc)
+            selection = controller.getSelection()
+            if selection is None or not hasattr(selection, "getCount") or selection.getCount() == 0:
+                raise ValueError("No current selection and no range given.")
+            return selection.getByIndex(0)
+        match = re.match(r"^\s*(\d+)\s*-\s*(\d+)\s*$", range_string)
+        if not match:
+            raise ValueError(f"Invalid range {range_string!r} -- expected <start>-<end> character offsets.")
+        start, end = int(match.group(1)), int(match.group(2))
+        cursor = text_obj.createTextCursor()
+        cursor.gotoStart(False)
+        cursor.goRight(start, False)
+        cursor.goRight(end - start, True)
+        return cursor
+
+    def list_tables(self, doc: Any) -> List[Dict[str, Any]]:
+        self._require_writer(doc, "list_tables")
+        tables = doc.getTextTables()
+        return [
+            {"table_id": name, "rows": tables.getByName(name).getRows().getCount(),
+             "columns": tables.getByName(name).getColumns().getCount()}
+            for name in tables.getElementNames()
+        ]
+
+    def insert_table(self, doc: Any, rows: int, columns: int, at_position: Optional[int] = None,
+                      name: Optional[str] = None, style: Optional[str] = None) -> Dict[str, Any]:
+        self._require_writer(doc, "insert_table")
+        text_obj = doc.getText()
+        if at_position is not None:
+            cursor = text_obj.createTextCursorByRange(self._get_paragraph_object(doc, at_position).getStart())
+        else:
+            cursor = self._get_controller(doc).getViewCursor()
+        table = doc.createInstance("com.sun.star.text.TextTable")
+        table.initialize(int(rows), int(columns))
+        text_obj.insertTextContent(cursor, table, False)
+        if name:
+            table.setName(name)
+        applied_style = self._apply_direct_properties(table, {"TableTemplateName": style}) if style else []
+        return {
+            "table_id": table.Name, "rows": table.getRows().getCount(),
+            "columns": table.getColumns().getCount(), "style_applied": bool(applied_style),
+        }
+
+    def get_table(self, doc: Any, table_id: str, include_cells: bool = False) -> Dict[str, Any]:
+        table = self._resolve_table(doc, table_id)
+        result = {
+            "table_id": table_id, "rows": table.getRows().getCount(),
+            "columns": table.getColumns().getCount(),
+        }
+        if include_cells:
+            row_count, col_count = table.getRows().getCount(), table.getColumns().getCount()
+            result["cells"] = [
+                [table.getCellByPosition(c, r).getString() for c in builtins.range(col_count)]
+                for r in builtins.range(row_count)
+            ]
+        return result
+
+    def get_table_range(self, doc: Any, table_id: str, start_cell: str, end_cell: str) -> List[List[str]]:
+        table = self._resolve_table(doc, table_id)
+        start_col, start_row = self._parse_table_cell_name(start_cell)
+        end_col, end_row = self._parse_table_cell_name(end_cell)
+        lo_col, hi_col = builtins.min(start_col, end_col), builtins.max(start_col, end_col)
+        lo_row, hi_row = builtins.min(start_row, end_row), builtins.max(start_row, end_row)
+        return [
+            [table.getCellByPosition(c, r).getString() for c in builtins.range(lo_col, hi_col + 1)]
+            for r in builtins.range(lo_row, hi_row + 1)
+        ]
+
+    def set_table_range(self, doc: Any, table_id: str, start_cell: str, values: List[List[Any]]) -> Dict[str, Any]:
+        table = self._resolve_table(doc, table_id)
+        start_col, start_row = self._parse_table_cell_name(start_cell)
+        written = 0
+        for r, row_values in enumerate(values):
+            for c, value in enumerate(row_values):
+                table.getCellByPosition(start_col + c, start_row + r).setString(str(value))
+                written += 1
+        return {"written": written}
+
+    def insert_table_rows(self, doc: Any, table_id: str, index: int, count: int = 1) -> Dict[str, Any]:
+        table = self._resolve_table(doc, table_id)
+        table.getRows().insertByIndex(int(index), int(count))
+        return {"rows": table.getRows().getCount()}
+
+    def delete_table_rows(self, doc: Any, table_id: str, index: int, count: int = 1) -> Dict[str, Any]:
+        table = self._resolve_table(doc, table_id)
+        table.getRows().removeByIndex(int(index), int(count))
+        return {"rows": table.getRows().getCount()}
+
+    def insert_table_columns(self, doc: Any, table_id: str, index: int, count: int = 1) -> Dict[str, Any]:
+        table = self._resolve_table(doc, table_id)
+        table.getColumns().insertByIndex(int(index), int(count))
+        return {"columns": table.getColumns().getCount()}
+
+    def delete_table_columns(self, doc: Any, table_id: str, index: int, count: int = 1) -> Dict[str, Any]:
+        table = self._resolve_table(doc, table_id)
+        table.getColumns().removeByIndex(int(index), int(count))
+        return {"columns": table.getColumns().getCount()}
+
+    def merge_table_cells(self, doc: Any, table_id: str, start_cell: str, end_cell: str) -> Dict[str, Any]:
+        table = self._resolve_table(doc, table_id)
+        cursor = table.createCursorByCellName(start_cell)
+        cursor.gotoCellByName(end_cell, True)
+        if not cursor.mergeRange():
+            raise ValueError(
+                f"Writer refused to merge {start_cell}:{end_cell} in table {table_id!r} -- "
+                "the selection isn't a mergeable rectangle."
+            )
+        return {"merged": f"{start_cell}:{end_cell}"}
+
+    def split_table_cell(self, doc: Any, table_id: str, cell: str, count: int, direction: str) -> Dict[str, Any]:
+        """`direction` accepts exactly "horizontal"/"vertical", live-
+        verified against the real XTextTableCursor.splitRange() boolean:
+        Horizontal=True genuinely produces more ROWS (splits with a
+        horizontal dividing line), matching the everyday meaning of
+        "split horizontally" -- confirmed by watching a 3x3 table's own
+        cell-name set change after calling it. Resulting cell names
+        after a split are Writer's own irregular-grid naming (compound/
+        skewed once a table stops being a uniform rectangle), not
+        predictable from the inputs -- callers should re-list the table
+        afterward rather than guess names."""
+        table = self._resolve_table(doc, table_id)
+        if direction not in ("horizontal", "vertical"):
+            raise ValueError(f"Invalid direction {direction!r} -- expected horizontal or vertical.")
+        cursor = table.createCursorByCellName(cell)
+        if not cursor.splitRange(int(count), direction == "horizontal"):
+            raise ValueError(f"Writer refused to split cell {cell!r} in table {table_id!r}.")
+        return {"split": cell, "count": count, "direction": direction}
+
+    def set_table_format(self, doc: Any, table_id: str, properties: Dict[str, Any]) -> List[str]:
+        table = self._resolve_table(doc, table_id)
+        return self._apply_direct_properties(table, properties)
+
+    def set_table_cell_format(self, doc: Any, table_id: str, range: str, properties: Dict[str, Any]) -> Dict[str, Any]:
+        # builtins.range(...) here is deliberate, not a typo -- range is
+        # this method's own parameter name (matches the spec's field name).
+        table = self._resolve_table(doc, table_id)
+        start_cell, _, end_cell = range.partition(":")
+        end_cell = end_cell or start_cell
+        start_col, start_row = self._parse_table_cell_name(start_cell)
+        end_col, end_row = self._parse_table_cell_name(end_cell)
+        lo_col, hi_col = builtins.min(start_col, end_col), builtins.max(start_col, end_col)
+        lo_row, hi_row = builtins.min(start_row, end_row), builtins.max(start_row, end_row)
+        applied = set()
+        for r in builtins.range(lo_row, hi_row + 1):
+            for c in builtins.range(lo_col, hi_col + 1):
+                applied.update(self._apply_direct_properties(table.getCellByPosition(c, r), properties))
+        return {"applied": sorted(applied), "cells": (hi_col - lo_col + 1) * (hi_row - lo_row + 1)}
+
+    def sort_table(self, doc: Any, table_id: str, keys: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Same uno.Any explicit-sequence-typing requirement calc_data.py's
+        own sort_range() already hit: a plain Python tuple of
+        TableSortField structs is silently ignored by table.sort(), no
+        exception, table just comes back unsorted.
+
+        A second, distinct bug on top of that one, live-verified: unlike
+        Calc's sort_range() (where TableSortField.Field is documented and
+        confirmed 0-based relative to the range's own first column),
+        Writer TextTable's own TableSortField.Field is 1-based --
+        confirmed by passing back table.createSortDescriptor()'s own
+        untouched default (which pre-fills Field=1 for a single-column
+        table and sorts correctly) versus a rebuilt descriptor with
+        Field=0 (silently no-ops, no exception) versus Field=1 (sorts
+        correctly). Same struct type as Calc, opposite indexing
+        convention stays hidden from callers -- `column` in `keys` is
+        0-based either way (a letter via _table_column_letters_to_index(),
+        or a plain int), same as every other column reference in this
+        module; the +1 onto TableSortField.Field happens only internally,
+        right before the struct is built."""
+        table = self._resolve_table(doc, table_id)
+        desc = {p.Name: p.Value for p in table.createSortDescriptor()}
+        fields = []
+        for key in keys:
+            column = key.get("column")
+            col_index_0based = self._table_column_letters_to_index(column) if isinstance(column, str) else int(column)
+            field = uno.createUnoStruct("com.sun.star.table.TableSortField")
+            field.Field = col_index_0based + 1
+            field.IsAscending = bool(key.get("ascending", True))
+            fields.append(field)
+        desc["SortFields"] = uno.Any("[]com.sun.star.table.TableSortField", tuple(fields))
+        table.sort(tuple(PropertyValue(k, 0, v, 0) for k, v in desc.items()))
+        return {"sorted_keys": len(fields)}
+
+    def delete_table(self, doc: Any, table_id: str) -> Dict[str, Any]:
+        """removeTextContent() removes the whole table, content included
+        -- live-verified doc.getTextTables().hasByName() goes False
+        afterward. No keep_content option: the spec's own
+        delete_table_live signature never had one, unlike
+        delete_section_live/delete_content_control_live."""
+        table = self._resolve_table(doc, table_id)
+        doc.getText().removeTextContent(table)
+        return {"deleted": table_id}
+
+    def convert_text_to_table(self, doc: Any, range: Optional[str] = None, delimiter: str = "\t",
+                               options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        # builtins.range(...) here is deliberate, not a typo -- range is
+        # this method's own parameter name.
+        self._require_writer(doc, "convert_text_to_table")
+        target = self._resolve_char_range_string(doc, range)
+        raw_text = target.getString()
+        rows_data = [line.split(delimiter) for line in raw_text.split("\n") if line != "" or raw_text == ""]
+        if not rows_data:
+            raise ValueError("No text found in the given range to convert.")
+        col_count = builtins.max(len(r) for r in rows_data)
+        row_count = len(rows_data)
+        text_obj = doc.getText()
+        insertion_cursor = text_obj.createTextCursorByRange(target.getStart())
+        target.setString("")
+        table = doc.createInstance("com.sun.star.text.TextTable")
+        table.initialize(row_count, col_count)
+        text_obj.insertTextContent(insertion_cursor, table, False)
+        for r in builtins.range(row_count):
+            for c in builtins.range(col_count):
+                value = rows_data[r][c] if c < len(rows_data[r]) else ""
+                table.getCellByPosition(c, r).setString(value)
+        return {"table_id": table.Name, "rows": row_count, "columns": col_count}
+
+    def convert_table_to_text(self, doc: Any, table_id: str, delimiter: str = "\t") -> Dict[str, Any]:
+        """Two failed attempts before this one, both live-verified against
+        a real table occupying the whole document body:
+        `table.getAnchor().getText()` returns None (getAnchor() itself is
+        a valid XTextRange, its own getText() just doesn't resolve); and
+        `doc.getText().createTextCursorByRange(table.getAnchor().getStart())`
+        raises "Invalid text range" -- the anchor's start position isn't
+        interchangeable with doc.getText() the way a normal in-body
+        range is, at least for a table with no surrounding paragraph.
+        Fixed by walking doc.getText()'s own top-level content
+        enumeration to find the table and the range immediately before
+        it (or text_obj.getStart() if the table is the very first
+        element) -- both guaranteed to belong to the same XText."""
+        table = self._resolve_table(doc, table_id)
+        row_count, col_count = table.getRows().getCount(), table.getColumns().getCount()
+        lines = [
+            delimiter.join(table.getCellByPosition(c, r).getString() for c in builtins.range(col_count))
+            for r in builtins.range(row_count)
+        ]
+        text_obj = doc.getText()
+        enum = text_obj.createEnumeration()
+        preceding = None
+        while enum.hasMoreElements():
+            element = enum.nextElement()
+            if element == table:
+                break
+            preceding = element
+        insertion_point = preceding.getEnd() if preceding is not None else text_obj.getStart()
+        insertion_cursor = text_obj.createTextCursorByRange(insertion_point)
+        text_obj.removeTextContent(table)
+        text_obj.insertString(insertion_cursor, "\n".join(lines), False)
+        return {"lines": len(lines)}
+
+    # ------------------------------------------------------------------
+    # Sections -- name-based via getTextSections(), same as bookmarks.
+    # ------------------------------------------------------------------
+
+    def _resolve_section(self, doc: Any, section_id: str) -> Any:
+        self._require_writer(doc, "_resolve_section")
+        sections = doc.getTextSections()
+        if not sections.hasByName(section_id):
+            raise KeyError(f"No such section {section_id!r}.")
+        return sections.getByName(section_id)
+
+    def list_sections(self, doc: Any) -> List[Dict[str, Any]]:
+        self._require_writer(doc, "list_sections")
+        sections = doc.getTextSections()
+        result = []
+        for name in sections.getElementNames():
+            sec = sections.getByName(name)
+            result.append({
+                "section_id": name, "is_protected": bool(sec.IsProtected),
+                "is_visible": bool(sec.IsVisible),
+            })
+        return result
+
+    def insert_section(self, doc: Any, name: str, range: Optional[Dict[str, int]] = None,
+                        columns: Optional[Dict[str, Any]] = None, protected: bool = False) -> Dict[str, Any]:
+        """`range` is {"start": int, "end": int} character offsets, same
+        convention add_bookmark already uses -- unlike convert_text_to_
+        table_live/insert_content_control_live, this tool's own scaffold
+        already typed `range` as an object, so no invented string format
+        needed here.
+
+        Genuine LibreOffice behavior, not a bug, live-verified: wrapping
+        a PARTIAL paragraph in a section forces a paragraph break at the
+        selection's end boundary -- sections are a paragraph-level ODF
+        construct and can't occupy less than a full paragraph. The
+        document grows by one paragraph mark (\\r\\n, 2 characters) at
+        insertion time, and that break is permanent structure afterward
+        -- delete_section_live's keep_content=True path does not (and
+        cannot) undo it, since it's baked into the document the moment
+        insert_section_live runs, not something the section wrapper
+        itself owns."""
+        self._require_writer(doc, "insert_section")
+        text_obj = doc.getText()
+        if range is not None:
+            cursor = text_obj.createTextCursor()
+            cursor.gotoStart(False)
+            cursor.goRight(int(range["start"]), False)
+            cursor.goRight(int(range["end"]) - int(range["start"]), True)
+        else:
+            cursor = self._get_controller(doc).getViewCursor()
+        section = doc.createInstance("com.sun.star.text.TextSection")
+        section.setName(name)
+        text_obj.insertTextContent(cursor, section, True)
+        if columns:
+            self._apply_direct_properties(section, {"TextColumns": columns} if "TextColumns" in columns else columns)
+        if protected:
+            section.IsProtected = True
+        return {"section_id": section.Name}
+
+    def update_section(self, doc: Any, section_id: str, properties: Dict[str, Any]) -> List[str]:
+        section = self._resolve_section(doc, section_id)
+        return self._apply_direct_properties(section, properties)
+
+    def delete_section(self, doc: Any, section_id: str, keep_content: bool = True) -> Dict[str, Any]:
+        """TextSection.dispose() only removes the section WRAPPER --
+        live-verified the enclosed text survives dispose() untouched
+        (the opposite of TextTable.removeTextContent(), which takes the
+        content with it). keep_content=True is therefore the cheap path
+        (just dispose()); keep_content=False needs an explicit follow-up
+        clear of the same range."""
+        section = self._resolve_section(doc, section_id)
+        if keep_content:
+            section.dispose()
+            return {"deleted": section_id, "keep_content": True}
+        anchor = section.getAnchor()
+        text_obj = anchor.getText()
+        content_cursor = text_obj.createTextCursorByRange(anchor)
+        section.dispose()
+        content_cursor.setString("")
+        return {"deleted": section_id, "keep_content": False}
+
+    # ------------------------------------------------------------------
+    # Footnotes / endnotes -- ObjectRegistry-backed (identity confirmed
+    # stable across fetches, see module-level note above).
+    # ------------------------------------------------------------------
+
+    def add_footnote(self, doc: Any, text: str, position: Optional[int] = None) -> Any:
+        self._require_writer(doc, "add_footnote")
+        text_obj = doc.getText()
+        if position is not None:
+            cursor = text_obj.createTextCursorByRange(self._get_paragraph_object(doc, position).getEnd())
+        else:
+            cursor = self._get_controller(doc).getViewCursor()
+        footnote = doc.createInstance("com.sun.star.text.Footnote")
+        text_obj.insertTextContent(cursor, footnote, False)
+        footnote.setString(text)
+        return footnote
+
+    def list_footnotes(self, doc: Any) -> List[Any]:
+        self._require_writer(doc, "list_footnotes")
+        footnotes = doc.getFootnotes()
+        return [footnotes.getByIndex(i) for i in builtins.range(footnotes.getCount())]
+
+    @staticmethod
+    def get_footnote_summary(footnote: Any, footnote_id: str) -> Dict[str, Any]:
+        return {"footnote_id": footnote_id, "text": footnote.getString()}
+
+    def update_footnote(self, footnote: Any, text: str) -> Dict[str, Any]:
+        footnote.setString(text)
+        return {"text": text}
+
+    def delete_footnote(self, footnote: Any) -> None:
+        footnote.dispose()
+
+    def add_endnote(self, doc: Any, text: str, position: Optional[int] = None) -> Any:
+        self._require_writer(doc, "add_endnote")
+        text_obj = doc.getText()
+        if position is not None:
+            cursor = text_obj.createTextCursorByRange(self._get_paragraph_object(doc, position).getEnd())
+        else:
+            cursor = self._get_controller(doc).getViewCursor()
+        endnote = doc.createInstance("com.sun.star.text.Endnote")
+        text_obj.insertTextContent(cursor, endnote, False)
+        endnote.setString(text)
+        return endnote
+
+    def list_endnotes(self, doc: Any) -> List[Any]:
+        self._require_writer(doc, "list_endnotes")
+        endnotes = doc.getEndnotes()
+        return [endnotes.getByIndex(i) for i in builtins.range(endnotes.getCount())]
+
+    @staticmethod
+    def get_endnote_summary(endnote: Any, endnote_id: str) -> Dict[str, Any]:
+        return {"endnote_id": endnote_id, "text": endnote.getString()}
+
+    def update_endnote(self, endnote: Any, text: str) -> Dict[str, Any]:
+        endnote.setString(text)
+        return {"text": text}
+
+    def delete_endnote(self, endnote: Any) -> None:
+        endnote.dispose()
+
+    _NOTE_SETTINGS_GETTERS = {"footnote": "getFootnoteSettings", "endnote": "getEndnoteSettings"}
+
+    def get_note_settings(self, doc: Any, note_type: str) -> Dict[str, Any]:
+        self._require_writer(doc, "get_note_settings")
+        getter_name = self._NOTE_SETTINGS_GETTERS.get(note_type)
+        if getter_name is None:
+            raise ValueError(f"Unknown note_type {note_type!r}. Supported: footnote, endnote.")
+        settings = getattr(doc, getter_name)()
+        return {
+            prop.Name: self._uno_value_to_plain(settings.getPropertyValue(prop.Name))
+            for prop in settings.getPropertySetInfo().getProperties()
+        }
+
+    def set_note_settings(self, doc: Any, note_type: str, settings: Dict[str, Any]) -> List[str]:
+        self._require_writer(doc, "set_note_settings")
+        getter_name = self._NOTE_SETTINGS_GETTERS.get(note_type)
+        if getter_name is None:
+            raise ValueError(f"Unknown note_type {note_type!r}. Supported: footnote, endnote.")
+        target = getattr(doc, getter_name)()
+        return self._apply_direct_properties(target, settings)
+
+    # ------------------------------------------------------------------
+    # Content controls -- ObjectRegistry-backed (identity confirmed
+    # stable). com.sun.star.text.ContentControl is a real, current
+    # LibreOffice service (added for DOCX structured-document-tag
+    # round-tripping) -- live-verified via getPropertySetInfo(), not
+    # assumed from the spec's Word-flavored terminology.
+    # ------------------------------------------------------------------
+
+    _CONTENT_CONTROL_TYPE_PROPS = {
+        "checkbox": "Checkbox", "dropdown": "DropDown", "date": "Date",
+        "combobox": "ComboBox", "picture": "Picture", "plaintext": "PlainText",
+    }
+
+    def insert_content_control(self, doc: Any, range: Optional[str] = None, tag: Optional[str] = None,
+                                title: Optional[str] = None, type: Optional[str] = None) -> Any:
+        self._require_writer(doc, "insert_content_control")
+        target = self._resolve_char_range_string(doc, range)
+        cc = doc.createInstance("com.sun.star.text.ContentControl")
+        if type is not None:
+            prop_name = self._CONTENT_CONTROL_TYPE_PROPS.get(type)
+            if prop_name is None:
+                raise ValueError(f"Unknown content control type {type!r}. Supported: {sorted(self._CONTENT_CONTROL_TYPE_PROPS)}.")
+            setattr(cc, prop_name, True)
+        if tag is not None:
+            cc.Tag = tag
+        if title is not None:
+            cc.Alias = title
+        doc.getText().insertTextContent(target, cc, True)
+        return cc
+
+    def list_content_controls(self, doc: Any) -> List[Any]:
+        self._require_writer(doc, "list_content_controls")
+        controls = doc.getContentControls()
+        return [controls.getByIndex(i) for i in builtins.range(controls.getCount())]
+
+    @staticmethod
+    def get_content_control_summary(cc: Any, control_id: str) -> Dict[str, Any]:
+        return {"control_id": control_id, "tag": cc.Tag, "title": cc.Alias, "text": cc.getString()}
+
+    def get_content_control(self, cc: Any, control_id: str) -> Dict[str, Any]:
+        active_type = next(
+            (key for key, prop_name in self._CONTENT_CONTROL_TYPE_PROPS.items() if getattr(cc, prop_name, False)),
+            "plaintext",
+        )
+        return {
+            "control_id": control_id, "tag": cc.Tag, "title": cc.Alias, "text": cc.getString(),
+            "type": active_type, "lock": cc.Lock, "showing_placeholder": bool(cc.ShowingPlaceHolder),
+        }
+
+    def set_content_control(self, cc: Any, text: Optional[str] = None,
+                             properties: Optional[Dict[str, Any]] = None) -> List[str]:
+        applied = []
+        if text is not None:
+            cc.setString(text)
+            applied.append("text")
+        if properties:
+            applied.extend(self._apply_direct_properties(cc, properties))
+        return applied
+
+    def delete_content_control(self, doc: Any, cc: Any, keep_content: bool = True) -> bool:
+        """Genuine LibreOffice limitation this build, not a coding bug --
+        live-verified three different ways (cc.dispose(), doc.getText().
+        removeTextContent(cc), and both together): none of them actually
+        remove the ContentControl from doc.getContentControls() --
+        getCount() stays the same, and the surviving entry compares `==`
+        equal to the original object, confirming it is the SAME control,
+        not a fresh replacement. All any of them do is clear the wrapped
+        text. So this method makes no attempt to remove the wrapper (an
+        earlier version tried dispose()-then-reinsert and left a
+        duplicate, empty ghost control behind precisely because of this)
+        -- it only clears content when keep_content=False, and returns
+        False always so the tools/ layer can surface an honest warning
+        that the wrapper itself persists. Returns the wrapper_removed
+        flag (always False this pass)."""
+        if not keep_content:
+            cc.setString("")
+        return False
+
+    # ------------------------------------------------------------------
+    # Mail merge. preview_mail_merge is real: an ad hoc, unregistered
+    # com.sun.star.sdb.DataSource (URL + Info properties) gives a working
+    # SDBC connection without needing a persisted .odb file -- live-
+    # verified against a real CSV folder (query, columns, rows all read
+    # back correctly). mail_merge stays status="stub": the real
+    # com.sun.star.text.MailMerge service's own Model property is
+    # read-only (live-verified UnknownPropertyException setting it), and
+    # its alternative XJob.execute()-with-DocumentURL path requires a
+    # DataSourceName resolvable through com.sun.star.sdb.DatabaseContext
+    # -- which live-verified refuses to register an ad hoc DataSource at
+    # all ("The data source was not saved. Please use the interface
+    # XStorable to save the data source."), i.e. it wants a real,
+    # persisted .odb file this pass doesn't build. Genuinely blocked
+    # without that registration infrastructure, same shape as calc_data.
+    # py's create/refresh/delete_external_link stubs.
+    # ------------------------------------------------------------------
+
+    def _connect_mail_merge_data_source(self, data_source: str) -> Any:
+        info = (
+            PropertyValue("Extension", 0, "csv", 0),
+            PropertyValue("FieldDelimiter", 0, ",", 0),
+            PropertyValue("HeaderLine", 0, True, 0),
+            PropertyValue("CharSet", 0, "UTF-8", 0),
+        )
+        smgr = uno.getComponentContext().ServiceManager
+        ds = smgr.createInstance("com.sun.star.sdb.DataSource")
+        ds.URL = "sdbc:flat:" + data_source.replace("\\", "/")
+        ds.Info = info
+        return ds.getConnection("", "")
+
+    def preview_mail_merge(self, doc: Any, data_source: str, command: str,
+                            rows: Optional[List[int]] = None, output: str = "preview") -> Dict[str, Any]:
+        self._require_writer(doc, "preview_mail_merge")
+        conn = self._connect_mail_merge_data_source(data_source)
+        stmt = conn.createStatement()
+        result_set = stmt.executeQuery(f"SELECT * FROM {command}")
+        meta = result_set.getMetaData()
+        col_count = meta.getColumnCount()
+        col_names = [meta.getColumnName(i + 1) for i in builtins.range(col_count)]
+        all_rows = []
+        while result_set.next():
+            all_rows.append({name: result_set.getString(i + 1) for i, name in enumerate(col_names)})
+        selected = [all_rows[i] for i in rows] if rows is not None else all_rows
+
+        fields = doc.getTextFields().createEnumeration()
+        bindings = []
+        while fields.hasMoreElements():
+            field = fields.nextElement()
+            if field.supportsService("com.sun.star.text.TextField.Database"):
+                bindings.append(field)
+
+        previews = []
+        for row_data in selected:
+            resolved = {}
+            for field in bindings:
+                master = field.getTextFieldMaster() if hasattr(field, "getTextFieldMaster") else None
+                column = getattr(master, "DataColumnName", None) if master is not None else None
+                if column and column in row_data:
+                    resolved[column] = row_data[column]
+            previews.append({"row": row_data, "resolved_fields": resolved})
+        return {"columns": col_names, "row_count": len(all_rows), "previews": previews}

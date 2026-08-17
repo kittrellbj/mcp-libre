@@ -34,7 +34,7 @@ mcp-libre/
 │   │       ├── styles.py           # Phase A, IMPLEMENTED: style family/apply/formatting tools
 │   │       ├── writer_text.py      # Phase B, 18/18 IMPLEMENTED: paragraph/character editing, regex find/replace, comments
 │   │       ├── writer_layout.py    # Phase B, 42/43 IMPLEMENTED: page layout, headers/footers, fields, bookmarks, indexes
-│   │       ├── writer_tables.py    # Phase B, stub: tables, sections, footnotes/endnotes, content controls, mail merge
+│   │       ├── writer_tables.py    # Phase B, 37/38 IMPLEMENTED: tables, sections, footnotes/endnotes, content controls, mail merge
 │   │       ├── drawing_objects.py  # Phase C, 29/31 IMPLEMENTED: shapes, glue points, images, embedded objects
 │   │       ├── charts.py           # Phase C, 19/20 IMPLEMENTED: chart2-based chart tools (Calc-native only)
 │   │       ├── calc_sheets.py      # Phase C, 42/42 IMPLEMENTED: sheets, cells, ranges, rows/columns, formulas
@@ -73,6 +73,7 @@ mcp-libre/
 │   ├── test_calc_data.py           # calc_data.py's 39 implemented tools, tested against fakes
 │   ├── test_calc_page.py           # calc_page.py's 15 implemented tools, tested against fakes
 │   ├── test_writer_layout.py       # writer_layout.py's 42 implemented tools, tested against fakes
+│   ├── test_writer_tables.py       # writer_tables.py's 37 implemented tools, tested against fakes
 │   ├── test_uno_datetime.py        # DateTime-to-ISO conversion unit tests (no live LibreOffice needed)
 │   ├── test_host_trust.py          # Host/Origin trust check unit tests (no live LibreOffice needed)
 │   └── test_mcp_jsonrpc.py         # Real MCP JSON-RPC 2.0 dispatch unit tests (no live LibreOffice needed)

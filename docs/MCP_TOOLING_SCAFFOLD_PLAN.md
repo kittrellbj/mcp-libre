@@ -18,7 +18,7 @@ up exactly where it left off.
 | Styles and formatting infrastructure | 12 | 0 | 12 | **Implemented** (`tools/styles.py`) -- real logic, live-verified |
 | Writer - text, navigation, editing, search, review | 45 | 27 | 18 | **18/18 new tools Implemented** (`tools/writer_text.py`) -- real logic, live-verified; the 27 "(existing)" tools stay in `mcp_server.py`/`uno_bridge.py` under the original 32, not duplicated here |
 | Writer - page layout, publishing, styles, headers, fields, indexes | 43 | 0 | 43 | **42/43 Implemented** (`tools/writer_layout.py`) -- real logic, live-verified; `set_chapter_numbering_live` (P2) still stub -- `ChapterNumberingRules.replaceByIndex()` resists writes this build |
-| Writer - tables, sections, notes, content controls, mail merge | 38 | 0 | 38 | **Scaffolded** (`tools/writer_tables.py`) |
+| Writer - tables, sections, notes, content controls, mail merge | 38 | 0 | 38 | **37/38 Implemented** (`tools/writer_tables.py`) -- real logic, live-verified; `mail_merge_live` (P3) still stub -- `preview_mail_merge_live` (the real data-connection half) IS real |
 | Common drawing objects, images, shapes, embedded objects | 31 | 0 | 31 | **29/31 Implemented** (`tools/drawing_objects.py`) -- real logic, live-verified; only insert/activate_embedded_object (P3) still stub (uncertain OLE scope, not dispatch risk -- combine/split/bind/unbind re-enabled once the dispatch-safety finding was corrected) |
 | Charts and data visualizations | 20 | 0 | 20 | **19/20 Implemented** (`tools/charts.py`) -- real logic, live-verified, Calc-native charts only; `add_chart_series_live` (P2) still stub (no XDataProvider construction from raw values this pass) |
 | Calc - sheets, cells, ranges, formulas, layout | 42 | 0 | 42 | **42/42 Implemented** (`tools/calc_sheets.py`) -- real logic, live-verified |
@@ -1815,6 +1815,102 @@ live-verified instead). Mixed module like `charts.py`/`impress.py`/
 `calc_data.py`: `IMPLEMENTED_WRITER_LAYOUT_TOOL_NAMES` (42 names) added to
 `tests/test_tool_scaffold_contract.py`. 417/417 passing under `pytest`
 across the full relevant suite.
+
+## Real implementation pass: writer_tables.py (37 of 38 tools)
+
+Last of the four remaining Phase B/C scaffolds Buddy assigned (calc_data.py,
+calc_page.py, writer_layout.py done -> writer_tables.py). Tables/sections
+resolve through their own UNO-native unique Name (`getTextTables()`/
+`getTextSections()` are both real `XNameAccess` containers, confirmed
+live) -- no `ObjectRegistry`, same category as bookmarks/page styles.
+Footnotes/endnotes/content controls have no natural unique name and
+resolve through `ObjectRegistry` -- a narrower version of calc_data.py's
+pivot-table id-churn gap applies (insert's own returned id differs from a
+later list fetch for that same object, but list-to-list stays stable),
+same shape writer_layout.py's document indexes turned out to have.
+
+Two invented conventions, both documented inline: `convert_text_to_table_
+live`'s and `insert_content_control_live`'s `range` parameter -- the only
+two `range` params in the whole catalog scaffolded as a bare string
+rather than the `{"start": int, "end": int}` object convention -- accept
+`"<start>-<end>"` 0-based character offsets.
+
+**Three real bugs found live-verifying, all fixed and re-verified
+post-fix on a rebuild:**
+
+1. `sort_table_live` reported success but never actually sorted rows
+   correctly -- a fresh test with three distinct values (`banana`,
+   `apple`, `cherry`) sorted ascending came back unchanged. Root cause:
+   unlike Calc's `sort_range()` (where `TableSortField.Field` is 0-based,
+   confirmed and documented that pass), Writer `TextTable`'s own
+   `TableSortField.Field` is 1-based -- confirmed by passing back
+   `table.createSortDescriptor()`'s own untouched default (which
+   pre-fills `Field=1` for a single-column table and sorts correctly)
+   versus a rebuilt descriptor with `Field=0` (silently no-ops) versus
+   `Field=1` (sorts correctly). Fixed by adding 1 internally when
+   building the struct, while keeping the tool-facing `column` parameter
+   0-based like every other column reference in the catalog.
+2. `convert_table_to_text_live` raised `UNO_EXCEPTION: 'NoneType' object
+   has no attribute 'createTextCursorByRange'` -- `table.getAnchor().
+   getText()` returns `None` for a table occupying the whole document
+   body (`getAnchor()` itself is a valid range, its own `getText()` just
+   doesn't resolve). A first fix attempt (`doc.getText().
+   createTextCursorByRange(anchor.getStart())`) raised a different error,
+   `"Invalid text range"` -- the anchor's start position isn't
+   interchangeable with `doc.getText()` for cursor creation in this
+   edge case. Fixed by walking `doc.getText()`'s own top-level content
+   enumeration to find the table and the element immediately before it
+   (or `text_obj.getStart()` if the table is first), both guaranteed to
+   belong to the same `XText`.
+3. `delete_content_control_live` left a duplicate, empty "ghost" content
+   control behind on its first fix attempt (capture text, dispose,
+   reinsert) -- live-verified three different removal mechanisms
+   (`ContentControl.dispose()`, `doc.getText().removeTextContent()`, and
+   both together): none of them actually remove a content control from
+   `doc.getContentControls()` in this LibreOffice build. `getCount()`
+   stays the same and the surviving entry compares `==` equal to the
+   original object -- only the wrapped content gets cleared, never the
+   wrapper. Fixed to stop trying to remove the wrapper at all: clears
+   content only when `keep_content=False`, and always returns
+   `wrapper_removed: false` plus a warning so the caller isn't misled
+   into thinking the control is actually gone.
+
+**Also confirmed, not a bug:** `insert_section_live` wrapping a partial
+paragraph forces a real paragraph break at the selection boundary
+(sections can't occupy less than a full paragraph in ODF) -- the document
+grows by one paragraph mark that `delete_section_live`'s
+`keep_content=True` path cannot undo, since it's baked into the document
+the moment the section is inserted, not something the wrapper itself
+owns. Documented in `insert_section()`'s docstring rather than treated as
+a defect.
+
+**Live-verified end to end on a fresh headless LibreOffice 26.2 instance,
+independently checking real document state after every call** (not
+trusting each tool's own success response, rebuilding/redeploying after
+each of the three fixes above): the full table lifecycle including
+rows/columns/merge/split (confirmed `direction="horizontal"` genuinely
+produces more rows, `"vertical"` more columns, via a real cell-name-set
+diff) and format/cell-format; the sort fix with three distinct values;
+`convert_text_to_table_live`/`convert_table_to_text_live` as an exact
+round trip (`Name\tAge\n...` -> table -> `Name,Age\n...`); the full
+section lifecycle including both `keep_content` branches; the full
+footnote and endnote lifecycles; note settings get/set; the full content
+control lifecycle including the honest delete fix; `preview_mail_merge_
+live` against a real CSV folder (2 rows read back correctly via SDBC,
+plus a real `TextField.Database` field resolving to the correct row
+value); confirmed `mail_merge_live` correctly stays absent from the
+live tool-dispatch list (same as writer_layout.py's `set_chapter_
+numbering_live` stub).
+
+**Testing:** `tests/test_writer_tables.py`, 15 new tests (a `FakeUnoBridge`
+modeling tables/sections as plain dicts and footnotes/endnotes/content
+controls as plain objects registered through the real `ObjectRegistry` --
+tool-layer plumbing only, real UNO mechanics are live-verified instead).
+Mixed module like `charts.py`/`impress.py`/`calc_data.py`/`writer_layout.
+py`: `IMPLEMENTED_WRITER_TABLES_TOOL_NAMES` (37 names) added to `tests/
+test_tool_scaffold_contract.py`. 433/433 passing under `pytest` across
+the full relevant suite. This closes out the four-scaffold assignment
+(calc_data.py, calc_page.py, writer_layout.py, writer_tables.py).
 
 ## What was built
 
