@@ -107,8 +107,10 @@ class MCPProtocolHandler(unohelper.Base, XServiceInfo, XDispatchProvider, XDispa
     # XDispatchProvider
     def queryDispatch(self, url, target, flags):
         logger.debug(f"queryDispatch: {url.Complete}")
-        if url.Protocol == "service:":
+
+        if url.Protocol == "mcp:":
             return self
+
         return None
 
     def queryDispatches(self, requests):
@@ -117,25 +119,47 @@ class MCPProtocolHandler(unohelper.Base, XServiceInfo, XDispatchProvider, XDispa
     # XDispatch
     def dispatch(self, url, args):
         logger.info(f"dispatch called: {url.Complete}")
-        try:
-            if "?" in url.Complete:
-                command = url.Complete.split("?")[1]
-                logger.info(f"Executing command: {command}")
 
-                if command == "start_mcp_server":
-                    # Run in thread to not block UI
-                    threading.Thread(target=_start_server, daemon=True).start()
-                elif command == "stop_mcp_server":
-                    threading.Thread(target=_stop_server, daemon=True).start()
-                elif command == "restart_mcp_server":
-                    def restart():
-                        _stop_server()
-                        _start_server()
-                    threading.Thread(target=restart, daemon=True).start()
-                elif command == "get_status":
-                    logger.info(f"Server status: started={_server_started}")
-                else:
-                    logger.warning(f"Unknown command: {command}")
+        try:
+            if not url.Complete.startswith("mcp:"):
+                logger.warning(f"Unsupported URL: {url.Complete}")
+                return
+
+            command = url.Complete.split(":", 1)[1]
+            command = command.split("?", 1)[0]
+            command = command.split("#", 1)[0]
+
+            logger.info(f"Executing command: {command}")
+
+            if command == "start_mcp_server":
+                threading.Thread(
+                    target=_start_server,
+                    daemon=True
+                ).start()
+
+            elif command == "stop_mcp_server":
+                threading.Thread(
+                    target=_stop_server,
+                    daemon=True
+                ).start()
+
+            elif command == "restart_mcp_server":
+                def restart():
+                    _stop_server()
+                    _start_server()
+
+                threading.Thread(
+                    target=restart,
+                    daemon=True
+                ).start()
+
+            elif command == "get_status":
+                logger.info(
+                    f"Server status: started={_server_started}"
+                )
+
+            else:
+                logger.warning(f"Unknown command: {command}")
 
         except Exception as e:
             logger.error(f"Error in dispatch: {e}")

@@ -16,7 +16,7 @@
                     <value>_self</value>
                 </prop>
                 <prop oor:name="URL" oor:type="xs:string">
-                    <value>service:org.mcp.libreoffice.MCPExtension?start_mcp_server</value>
+                    <value>mcp:start_mcp_server</value>
                 </prop>
                 <prop oor:name="ImageIdentifier" oor:type="xs:string">
                     <value/>
@@ -30,7 +30,7 @@
                             <value xml:lang="en-US">Start MCP Server</value>
                         </prop>
                         <prop oor:name="URL" oor:type="xs:string">
-                            <value>service:org.mcp.libreoffice.MCPExtension?start_mcp_server</value>
+                            <value>mcp:start_mcp_server</value>
                         </prop>
                         <prop oor:name="Target" oor:type="xs:string">
                             <value>_self</value>
@@ -43,7 +43,7 @@
                             <value xml:lang="en-US">Stop MCP Server</value>
                         </prop>
                         <prop oor:name="URL" oor:type="xs:string">
-                            <value>service:org.mcp.libreoffice.MCPExtension?stop_mcp_server</value>
+                            <value>mcp:stop_mcp_server</value>
                         </prop>
                         <prop oor:name="Target" oor:type="xs:string">
                             <value>_self</value>
@@ -56,7 +56,7 @@
                             <value xml:lang="en-US">Restart MCP Server</value>
                         </prop>
                         <prop oor:name="URL" oor:type="xs:string">
-                            <value>service:org.mcp.libreoffice.MCPExtension?restart_mcp_server</value>
+                            <value>mcp:restart_mcp_server</value>
                         </prop>
                         <prop oor:name="Target" oor:type="xs:string">
                             <value>_self</value>
@@ -76,7 +76,7 @@
                             <value xml:lang="en-US">Show Server Status</value>
                         </prop>
                         <prop oor:name="URL" oor:type="xs:string">
-                            <value>service:org.mcp.libreoffice.MCPExtension?get_status</value>
+                            <value>mcp:get_status</value>
                         </prop>
                         <prop oor:name="Target" oor:type="xs:string">
                             <value>_self</value>
@@ -97,7 +97,7 @@
                         <value xml:lang="en-US">Toggle MCP Server</value>
                     </prop>
                     <prop oor:name="URL" oor:type="xs:string">
-                        <value>service:org.mcp.libreoffice.MCPExtension?start_mcp_server</value>
+                        <value>mcp:start_mcp_server</value>
                     </prop>
                     <prop oor:name="Target" oor:type="xs:string">
                         <value>_self</value>
