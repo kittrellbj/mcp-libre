@@ -12,7 +12,7 @@ up exactly where it left off.
 
 | Spec section | Tool rows | Existing (P0) | New this pass | Status |
 |---|---|---|---|---|
-| Core runtime, discovery, capability negotiation | 12 | 0 | 12 | **Scaffolded** (`tools/core_runtime.py`) |
+| Core runtime, discovery, capability negotiation | 12 | 0 | 12 | **Implemented** (`tools/core_runtime.py`) -- real logic, live-verified |
 | Document and session lifecycle | 27 | 5 | 22 | **Scaffolded** (`tools/document_lifecycle.py`) |
 | Undo, view, selection, events, orchestration | 14 | 0 | 14 | **Scaffolded** (`tools/undo_view_selection.py`) |
 | Styles and formatting infrastructure | 12 | 0 | 12 | **Scaffolded** (`tools/styles.py`) |
@@ -98,6 +98,99 @@ additive way as every prior phase, so no changes were needed in
 more `EXPECTED_BY_MODULE` entries (`impress`, `draw`); the full contract
 suite now checks 366 registered tools by exact name across 14 modules.
 
+## Real implementation pass: core runtime tools
+
+Per direction to stop scaffolding and implement for real, all 12
+`tools/core_runtime.py` tools now have real logic instead of stub bodies,
+and are registered `status="implemented"` (see `registry.register_tool`'s
+new `status` parameter) -- they're merged into `LibreOfficeMCPServer.tools`
+unconditionally, like the original 32, not gated behind
+`MCP_LIBRE_ENABLE_SCAFFOLD_STUBS` anymore. `get_registry(status=...)` and
+`merge_into(..., registry=...)` let `mcp_server.py` merge "implemented"
+and "stub" tools separately; the remaining 354 scaffold tools are still
+`status="stub"` and still gated by the env var exactly as before.
+
+**New shared infrastructure this required:**
+
+- `tools/runtime_state.py` -- `RuntimeState`: session id, tool-exposure
+  profile, and a bounded (200-entry) error history. Pure Python, no UNO.
+- `tools/context.py` -- `RuntimeContext`/`install()`/`get_context()`: a
+  process-wide holder for the live `UNOBridge`, `DocumentRegistry`,
+  `RuntimeState`, and a `get_tools()` callable, since `@register_tool`
+  handlers are plain functions with no `self`. `mcp_server.py` installs
+  this once in `LibreOfficeMCPServer.__init__`, right after constructing
+  those three dependencies and before registering any tool.
+- `mcp_server.py`: `DocumentRegistry` and `RuntimeState` are now actually
+  constructed (previously `DocumentRegistry` was real code nothing ever
+  instantiated in production). `execute_tool()` now calls
+  `runtime_state.record_call()`/`record_error()` around every dispatch --
+  not just core_runtime's own tools -- so `get_recent_errors_live`/
+  `get_diagnostics_live` reflect real traffic across all 44 tools, not
+  just the 12 that call runtime_state directly. (`batch_execute_live`
+  calls handlers directly rather than through `execute_tool()`, so
+  operations run inside a batch are not separately recorded in the error
+  history -- a documented scope boundary, not a bug.)
+- `uno_bridge.py` gained two new real methods: `get_application_version()`
+  (queries `/org.openoffice.Setup/Product` via the UNO configuration
+  provider -- live-verified to return the real running LibreOffice version,
+  e.g. "26.2", not a guess) and `get_capabilities()` (reports which of the
+  module's guarded optional-interface imports actually resolved on this
+  build/platform).
+
+**Known, documented scope limits** (not hidden, called out in
+`core_runtime.py`'s module docstring and in code comments at each site):
+
+- `list_tools_live`'s profile filtering is derived from which module a
+  tool's handler was defined in (`handler.__module__`), not per-tool
+  metadata -- accurate at module granularity; a module shared across
+  document types (e.g. `drawing_objects.py`) is tagged with the union of
+  types, not filtered tool-by-tool within itself.
+- `validate_tool_call_live` implements a minimal JSON Schema subset
+  (required-field presence, declared `type`, `enum` membership) -- not a
+  general-purpose validator, but sufficient for every schema this package
+  actually produces via `registry.schema()`.
+- `batch_execute_live` accepts `undo_label` but returns a warning that
+  named-undo-context grouping isn't implemented yet
+  (`begin_undo_context_live`/`end_undo_context_live` are still stubs).
+- `get_session_state_live`'s `registered_document_handles` reflects
+  `DocumentRegistry`, which nothing populates yet (`open_document_live`,
+  `create_document_live`, etc. are still stubs) -- `open_documents` is
+  sourced from the live desktop frame list instead, live-verified to work
+  correctly even when `registered_document_handles` is empty.
+
+**Testing:** `tests/test_runtime_state.py` (11 tests, pure logic),
+`tests/test_context.py` (4 tests), `tests/test_core_runtime.py` (29 tests,
+using fakes for `UNOBridge` but the real `DocumentRegistry`/`RuntimeState`/
+`context` -- exercises the actual integration path, not just isolated
+logic). `tests/test_tool_scaffold_contract.py` gained
+`test_every_tool_has_a_valid_status` and
+`test_core_runtime_tools_are_marked_implemented`, and
+`test_stub_shape_contract` now only iterates `status="stub"` tools.
+
+**Live-verified, not just unit-tested with fakes:** built the `.oxt`
+(catching and fixing a real bug in the process -- `build-oxt-windows.py`'s
+file list never included `plugin/pythonpath/tools/` at all, so every
+build since Phase A would have shipped a broken extension the moment
+`mcp_server.py`'s `import tools` ran; now globs `tools/*.py` in rather
+than hand-listing modules), installed it via `unopkg`, launched a real
+headless `soffice.exe` with a UNO accept socket, dispatched
+`mcp:start_mcp_server` through the actual `registration.py` dispatch path
+(not a shortcut), and hit the live HTTP API with `curl`. Confirmed for
+real: `GET /` reports `tools_count: 44` (32 original + 12 implemented);
+`ping_live`, `get_server_info_live` (real LibreOffice version "26.2", real
+Python version, real OS -- not placeholders), `get_capabilities_live`
+(real per-build interface availability -- `XPresentationDocument` came
+back `false` on this LibreOffice build, a genuine capability gap the
+guarded-import pattern is designed to surface), `get_session_state_live`,
+`list_tools_live`, `get_diagnostics_live`, `validate_tool_call_live`,
+`batch_execute_live`, `get_recent_errors_live`, `clear_diagnostics_live`,
+and `set_tool_profile_live` all behaved correctly against the live
+extension. Also incidentally re-confirmed the earlier baseline-cleanup
+security fix still works live: a request with `Host: evil.example.com`
+got a real 403 from the running server. Cleaned up afterward (stopped the
+MCP server via dispatch, terminated `soffice`, verified port 8765 was
+released, removed scratch scripts and the local `build/` artifact).
+
 ## What was built
 
 **Shared plumbing (`plugin/pythonpath/tools/`):**
@@ -130,14 +223,18 @@ suite now checks 366 registered tools by exact name across 14 modules.
   including the note that this only covers the top-level `document_id`,
   not the finer-grained handles (`shape_id`, `table_id`, etc.) later
   phases will also need.
-  **Not yet wired into any tool stub's body** -- every stub below still
-  returns `NOT_IMPLEMENTED` regardless of arguments; wiring the registry
-  into a handler is real tool-by-tool implementation work, not scaffolding.
+  **Now wired into real tool bodies:** `core_runtime.py`'s
+  `get_capabilities_live`, `list_tools_live` ("auto" profile), and
+  `get_session_state_live` all call `resolve_document()`/`list_documents()`
+  for real (see "Real implementation pass" above). Every other tool
+  module's stubs still ignore it -- wiring it into each of those is real
+  tool-by-tool implementation work, not scaffolding.
 
-**Tool modules, 366 stub functions across 14 files:**
+**Tool modules, 366 functions across 14 files (354 still stub, 12 real --
+`core_runtime.py`, see "Real implementation pass" above):**
 
-- Phase A: `core_runtime.py` (12), `document_lifecycle.py` (22 new, on top
-  of 5 pre-existing), `undo_view_selection.py` (14), `styles.py` (12).
+- Phase A: `core_runtime.py` (12, **implemented**), `document_lifecycle.py`
+  (22 new, on top of 5 pre-existing), `undo_view_selection.py` (14), `styles.py` (12).
 - Phase B: `writer_text.py` (18 new, on top of 27 pre-existing),
   `writer_layout.py` (43), `writer_tables.py` (38).
 - Phase C: `drawing_objects.py` (31), `charts.py` (20), `calc_sheets.py`
@@ -173,13 +270,19 @@ extension.
 
 ## What is intentionally NOT done
 
-- **No UNO implementation in any of the 366 tool stubs.** They all
-  return `NOT_IMPLEMENTED`. Implementing them needs a working
-  `uno`/`unohelper` environment inside LibreOffice, which this scaffolding
-  pass didn't have reason to touch.
+- **No UNO implementation in the remaining 354 tool stubs** (everything
+  outside `core_runtime.py`). They all return `NOT_IMPLEMENTED`.
+  Implementing them needs a working `uno`/`unohelper` environment inside
+  LibreOffice -- confirmed working end-to-end for `core_runtime.py`'s 12
+  (see "Real implementation pass" above); the same approach applies to
+  the rest, tool by tool.
 - **`DocumentRegistry`'s dispose-listener eviction** -- see above.
-- **Not wired into the live server by default** -- see the env var gate
-  above.
+- **The 354 remaining stub tools are still not wired into the live server
+  by default** -- see the `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS` env var gate
+  above. (The 12 `core_runtime.py` tools ARE always-on now, unconditionally.)
+- **Undo-context tracking** (`begin_undo_context_live`/`end_undo_context_live`)
+  -- still stubs, which is why `batch_execute_live`'s `undo_label` and
+  `get_session_state_live`'s `pending_undo_context` can't be backed for real yet.
 - **Phases E-F (Base/forms/Math, quality/expert surface) are untouched.**
   86 more net-new tools remain, per the table above.
 
@@ -220,15 +323,19 @@ Not a blocker: `tools/` stays additive and reversible either way.
 
 ## Suggested next steps
 
-1. Implement the 12 core-runtime stubs against `DocumentRegistry` --
-   `get_server_info_live`, `list_tools_live`, `get_session_state_live`,
-   etc. are the tools every other tool's tests will use to introspect
-   what's available.
-2. Wire `mcp_server.py`'s HTTP layer (`ai_interface.py`) to surface
+1. ~~Implement the 12 core-runtime tools against `DocumentRegistry`~~ --
+   done, live-verified, see "Real implementation pass" above.
+2. Implement `begin_undo_context_live`/`end_undo_context_live` for real --
+   `batch_execute_live` and `get_session_state_live` both have a
+   documented gap waiting on this.
+3. Wire `mcp_server.py`'s HTTP layer (`ai_interface.py`) to surface
    `NOT_IMPLEMENTED` responses distinctly (e.g. HTTP 501) so a client can
    tell "not implemented yet" apart from a real runtime error while these
    phases are partially built out.
-3. Continue scaffolding Phases E-F (Base and database access, forms and
+4. Continue implementing real logic for `document_lifecycle.py` (open/
+   save/convert/properties) -- natural next target since `core_runtime.py`
+   now depends on some of the same document-resolution machinery, or
+   continue scaffolding Phases E-F (Base and database access, forms and
    controls, Math formula documents, linguistic/accessibility/publishing
    QA, security/scripts/events/advanced UNO escape hatch -- 86 more rows),
    using the same `tools/registry.py` pattern established in Phases A-D.

@@ -11,16 +11,22 @@ import logging
 import os
 from typing import Dict, Any, Optional, List
 import uno_bridge
+import tools
+from tools import context as tools_context
+from tools.documents import DocumentRegistry
+from tools.runtime_state import RuntimeState
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Set MCP_LIBRE_ENABLE_SCAFFOLD_STUBS=1 to also advertise the tool scaffold
-# from tools/ (see docs/MCP_TOOLING_SCAFFOLD_PLAN.md -- currently Phase A
-# and Phase B). Off by default: every stub currently returns a
-# NOT_IMPLEMENTED error, so this should stay opt-in until stub bodies gain
-# real implementations.
+# Set MCP_LIBRE_ENABLE_SCAFFOLD_STUBS=1 to also advertise the remaining
+# tool scaffold from tools/ that's still stub-only (see
+# docs/MCP_TOOLING_SCAFFOLD_PLAN.md). Off by default: every one of those
+# stubs currently returns a NOT_IMPLEMENTED error, so they should stay
+# opt-in until implemented. This does NOT gate the core_runtime tools
+# (status="implemented") -- those are always registered, like the
+# original 32.
 _ENABLE_SCAFFOLD_STUBS_ENV = "MCP_LIBRE_ENABLE_SCAFFOLD_STUBS"
 
 
@@ -30,26 +36,45 @@ class LibreOfficeMCPServer:
     def __init__(self):
         """Initialize the MCP server"""
         self.uno_bridge = uno_bridge.UNOBridge()
+        self.document_registry = DocumentRegistry(self.uno_bridge)
+        self.runtime_state = RuntimeState()
         self.tools = {}
         self._register_tools()
+
+        # Install the shared context before registering/using any
+        # tools/core_runtime.py handler -- they read it via
+        # tools.context.get_context() at call time, not at import time.
+        tools_context.install(tools_context.RuntimeContext(
+            uno_bridge=self.uno_bridge,
+            document_registry=self.document_registry,
+            runtime_state=self.runtime_state,
+            get_tools=lambda: self.tools,
+        ))
+
+        self._register_implemented_scaffold_tools()
         self._register_scaffold_stub_tools()
         logger.info("LibreOffice MCP Server initialized")
 
+    def _register_implemented_scaffold_tools(self):
+        """Merge in tools/ registrations with status="implemented" (currently
+        just core_runtime.py's 12 tools). Unconditional, like the original 32
+        -- these have real logic, not a NOT_IMPLEMENTED stub body.
+        """
+        added = tools.merge_into(self.tools, registry=tools.get_registry(status="implemented"))
+        logger.info(f"Registered {len(added)} implemented scaffold tools: {sorted(added)}")
+
     def _register_scaffold_stub_tools(self):
-        """Merge in the opt-in tool scaffold from tools/, if enabled.
+        """Merge in the opt-in tool scaffold from tools/ that's still
+        stub-only, if enabled.
 
         Additive only: existing tool names are never overwritten (see
         tools.registry.merge_into), so the original 32 compatibility tools
-        keep their current behavior regardless of this flag.
+        and the always-on implemented scaffold tools keep their current
+        behavior regardless of this flag.
         """
         if not os.environ.get(_ENABLE_SCAFFOLD_STUBS_ENV):
             return
-        try:
-            import tools as tool_scaffold
-        except ImportError as e:
-            logger.warning(f"{_ENABLE_SCAFFOLD_STUBS_ENV} is set but the tools scaffold failed to import: {e}")
-            return
-        added = tool_scaffold.merge_into(self.tools)
+        added = tools.merge_into(self.tools, registry=tools.get_registry(status="stub"))
         logger.warning(
             f"{_ENABLE_SCAFFOLD_STUBS_ENV} is set: registered {len(added)} scaffold stub tools "
             "that return NOT_IMPLEMENTED until a senior engineer fills them in."
@@ -543,6 +568,7 @@ class LibreOfficeMCPServer:
         Returns:
             Result dictionary
         """
+        self.runtime_state.record_call()
         try:
             if tool_name not in self.tools:
                 return {
@@ -550,18 +576,34 @@ class LibreOfficeMCPServer:
                     "error": f"Unknown tool: {tool_name}",
                     "available_tools": list(self.tools.keys())
                 }
-            
+
             tool = self.tools[tool_name]
             handler = tool["handler"]
-            
+
             # Execute the tool handler
             result = handler(**parameters)
-            
+
+            # Record failures into runtime_state's bounded error history so
+            # get_recent_errors_live has something real to report. Legacy
+            # tools (the original 32) don't always set "success" explicitly
+            # on their happy path (see uno_bridge.py), so an absent key is
+            # NOT treated as failure here -- only an explicit False is.
+            if isinstance(result, dict) and result.get("success") is False:
+                error_value = result.get("error")
+                if isinstance(error_value, dict):
+                    code = error_value.get("code", "UNKNOWN")
+                    message = error_value.get("message", str(error_value))
+                else:
+                    code = "UNKNOWN"
+                    message = str(error_value)
+                self.runtime_state.record_error(tool_name, code, message)
+
             logger.info(f"Executed tool '{tool_name}' successfully")
             return result
-            
+
         except Exception as e:
             logger.error(f"Error executing tool '{tool_name}': {e}")
+            self.runtime_state.record_error(tool_name, "UNO_EXCEPTION", str(e))
             return {
                 "success": False,
                 "error": str(e),

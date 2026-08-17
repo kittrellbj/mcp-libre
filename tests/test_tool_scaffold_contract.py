@@ -12,15 +12,19 @@ only checks the scaffold's own contract:
     just by count, so a tool silently landing in the wrong module (or a
     typo'd name that still keeps the count right) fails loudly;
   * none collide with the original 32 compatibility tool names;
-  * every stub handler returns the spec's error envelope shape with code
-    NOT_IMPLEMENTED, regardless of the arguments passed in;
+  * every remaining stub handler (status="stub") returns the spec's error
+    envelope shape with code NOT_IMPLEMENTED, regardless of the arguments
+    passed in;
+  * tools with status="implemented" (currently core_runtime.py's 12) stay
+    marked as such, so a bad merge/rebase reverting one to "stub" is caught;
   * merge_into() never overwrites a pre-existing tool entry unless told to.
 
-Once a senior engineer replaces a stub body with a real implementation,
-that tool's "returns NOT_IMPLEMENTED" assertion in test_stub_shape_contract
-should be replaced with a real behavioral test per spec section 9
-(schema validation, positive/negative cases, undo/redo, persistence, etc.)
--- this file is not meant to grow real coverage in place.
+When a stub body gets a real implementation, flip its status="implemented"
+in the @register_tool call (see registry.py) and move its coverage out of
+this file's generic "returns NOT_IMPLEMENTED" check into a real behavioral
+test file next to it -- see tests/test_core_runtime.py for the pattern
+used for the first 12. This file is not meant to grow real per-tool
+behavioral coverage in place.
 """
 
 import os
@@ -262,9 +266,28 @@ def test_every_tool_has_a_valid_priority():
         assert metadata["priority"] in valid_priorities, f"{name} has invalid priority {metadata['priority']!r}"
 
 
-def test_stub_shape_contract():
-    """Every stub, called with placeholder args, returns the spec's NOT_IMPLEMENTED error envelope."""
+def test_every_tool_has_a_valid_status():
     for name, metadata in get_registry().items():
+        assert metadata["status"] in ("stub", "implemented"), f"{name} has invalid status {metadata['status']!r}"
+
+
+def test_core_runtime_tools_are_marked_implemented():
+    """The 12 core_runtime.py tools carry real logic now -- guard against one
+    silently reverting to status="stub" (e.g. a bad merge/rebase)."""
+    registry = get_registry()
+    for name in EXPECTED_BY_MODULE["core_runtime"]:
+        assert registry[name]["status"] == "implemented", f"{name} should be status='implemented'"
+
+
+def test_stub_shape_contract():
+    """Every remaining stub, called with placeholder args, returns the
+    spec's NOT_IMPLEMENTED error envelope. Tools with status="implemented"
+    (currently core_runtime.py's 12) are excluded -- they have real logic
+    and real behavioral tests instead (see tests/test_core_runtime.py);
+    calling them here with placeholder args and no installed
+    tools.context would raise, not return NOT_IMPLEMENTED.
+    """
+    for name, metadata in get_registry(status="stub").items():
         result = _call_with_placeholders(metadata["handler"], metadata["parameters"])
         assert result["success"] is False, f"{name} stub should not report success"
         assert result["error"]["code"] == "NOT_IMPLEMENTED", f"{name} stub returned unexpected error code"
@@ -311,6 +334,8 @@ if __name__ == "__main__":
         test_registry_matches_expected_names_exactly,
         test_no_collisions_with_existing_compat_tools,
         test_every_tool_has_a_valid_priority,
+        test_every_tool_has_a_valid_status,
+        test_core_runtime_tools_are_marked_implemented,
         test_stub_shape_contract,
         test_merge_into_does_not_overwrite_existing_tools_by_default,
         test_error_envelope_rejects_unknown_codes,

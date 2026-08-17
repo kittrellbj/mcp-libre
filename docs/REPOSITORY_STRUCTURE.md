@@ -17,18 +17,28 @@ mcp-libre/
 │   │   ├── uno_bridge.py           # UNO API bridge for LibreOffice
 │   │   ├── mcp_server.py           # Embedded MCP server
 │   │   ├── ai_interface.py         # HTTP API for AI assistants
+│   │   ├── host_trust.py           # Host/Origin trust check (DNS-rebinding guard) for ai_interface.py
 │   │   ├── registration.py         # Extension registration and lifecycle
 │   │   └── 📁 tools/               # Full-catalog tool scaffold (see docs/MCP_TOOLING_SCAFFOLD_PLAN.md)
-│   │       ├── registry.py         # @register_tool decorator, merge_into()
+│   │       ├── registry.py         # @register_tool decorator (status=stub|implemented), merge_into()
 │   │       ├── envelope.py         # {success, result, error, document_id, elapsed_ms} builders
-│   │       ├── documents.py        # DocumentRegistry stub (stable document_id handles)
-│   │       ├── core_runtime.py     # Phase A: discovery/capability/profile tools
-│   │       ├── document_lifecycle.py # Phase A: open/save/convert/properties tools
-│   │       ├── undo_view_selection.py # Phase A: undo/redo/view/selection tools
-│   │       ├── styles.py           # Phase A: style family/apply/formatting tools
-│   │       ├── writer_text.py      # Phase B: paragraph/character editing, regex find/replace, comments
-│   │       ├── writer_layout.py    # Phase B: page layout, headers/footers, fields, bookmarks, indexes
-│   │       └── writer_tables.py    # Phase B: tables, sections, footnotes/endnotes, content controls, mail merge
+│   │       ├── documents.py        # DocumentRegistry (real): stable document_id handles
+│   │       ├── runtime_state.py    # RuntimeState (real): session id, profile, bounded error history
+│   │       ├── context.py          # RuntimeContext install()/get_context() -- shared server state for handlers
+│   │       ├── core_runtime.py     # Phase A, IMPLEMENTED: discovery/capability/profile/diagnostics tools
+│   │       ├── document_lifecycle.py # Phase A, stub: open/save/convert/properties tools
+│   │       ├── undo_view_selection.py # Phase A, stub: undo/redo/view/selection tools
+│   │       ├── styles.py           # Phase A, stub: style family/apply/formatting tools
+│   │       ├── writer_text.py      # Phase B, stub: paragraph/character editing, regex find/replace, comments
+│   │       ├── writer_layout.py    # Phase B, stub: page layout, headers/footers, fields, bookmarks, indexes
+│   │       ├── writer_tables.py    # Phase B, stub: tables, sections, footnotes/endnotes, content controls, mail merge
+│   │       ├── drawing_objects.py  # Phase C, stub: shapes, glue points, images, embedded objects
+│   │       ├── charts.py           # Phase C, stub: chart2-based chart tools
+│   │       ├── calc_sheets.py      # Phase C, stub: sheets, cells, ranges, rows/columns, formulas
+│   │       ├── calc_data.py        # Phase C, stub: named ranges, filters, pivots, validation, external data
+│   │       ├── calc_page.py        # Phase C, stub: page layout, print areas, comments, protection
+│   │       ├── impress.py          # Phase D, stub: slides, masters, notes, transitions, animations, slideshow
+│   │       └── draw.py             # Phase D, stub: Draw pages, layers, vector operations
 │   ├── Addons.xcu                  # LibreOffice menu configuration
 │   ├── ProtocolHandler.xcu         # Protocol handler configuration
 │   ├── description.xml             # Extension description
@@ -42,8 +52,12 @@ mcp-libre/
 │   ├── __init__.py                 # Test package initialization
 │   ├── test_client.py              # Interactive MCP client test
 │   ├── test_insert_fix.py          # Specific function tests
-│   ├── test_tool_scaffold_contract.py # Tool scaffold contract tests (no live LibreOffice needed)
-│   └── test_document_registry.py   # DocumentRegistry unit tests (no live LibreOffice needed)
+│   ├── test_tool_scaffold_contract.py # Tool scaffold registry contract tests (no live LibreOffice needed)
+│   ├── test_document_registry.py   # DocumentRegistry unit tests (no live LibreOffice needed)
+│   ├── test_runtime_state.py       # RuntimeState unit tests (no live LibreOffice needed)
+│   ├── test_context.py             # tools.context unit tests (no live LibreOffice needed)
+│   ├── test_core_runtime.py        # core_runtime.py's 12 implemented tools, tested against fakes
+│   └── test_host_trust.py          # Host/Origin trust check unit tests (no live LibreOffice needed)
 ├── 📁 examples/                    # Demo and example scripts
 │   ├── __init__.py                 # Examples package initialization
 │   ├── demo_editing.py             # Document editing demonstrations

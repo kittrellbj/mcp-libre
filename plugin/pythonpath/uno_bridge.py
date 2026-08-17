@@ -65,6 +65,62 @@ class UNOBridge:
             logger.error(f"Failed to initialize UNO Bridge: {e}")
             raise
     
+    def get_application_version(self) -> Dict[str, Any]:
+        """
+        Return the running LibreOffice application's version info via UNO
+        configuration, not the extension's own version.
+
+        Reads /org.openoffice.Setup/Product from the UNO configuration
+        provider -- the standard way an extension queries "what LibreOffice
+        am I running inside", independent of any document being open.
+
+        Returns:
+            {"success": True, "name": ..., "version": ..., "version_about_box": ...}
+            or {"success": False, "error": ...} if the configuration query fails.
+        """
+        try:
+            provider = self.smgr.createInstanceWithContext(
+                "com.sun.star.configuration.ConfigurationProvider", self.ctx)
+
+            node_path = PropertyValue()
+            node_path.Name = "nodepath"
+            node_path.Value = "/org.openoffice.Setup/Product"
+
+            access = provider.createInstanceWithArguments(
+                "com.sun.star.configuration.ConfigurationAccess", (node_path,))
+
+            return {
+                "success": True,
+                "name": access.getByName("ooName"),
+                "version": access.getByName("ooSetupVersion"),
+                "version_about_box": access.getByName("ooSetupVersionAboutBox"),
+            }
+        except Exception as e:
+            logger.error(f"Failed to read application version: {e}")
+            return {"success": False, "error": str(e)}
+
+    def get_capabilities(self) -> Dict[str, Any]:
+        """
+        Return which optional UNO interfaces this bridge resolved at import
+        time, and which document types create_document()/the doc-type
+        detection in _get_document_type() actually support.
+
+        This reflects real state (the module-level guarded imports at the
+        top of this file succeeding or falling back to None), not a
+        hardcoded claim -- on a LibreOffice build/platform where one of
+        these interfaces is unavailable, the corresponding flag is False.
+        """
+        return {
+            "supported_document_types": ["writer", "calc", "impress", "draw"],
+            "optional_uno_interfaces": {
+                "XTextDocument": XTextDocument is not None,
+                "XSpreadsheetDocument": XSpreadsheetDocument is not None,
+                "XPresentationDocument": XPresentationDocument is not None,
+                "XDocumentEventListener": XDocumentEventListener is not None,
+                "XActionListener": XActionListener is not None,
+            },
+        }
+
     def create_document(self, doc_type: str = "writer") -> Any:
         """
         Create new document using UNO API

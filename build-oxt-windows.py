@@ -26,6 +26,14 @@ files = [
     (repoDir / "LICENSE", "LICENSE"),
 ]
 
+# The tools/ package (plugin/pythonpath/tools/*.py) is a hard import of
+# mcp_server.py -- glob it in rather than hand-listing every module, since
+# the tool scaffold keeps growing (see docs/MCP_TOOLING_SCAFFOLD_PLAN.md).
+# Excludes __pycache__ (never wanted in the .oxt).
+toolsDir = pluginDir / "pythonpath" / "tools"
+for sourcePath in sorted(toolsDir.glob("*.py")):
+    files.append((sourcePath, f"pythonpath/tools/{sourcePath.name}"))
+
 missingFiles = [
     str(sourcePath)
     for sourcePath, archiveName in files
