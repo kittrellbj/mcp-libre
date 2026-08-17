@@ -4,6 +4,8 @@
 
 This guide helps you migrate from the external MCP server to the new LibreOffice plugin extension, which provides significantly better performance and capabilities.
 
+> **Note:** The plugin exposes a custom REST API (`GET /tools`, `POST /execute`, `POST /tools/{tool_name}`), not native MCP JSON-RPC. It is a LibreOffice-native HTTP tool bridge designed for MCP integration, not a drop-in MCP server -- the Claude Desktop configuration snippets below are conceptual/nonfunctional until a real Streamable HTTP MCP endpoint or an MCP-to-REST adapter exists. For working Claude Desktop integration today, use the external server (`src/libremcp.py`), which is real MCP via the `mcp` SDK.
+
 ## 📊 Benefits of Migration
 
 | Feature | External Server | LibreOffice Plugin |
@@ -11,7 +13,7 @@ This guide helps you migrate from the external MCP server to the new LibreOffice
 | **Performance** | ⭐⭐ (subprocess calls) | ⭐⭐⭐⭐⭐ (direct UNO API) |
 | **Real-time Editing** | ⭐⭐ (file-based) | ⭐⭐⭐⭐⭐ (live objects) |
 | **Startup Time** | ⭐⭐ (LibreOffice startup) | ⭐⭐⭐⭐⭐ (instant) |
-| **Multi-document** | ⭐⭐ (file operations) | ⭐⭐⭐⭐⭐ (all open docs) |
+| **Multi-document** | ⭐⭐ (file operations) | ⭐⭐⭐⭐ (enumerates all open docs; edits target the active one) |
 | **GUI Integration** | ⭐ (none) | ⭐⭐⭐⭐⭐ (native menus) |
 | **Advanced Features** | ⭐⭐⭐ (limited) | ⭐⭐⭐⭐⭐ (full access) |
 
@@ -25,22 +27,7 @@ cd plugin/
 
 ### Step 2: Update AI Assistant Configuration
 
-**For Claude Desktop:**
-```json
-{
-  "mcpServers": {
-    "libreoffice-plugin": {
-      "command": "curl",
-      "args": [
-        "-X", "POST", 
-        "http://localhost:8765/execute",
-        "-H", "Content-Type: application/json",
-        "-d", "{\"tool\": \"TOOL_NAME\", \"parameters\": PARAMETERS}"
-      ]
-    }
-  }
-}
-```
+**For Claude Desktop:** there is currently no functional `mcpServers` entry for the plugin -- Claude Desktop launches a real MCP server process and cannot substitute placeholders like `TOOL_NAME`/`PARAMETERS` into a fixed `curl` command. Until the plugin exposes a real Streamable HTTP MCP endpoint (or is paired with an MCP-to-REST adapter), keep using the external server (`src/libremcp.py`) for Claude Desktop, which is documented in the root `README.md`.
 
 **For Super Assistant:**
 Change the server URL from your external server to:
@@ -73,8 +60,8 @@ cp ~/Documents/mcp/mcp.config.json ~/Documents/mcp/mcp.config.json.backup
 ### 2. Install LibreOffice Plugin
 
 ```bash
-# Navigate to plugin directory
-cd /home/patrick/work/mcp/mcp-libre/plugin
+# Navigate to plugin directory (adjust to your clone location)
+cd /path/to/mcp-libre/plugin
 
 # Check prerequisites
 ./install.sh status
@@ -122,21 +109,8 @@ Replace your existing LibreOffice MCP server configuration:
 ```
 
 **After (Plugin):**
-```json
-{
-  "mcpServers": {
-    "libreoffice-plugin": {
-      "command": "curl",
-      "args": [
-        "-s", "-X", "POST",
-        "http://localhost:8765/execute",
-        "-H", "Content-Type: application/json",
-        "-d", "{\"tool\": \"TOOL_NAME\", \"parameters\": PARAMETERS}"
-      ]
-    }
-  }
-}
-```
+
+There is no working `mcpServers` entry for the plugin yet. Claude Desktop's `mcpServers` configuration launches a real MCP server process; it cannot dynamically substitute values like `TOOL_NAME`/`PARAMETERS` into a fixed `curl` command, so a config in that shape would not function. Using this REST API from Claude Desktop today would require either a real Streamable HTTP MCP endpoint added to the extension, or a separate MCP-to-REST adapter process. Until then, keep the external server (`src/libremcp.py`) configured for Claude Desktop and use the plugin's HTTP API directly (`curl`, scripts, or a custom client) instead.
 
 #### Super Assistant Migration
 
@@ -214,10 +188,13 @@ curl -X POST http://localhost:8765/tools/format_text_live \
 
 ### Multi-document Support
 ```bash
-# List all open documents
-curl http://localhost:8765/tools/list_open_documents
+# List all open documents (enumeration only)
+curl -X POST http://localhost:8765/tools/list_open_documents \
+  -H "Content-Type: application/json" \
+  -d '{}'
 
-# Work with specific documents by switching focus in LibreOffice
+# There is no document_id/handle parameter to target a specific document;
+# editing tools operate on whichever document currently has focus in LibreOffice
 ```
 
 ### Advanced Document Operations
@@ -262,7 +239,7 @@ After installation, access plugin controls via:
 ### Plugin Not Loading
 ```bash
 # Check LibreOffice version
-libreoffice --version  # Should be 7.0+
+libreoffice --version  # Tested on LibreOffice 24.2 and later
 
 # Verify extension installation
 unopkg list | grep mcp
@@ -300,12 +277,12 @@ curl -X POST http://localhost:8765/tools/get_document_info_live
 
 Once migrated successfully, you'll have:
 
-✅ **10x Performance Improvement** - Direct UNO API access  
+✅ **Improved Performance** - Direct UNO API access, plausibly faster than subprocess/file round-tripping  
 ✅ **Real-time Visual Feedback** - See changes instantly  
 ✅ **Native Integration** - LibreOffice menu controls  
-✅ **Multi-document Support** - Work with all open documents  
+✅ **Multi-document Awareness** - Enumerate all open documents; editing operations target the active one  
 ✅ **Advanced Capabilities** - Full LibreOffice feature access  
-✅ **Auto-start** - Available whenever LibreOffice runs  
+✅ **Manual Start** - Started via Tools > MCP Server > Start MCP Server whenever you need it (does not auto-start with LibreOffice)  
 
 Enjoy the enhanced LibreOffice MCP experience! 🚀
 

@@ -2,7 +2,9 @@
 
 ## 🎯 Overview
 
-The LibreOffice MCP Extension integrates Model Context Protocol (MCP) server functionality directly into LibreOffice, enabling AI assistants to interact with LibreOffice documents in real-time through direct UNO API access.
+The LibreOffice MCP Extension is a LibreOffice-native HTTP tool bridge designed for MCP integration, enabling AI assistants to interact with LibreOffice documents in real-time through direct UNO API access. It exposes a custom REST API (`GET /tools`, `POST /execute`, `POST /tools/{tool_name}`), not native MCP JSON-RPC (`tools/list`, `tools/call`); pairing it with an MCP client currently requires an MCP-to-REST adapter. For an actual MCP server usable directly with Claude Desktop today, see the external Python server under `src/` (`src/libremcp.py`).
+
+> **Note on version numbers:** This extension (OXT) is versioned independently from the external Python MCP server package in `pyproject.toml`. The two `1.0.0` / `0.1.0` numbers are not meant to track each other.
 
 ## 🚀 Key Features
 
@@ -10,7 +12,7 @@ The LibreOffice MCP Extension integrates Model Context Protocol (MCP) server fun
 - Create documents directly in LibreOffice (Writer, Calc, Impress, Draw)
 - Insert and format text in active documents
 - Live document editing without file I/O overhead
-- Multi-document support for all open documents
+- Enumerates all open documents; editing operations target the active document
 
 ### **Advanced Document Operations**
 - Save and export documents to various formats (PDF, DOCX, ODT, etc.)
@@ -20,14 +22,14 @@ The LibreOffice MCP Extension integrates Model Context Protocol (MCP) server fun
 
 ### **AI Assistant Integration**
 - HTTP API server running on localhost:8765
-- Compatible with Claude Desktop and other MCP clients
+- LibreOffice-native HTTP tool bridge designed for MCP integration (custom REST API, not native MCP JSON-RPC)
 - RESTful endpoints for easy integration
 - Real-time status monitoring and control
+- Trusted-localhost-only: the server validates Host/Origin headers and rejects non-localhost requests, but has no authentication -- any process on the local machine can call every tool
 
 ### **Native LibreOffice Integration**
 - Appears in LibreOffice Tools menu
-- Auto-starts with LibreOffice
-- System tray integration
+- Manually started via Tools → MCP Server → Start MCP Server (does not auto-start with LibreOffice)
 - Professional .oxt extension format
 
 ## 📋 Installation
@@ -120,23 +122,9 @@ curl -X POST http://localhost:8765/execute \
 ## 🔗 AI Assistant Configuration
 
 ### **Claude Desktop Setup**
-Add to your Claude Desktop configuration:
+Claude Desktop's `mcpServers` configuration launches a real MCP server process (stdio or a Streamable HTTP MCP endpoint); it does not support substituting arbitrary values like `{{tool}}`/`{{parameters}}` into a fixed `curl` command, so a config in that shape is not functional. This extension currently exposes a plain REST API, not a Streamable HTTP MCP endpoint, so there is no working `mcpServers` entry for it yet -- using it from Claude Desktop today would require either a real MCP transport added to this extension or a separate MCP-to-REST adapter process in between.
 
-```json
-{
-  "mcpServers": {
-    "libreoffice": {
-      "command": "curl",
-      "args": [
-        "-X", "POST",
-        "http://localhost:8765/execute",
-        "-H", "Content-Type: application/json",
-        "-d", "{\"tool\": \"{{tool}}\", \"parameters\": {{parameters}}}"
-      ]
-    }
-  }
-}
-```
+For a working MCP server you can point Claude Desktop at today, use the external Python server under `src/` (`src/libremcp.py`), which implements actual MCP via the `mcp` SDK.
 
 ### **Super Assistant Integration**
 Configure the MCP proxy to point to:
@@ -183,14 +171,20 @@ curl -X POST http://localhost:8765/tools/export_document_live \
 
 ### **Document Analysis**
 ```bash
-# Get document information
-curl http://localhost:8765/tools/get_document_info_live
+# Get document information (targets the active document)
+curl -X POST http://localhost:8765/tools/get_document_info_live \
+  -H "Content-Type: application/json" \
+  -d '{}'
 
-# Extract text content
-curl http://localhost:8765/tools/get_text_content_live
+# Extract text content (targets the active document)
+curl -X POST http://localhost:8765/tools/get_text_content_live \
+  -H "Content-Type: application/json" \
+  -d '{}'
 
-# List all open documents
-curl http://localhost:8765/tools/list_open_documents
+# List all open documents (enumeration only; editing tools still target the active document)
+curl -X POST http://localhost:8765/tools/list_open_documents \
+  -H "Content-Type: application/json" \
+  -d '{}'
 ```
 
 ## 🔄 Comparison with External MCP Server
@@ -200,7 +194,7 @@ curl http://localhost:8765/tools/list_open_documents
 | **Performance** | ⭐⭐ (file I/O) | ⭐⭐⭐⭐⭐ (direct API) |
 | **Real-time Editing** | ⭐⭐ (file-based) | ⭐⭐⭐⭐⭐ (live objects) |
 | **Installation** | ⭐⭐⭐⭐ (simple) | ⭐⭐⭐ (extension install) |
-| **Multi-document** | ⭐⭐ (file ops) | ⭐⭐⭐⭐⭐ (all open docs) |
+| **Multi-document** | ⭐⭐ (file ops) | ⭐⭐⭐⭐ (enumerates all open docs; edits target the active one) |
 | **GUI Integration** | ⭐ (none) | ⭐⭐⭐⭐⭐ (native menus) |
 | **Startup Time** | ⭐⭐ (LibreOffice launch) | ⭐⭐⭐⭐⭐ (instant) |
 
@@ -225,7 +219,7 @@ Documents & Data Structures
 ## 🐛 Troubleshooting
 
 ### **Extension Not Loading**
-1. Check LibreOffice version (requires 7.0+)
+1. Check LibreOffice version (tested on LibreOffice 24.2 and later, matching the root README)
 2. Verify Python environment
 3. Check Extension Manager for conflicts
 4. Review LibreOffice error logs
@@ -252,7 +246,7 @@ Documents & Data Structures
 
 ### **Building from Source**
 ```bash
-git clone <repository-url>
+git clone https://github.com/kittrellbj/mcp-libre.git
 cd mcp-libre/plugin
 ./build.sh
 ```

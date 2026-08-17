@@ -5,8 +5,9 @@
 
 set -e
 
-PLUGIN_DIR="/home/patrick/work/mcp/mcp-libre/plugin"
-BUILD_DIR="/home/patrick/work/mcp/mcp-libre/build"
+PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(dirname "$PLUGIN_DIR")"
+BUILD_DIR="$REPO_DIR/build"
 EXTENSION_NAME="libreoffice-mcp-extension"
 VERSION="1.0.0"
 

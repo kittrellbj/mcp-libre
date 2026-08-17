@@ -5,8 +5,9 @@
 
 set -e
 
-PLUGIN_DIR="/home/patrick/work/mcp/mcp-libre/plugin"
-BUILD_DIR="/home/patrick/work/mcp/mcp-libre/build"
+PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(dirname "$PLUGIN_DIR")"
+BUILD_DIR="$REPO_DIR/build"
 
 echo "🎯 LibreOffice MCP Extension - Installation & Usage Guide"
 echo "========================================================"
@@ -38,7 +39,7 @@ check_requirements() {
     # Check LibreOffice
     if ! command -v libreoffice >/dev/null 2>&1; then
         echo "❌ LibreOffice is not installed or not in PATH"
-        echo "   Please install LibreOffice 7.0 or higher"
+        echo "   Please install LibreOffice (tested on 24.2 and later)"
         exit 1
     else
         echo "✅ LibreOffice found: $(libreoffice --version | head -1)"

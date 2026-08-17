@@ -1,5 +1,7 @@
 # LibreOffice Plugin Architecture Design
 
+> **Historical design proposal.** This document predates the shipped plugin and describes goals and alternatives considered at the time, not necessarily the extension's current behavior. In particular, the shipped extension does not auto-start with LibreOffice (it is started manually via Tools → MCP Server → Start MCP Server) and exposes a custom REST API rather than native MCP JSON-RPC. See `plugin/README.md` and the root `README.md` for the current, accurate description.
+
 ## 🎯 **Redesigning as a LibreOffice Plugin: Comprehensive Analysis**
 
 Yes, it's absolutely possible and highly beneficial to redesign this project as a LibreOffice plugin (extension). This would provide several significant advantages and open up exciting new possibilities.
@@ -286,7 +288,7 @@ def createInstance(ctx):
 | **Real-time Editing** | ⭐⭐ (file-based) | ⭐⭐⭐⭐⭐ (live objects) |
 | **Installation Complexity** | ⭐⭐⭐⭐ (simple) | ⭐⭐⭐ (extension install) |
 | **Advanced Features** | ⭐⭐⭐ (limited) | ⭐⭐⭐⭐⭐ (full access) |
-| **Multi-document Support** | ⭐⭐ (file operations) | ⭐⭐⭐⭐⭐ (all open docs) |
+| **Multi-document Support** | ⭐⭐ (file operations) | ⭐⭐⭐⭐ (enumerates all open docs; edits target the active one) |
 | **GUI Integration** | ⭐ (none) | ⭐⭐⭐⭐⭐ (native) |
 | **Collaborative Features** | ⭐ (file-based) | ⭐⭐⭐⭐ (real-time) |
 | **Startup Time** | ⭐⭐ (LibreOffice startup) | ⭐⭐⭐⭐⭐ (already running) |
@@ -333,7 +335,7 @@ def createInstance(ctx):
         <src lang="en" xlink:href="description-en.txt"/>
     </description>
     <dependencies>
-        <OpenOffice.org-minimal-version value="7.0"/>
+        <OpenOffice.org-minimal-version value="24.2"/>
     </dependencies>
 </description>
 ```
@@ -348,7 +350,7 @@ def createInstance(ctx):
 
 Redesigning as a LibreOffice plugin would provide:
 
-1. **10x Performance Improvement**: Direct UNO API access vs subprocess calls
+1. **Improved Performance**: Direct UNO API access is plausibly faster than subprocess calls (no benchmark numbers published)
 2. **Rich Feature Set**: Access to all LibreOffice capabilities
 3. **Better User Experience**: Native integration and real-time updates
 4. **Future-Proof Architecture**: Extensible for advanced AI features

@@ -16,6 +16,7 @@ from typing import Any, Dict
 from urllib.parse import urlparse
 
 import mcp_server
+from host_trust import is_trusted_host
 
 
 # Set up logging
@@ -43,6 +44,9 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
         path = parsed_path.path
 
         logger.info(f"HTTP GET {path}")
+
+        if not self._reject_untrusted_host():
+            return
 
         try:
             if path == "/":
@@ -94,6 +98,9 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
         path = parsed_path.path
 
         logger.info(f"HTTP POST {path}")
+
+        if not self._reject_untrusted_host():
+            return
 
         try:
             content_length = int(
@@ -180,6 +187,9 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
         """Handle OPTIONS requests for CORS."""
         logger.info(f"HTTP OPTIONS {self.path}")
 
+        if not self._reject_untrusted_host():
+            return
+
         self.send_response(204)
         self._send_cors_headers()
         self.send_header("Content-Length", "0")
@@ -187,6 +197,24 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
         self.close_connection = True
+
+    def _reject_untrusted_host(self) -> bool:
+        """Send 403 and return False for a request whose Host header isn't localhost.
+
+        v1.0.0 has no authentication, so this is the only thing standing
+        between "any localhost process can call every tool" (intended, see
+        TRUSTED_HOSTNAMES) and a DNS-rebinding attack, where a page the
+        browser navigated to for an attacker-controlled domain resolves
+        that domain to 127.0.0.1 and issues requests carrying that domain
+        in the Host header instead of "localhost"/"127.0.0.1". Callers
+        should check this before doing any other request handling.
+        """
+        host_header = self.headers.get("Host")
+        if is_trusted_host(host_header):
+            return True
+        logger.warning(f"Rejecting request with untrusted Host header: {host_header!r}")
+        self._send_response(403, {"error": "Untrusted Host header; this server only accepts localhost requests"})
+        return False
 
     def _handle_tool_execution(
         self,
@@ -244,7 +272,8 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             "name": "LibreOffice MCP Extension",
             "version": "1.0.0",
             "description": (
-                "MCP server integrated into LibreOffice"
+                "LibreOffice-native HTTP tool bridge designed for MCP integration "
+                "(custom REST API, not native MCP JSON-RPC)"
             ),
             "endpoints": {
                 "GET /": "Server information",
@@ -356,11 +385,20 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             )
 
     def _send_cors_headers(self):
-        """Send CORS headers."""
-        self.send_header(
-            "Access-Control-Allow-Origin",
-            "*"
-        )
+        """Send CORS headers, scoped to a trusted local Origin instead of a wildcard.
+
+        Only echoes back Origin values that pass _is_trusted_host() (i.e.
+        localhost/127.0.0.1/::1, any scheme/port); an untrusted or missing
+        Origin gets no Access-Control-Allow-Origin header at all, so a
+        browser will block the cross-origin read. "*" is deliberately not
+        used -- it would let any page in any origin call every tool with no
+        authentication.
+        """
+        origin = self.headers.get("Origin")
+
+        if is_trusted_host(origin):
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
 
         self.send_header(
             "Access-Control-Allow-Methods",

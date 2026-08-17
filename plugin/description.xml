@@ -11,12 +11,12 @@
         <src lang="en" xlink:href="description-en.txt"/>
     </description>
     <publisher>
-        <name lang="en" xlink:href="https://github.com">MCP LibreOffice Team</name>
+        <name lang="en" xlink:href="https://github.com/kittrellbj/mcp-libre">MCP LibreOffice Team</name>
     </publisher>
     <release-notes>
         <src lang="en" xlink:href="release-notes-en.txt"/>
     </release-notes>
     <dependencies>
-        <OpenOffice.org-minimal-version value="4.0" dep:name="OpenOffice.org 4.0"/>
+        <OpenOffice.org-minimal-version value="24.2" dep:name="LibreOffice 24.2"/>
     </dependencies>
 </description>

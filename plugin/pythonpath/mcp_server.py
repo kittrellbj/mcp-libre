@@ -185,7 +185,7 @@ class LibreOfficeMCPServer:
                     "author": {
                         "type": "string",
                         "description": "Comment author name",
-                        "default": "Claude"
+                        "default": "AI Assistant"
                     }
                 },
                 "required": ["text"]
@@ -625,7 +625,7 @@ class LibreOfficeMCPServer:
         """Get all comments/annotations from the document"""
         return self.uno_bridge.get_comments()
 
-    def add_comment_live(self, text: str, author: str = "Claude") -> Dict[str, Any]:
+    def add_comment_live(self, text: str, author: str = "AI Assistant") -> Dict[str, Any]:
         """Add a comment at the current cursor position"""
         return self.uno_bridge.add_comment(text, author)
 

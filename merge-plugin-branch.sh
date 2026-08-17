@@ -26,8 +26,8 @@ echo "🔀 Merging devplugin branch..."
 git merge devplugin --no-ff -m "Merge branch 'devplugin' - Add LibreOffice Plugin/Extension Implementation
 
 This merge adds a complete LibreOffice plugin/extension that provides:
-- Native MCP server embedded in LibreOffice
-- 10x performance improvement via direct UNO API access
+- LibreOffice-native HTTP tool bridge embedded in LibreOffice, designed for MCP integration
+- Direct UNO API access, plausibly faster than subprocess/file round-tripping (no benchmark published)
 - Real-time document editing with visual feedback
 - HTTP API for AI assistant integration on localhost:8765
 - Professional .oxt extension packaging

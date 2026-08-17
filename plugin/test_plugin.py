@@ -186,7 +186,7 @@ class LibreOfficeMCPClient:
         print("\n🎉 Test suite completed!")
         print("\n💡 Tips:")
         print("   - Make sure LibreOffice is running with the extension installed")
-        print("   - The extension auto-starts the MCP server on localhost:8765")
+        print("   - Start the server manually via Tools > MCP Server > Start MCP Server (it does not auto-start)")
         print("   - Check Tools > MCP Server in LibreOffice for manual control")
         
         return True
