@@ -24,23 +24,23 @@ up exactly where it left off.
 | Calc - sheets, cells, ranges, formulas, layout | 42 | 0 | 42 | **Scaffolded** (`tools/calc_sheets.py`) |
 | Calc - data management, analysis, pivots, validation, external data | 42 | 0 | 42 | **Scaffolded** (`tools/calc_data.py`) |
 | Calc - page setup, print ranges, annotations, protection | 15 | 0 | 15 | **Scaffolded** (`tools/calc_page.py`) |
-| Impress - slides, masters, notes, transitions, animations, slideshow | 41 | 0 | 0 | Not started |
-| Draw - pages, masters, layers, vector operations | 16 | 0 | 0 | Not started |
+| Impress - slides, masters, notes, transitions, animations, slideshow | 41 | 0 | 41 | **Scaffolded** (`tools/impress.py`) |
+| Draw - pages, masters, layers, vector operations | 16 | 0 | 16 | **Scaffolded** (`tools/draw.py`) |
 | Base and database access | 34 | 0 | 0 | Not started |
 | Forms and controls | 16 | 0 | 0 | Not started |
 | Math formula documents and embedded formulas | 7 | 0 | 0 | Not started |
 | Linguistic services, accessibility, publishing QA | 15 | 0 | 0 | Not started |
 | Security, scripts, events, advanced UNO escape hatch | 14 | 0 | 0 | Not started |
-| **Total** | **484** | **32** | **309** | **309 / 452 net-new tools scaffolded** |
+| **Total** | **484** | **32** | **366** | **366 / 452 net-new tools scaffolded** |
 
 "Scaffolded" means: registered under the exact spec tool name with the
 correct priority and a JSON Schema `parameters` block built from the
 spec's Key Parameters column, with a docstring/purpose copied from the
 spec's Purpose column, and a handler body that returns the standard
 `NOT_IMPLEMENTED` error envelope. **No UNO logic has been written for any
-of these 309 tools** -- that is deliberately left for a senior engineer.
+of these 366 tools** -- that is deliberately left for a senior engineer.
 
-This covers Implementation Phases A, B, and C from the spec's own section 10:
+This covers Implementation Phases A, B, C, and D from the spec's own section 10:
 
 - **Phase A** ("Runtime hardening and common document API": discovery,
   handles, lifecycle, metadata, undo, batch execution, styles,
@@ -57,6 +57,9 @@ This covers Implementation Phases A, B, and C from the spec's own section 10:
   plus Calc-complete: sheets/cells/ranges/formulas/layout, data
   management/pivots/validation/external data, and page setup/print/
   annotations/protection) -- see "## Phase C" below for detail.
+- **Phase D** (Impress-complete: slides/masters/notes/transitions/
+  animations/slideshow; Draw-complete: pages/masters/layers/vector
+  operations) -- see "## Phase D" below for detail.
 
 ## Phase C
 
@@ -78,6 +81,22 @@ way as the Phase A/B modules, so they show up under the existing
 more `EXPECTED_BY_MODULE` entry per new file (exact tool-name sets, same
 style as the Phase A/B entries); the full contract suite now checks 309
 registered tools by exact name across 12 modules.
+
+## Phase D
+
+Phase D scaffolds the two document-type-complete sections for Impress
+(`tools/impress.py`, 41 rows: slide CRUD/layout/background, master pages,
+speaker notes, transitions, animations, click actions, presentation/
+slideshow settings, custom shows, slideshow playback control, slide/deck
+image export) and Draw (`tools/draw.py`, 16 rows: page CRUD/size/
+background, layers, shape-to-layer assignment, page/selection export) --
+57 tool rows total, all P1-P3, all net-new (zero P0 overlap, same as
+Phase C). Same `@register_tool`/`envelope.build_not_implemented` pattern
+throughout; wired into `plugin/pythonpath/tools/__init__.py` the same
+additive way as every prior phase, so no changes were needed in
+`mcp_server.py` itself. `tests/test_tool_scaffold_contract.py` gained two
+more `EXPECTED_BY_MODULE` entries (`impress`, `draw`); the full contract
+suite now checks 366 registered tools by exact name across 14 modules.
 
 ## What was built
 
@@ -115,7 +134,7 @@ registered tools by exact name across 12 modules.
   returns `NOT_IMPLEMENTED` regardless of arguments; wiring the registry
   into a handler is real tool-by-tool implementation work, not scaffolding.
 
-**Tool modules, 309 stub functions across 12 files:**
+**Tool modules, 366 stub functions across 14 files:**
 
 - Phase A: `core_runtime.py` (12), `document_lifecycle.py` (22 new, on top
   of 5 pre-existing), `undo_view_selection.py` (14), `styles.py` (12).
@@ -123,6 +142,7 @@ registered tools by exact name across 12 modules.
   `writer_layout.py` (43), `writer_tables.py` (38).
 - Phase C: `drawing_objects.py` (31), `charts.py` (20), `calc_sheets.py`
   (42), `calc_data.py` (42), `calc_page.py` (15).
+- Phase D: `impress.py` (41), `draw.py` (16).
 
 **Tests:**
 
@@ -133,12 +153,16 @@ registered tools by exact name across 12 modules.
   every stub's response shape; `merge_into()` non-destructiveness; the
   error-code set. Run with `python tests/test_tool_scaffold_contract.py`
   or `uv run pytest tests/test_tool_scaffold_contract.py`. 7/7 passing
-  locally, 309 tools registered across 12 modules.
+  locally, 366 tools registered across 14 modules.
 - `tests/test_document_registry.py` -- 9 unit tests for `DocumentRegistry`
   against fakes, 9/9 passing.
+- `tests/test_host_trust.py` -- 5 unit tests for the HTTP bridge's
+  trusted-host/DNS-rebinding guard (from the separate windows-oxt baseline
+  cleanup pass, unrelated to the tool scaffold but living in the same
+  `tests/` directory), 5/5 passing.
 
 **Integration:** one opt-in hook in `mcp_server.py`
-(`_register_scaffold_stub_tools`, merges in all 309 tools via
+(`_register_scaffold_stub_tools`, merges in all 366 tools via
 `tools.merge_into()`, gated by env var
 `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS`): additive-only, so the original 32
 tools' behavior is unchanged when the flag is unset (the default). This
@@ -149,15 +173,15 @@ extension.
 
 ## What is intentionally NOT done
 
-- **No UNO implementation in any of the 309 tool stubs.** They all
+- **No UNO implementation in any of the 366 tool stubs.** They all
   return `NOT_IMPLEMENTED`. Implementing them needs a working
   `uno`/`unohelper` environment inside LibreOffice, which this scaffolding
   pass didn't have reason to touch.
 - **`DocumentRegistry`'s dispose-listener eviction** -- see above.
 - **Not wired into the live server by default** -- see the env var gate
   above.
-- **Phases D-F (Impress/Draw, Base/forms/Math, quality/expert surface) are
-  untouched.** 143 more net-new tools remain, per the table above.
+- **Phases E-F (Base/forms/Math, quality/expert surface) are untouched.**
+  86 more net-new tools remain, per the table above.
 
 ## Open architecture question for Morgan
 
@@ -180,14 +204,19 @@ conflicts, but this is a real architectural call, not an obvious one --
 flagging for @Morgan (Architect) rather than deciding it unilaterally here.
 Not a blocker: `tools/` stays additive and reversible either way.
 
-## Repo housekeeping noticed in passing (not touched by this scaffold)
+## Repo housekeeping noticed in passing
 
-- `windows-oxt` branch commit `d18c830` ("Add working Windows LibreOffice
-  MCP extension v1.0.0") includes a file named `tatus` at the repo root --
-  looks like `git diff` output accidentally redirected to a truncated
-  filename (172 lines of diff text). Worth a follow-up cleanup commit;
-  left alone here since it predates this scaffolding work and isn't part
-  of the tooling catalog.
+- `windows-oxt` had a file named `tatus` at the repo root (a `git diff`
+  accidentally redirected to a truncated filename) -- this was already
+  cleaned up upstream (`windows-oxt` commit `1bd4e5c`, "Remove accidental
+  diff output file") before Phase C's rebase, so no action needed here.
+- A full baseline review (hardcoded paths, overclaimed MCP compatibility,
+  wildcard CORS/no Origin validation, false auto-start claims, wrong HTTP
+  methods, version mismatches, and more -- 18 items) was done and fixed
+  separately from this tool-scaffold plan; see the merged
+  `fix/windows-oxt-baseline-cleanup` branch (PR #1) for that pass. Not
+  duplicated here since it's a different concern (baseline correctness
+  vs. new tool coverage).
 
 ## Suggested next steps
 
@@ -199,10 +228,7 @@ Not a blocker: `tools/` stays additive and reversible either way.
    `NOT_IMPLEMENTED` responses distinctly (e.g. HTTP 501) so a client can
    tell "not implemented yet" apart from a real runtime error while these
    phases are partially built out.
-3. Continue scaffolding Phase D (Impress: slides/masters/notes/
-   transitions/animations/slideshow, 41 rows; Draw: pages/masters/layers/
-   vector operations, 16 rows) and onward through Phases E-F (Base and
-   database access, forms and controls, Math formula documents,
-   linguistic/accessibility/publishing QA, security/scripts/events/
-   advanced UNO escape hatch -- 86 more rows), using the same
-   `tools/registry.py` pattern established in Phases A-C.
+3. Continue scaffolding Phases E-F (Base and database access, forms and
+   controls, Math formula documents, linguistic/accessibility/publishing
+   QA, security/scripts/events/advanced UNO escape hatch -- 86 more rows),
+   using the same `tools/registry.py` pattern established in Phases A-D.

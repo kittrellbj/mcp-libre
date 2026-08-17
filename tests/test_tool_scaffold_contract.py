@@ -188,6 +188,30 @@ EXPECTED_BY_MODULE = {
         "unprotect_sheet_live", "set_cell_protection_live", "list_number_formats_live",
         "create_number_format_live", "apply_number_format_live",
     },
+    # Phase D - "Impress - slides, masters, notes, transitions, animations, slideshow".
+    "impress": {
+        "list_slides_live", "get_active_slide_live", "activate_slide_live", "insert_slide_live",
+        "duplicate_slide_live", "delete_slide_live", "move_slide_live", "rename_slide_live",
+        "hide_slide_live", "show_slide_live", "get_slide_layout_live", "set_slide_layout_live",
+        "set_slide_size_live", "set_slide_background_live", "list_master_pages_live",
+        "apply_master_page_live", "create_master_page_live", "delete_master_page_live",
+        "get_speaker_notes_live", "set_speaker_notes_live", "get_slide_transition_live",
+        "set_slide_transition_live", "list_animations_live", "add_animation_live",
+        "update_animation_live", "delete_animation_live", "reorder_animations_live",
+        "set_shape_click_action_live", "get_presentation_settings_live", "set_presentation_settings_live",
+        "list_custom_shows_live", "create_custom_show_live", "update_custom_show_live",
+        "delete_custom_show_live", "start_slideshow_live", "stop_slideshow_live",
+        "next_slideshow_effect_live", "previous_slideshow_effect_live", "goto_slideshow_slide_live",
+        "export_slide_image_live", "export_all_slides_images_live",
+    },
+    # Phase D - "Draw - pages, masters, layers, vector operations".
+    "draw": {
+        "list_draw_pages_live", "get_active_draw_page_live", "insert_draw_page_live",
+        "duplicate_draw_page_live", "delete_draw_page_live", "move_draw_page_live",
+        "rename_draw_page_live", "set_draw_page_size_live", "set_draw_page_background_live",
+        "list_layers_live", "create_layer_live", "update_layer_live", "delete_layer_live",
+        "assign_shape_layer_live", "export_draw_page_live", "export_selection_live",
+    },
 }
 
 EXPECTED_TOOL_NAMES = set().union(*EXPECTED_BY_MODULE.values())
