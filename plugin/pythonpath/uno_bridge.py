@@ -6324,7 +6324,20 @@ class UNOBridge:
 
     def list_pivot_tables(self, doc: Any, sheet: Optional[str] = None) -> List[Any]:
         """Returns raw XDataPilotTable objects for the tools/ layer to
-        register."""
+        register. CAVEAT, live-verified: a fresh tables.getByName(name)
+        fetch does NOT compare equal to an earlier fetch of the exact
+        same pivot table (unlike shapes/documents elsewhere in this
+        codebase), so ObjectRegistry's identity-based dedup can't
+        recognize "the same" pivot table across two separate calls to
+        this method -- calling list_pivot_tables_live twice mints a
+        different pivot_id each time for the same underlying pivot
+        table. This does NOT break the ids themselves: every pivot_id
+        this mints still works correctly for get/update/refresh/delete,
+        since those all operate on the held reference directly (read
+        .Name/.OutputRange, call .refresh()) rather than re-locating by
+        comparison. See tools/calc_data.py's module docstring and
+        list_pivot_tables_live's own purpose= string for the
+        caller-facing version of this warning."""
         sheets = [self._resolve_sheet(doc, sheet)] if sheet is not None else \
             [doc.getSheets().getByIndex(i) for i in range(doc.getSheets().getCount())]
         result = []

@@ -15,14 +15,34 @@ exploration-tested this pass, same honest-scope-limit precedent as
 charts.py's add_chart_series_live and impress.py's add_animation_live.
 
 Conditional format rules and pivot tables resolve `rule_id`/`pivot_id`
-through the same ObjectRegistry drawing_objects.py established (see
-list_shapes_live there for the pattern this file's list_conditional_
-formats_live/list_pivot_tables_live/create_conditional_format_live/
-create_pivot_table_live follow: uno_bridge returns raw UNO objects, this
-file registers them and builds the JSON response) -- see
-uno_bridge.py's own section docstring for why conditional-format entries
-in particular need identity-based re-location rather than a stored
-index.
+through the same ObjectRegistry drawing_objects.py established, but with
+a live-verified caveat neither shapes nor documents have: legacy
+ConditionalFormat entries and XDataPilotTable objects do NOT compare
+equal to themselves across two separate UNO fetches (unlike shapes/
+documents), so registering the raw object minted a fresh, non-matching
+id on every list call and broke update/delete outright. Conditional
+format rules are fixed for real: list_conditional_formats_live/
+add_conditional_format_live register a (sheet_name, range_string, index)
+address instead of a raw entry object, re-resolved fresh on every call
+-- see uno_bridge.py's list_conditional_format_entries() docstring for
+the full story and the honest index-shift caveat that approach still
+carries.
+
+**Pivot tables have the narrower version of the same gap, NOT fixed the
+same way -- READ THIS BEFORE CALLING list_pivot_tables_live twice:**
+list_pivot_tables_live still registers the raw XDataPilotTable object
+(get_pivot_table_live/update_pivot_table_live/refresh_pivot_table_live/
+delete_pivot_table_live all operate on that held reference directly --
+reading .Name/.OutputRange or calling .refresh() -- never re-locating it
+by comparison, so every pivot_id it returns keeps working correctly for
+its own later calls). But because the object itself doesn't compare
+equal across fetches, calling list_pivot_tables_live again for the SAME
+underlying pivot table mints a DIFFERENT pivot_id, not the same one --
+there is no way to tell from the ids alone that two list calls returned
+"the same" pivot table. A caller that lists once, keeps that pivot_id,
+and uses it later is fine; a caller that lists twice and compares
+pivot_ids to check "is this still the same pivot" will get a false
+negative every time.
 """
 
 from typing import Any, Dict, List, Optional
@@ -413,7 +433,15 @@ def remove_subtotals_live(range: str, sheet: Optional[str] = None) -> Dict[str, 
 @register_tool(
     name="list_pivot_tables_live",
     priority="P1",
-    purpose="List DataPilot/pivot tables.",
+    purpose=(
+        "List DataPilot/pivot tables. CAVEAT: calling this twice for the same "
+        "pivot table returns a different pivot_id each time (a live-verified "
+        "LibreOffice identity-comparison gap, not a bug in this tool) -- each "
+        "returned id still works correctly for get/update/refresh/delete, but "
+        "ids from two separate list calls cannot be compared to check whether "
+        "they refer to the same pivot table. Keep the pivot_id from whichever "
+        "call you actually need, don't re-list and match by id."
+    ),
     parameters=schema({"sheet": {"type": "string"}}),
     status="implemented",
 )
