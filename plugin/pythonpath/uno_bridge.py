@@ -6962,3 +6962,780 @@ class UNOBridge:
             raise ValueError("Either format_code or format_key must be given.")
         range_obj.NumberFormat = key
         return {"format_key": key}
+
+    # -- Writer page layout, publishing, styles, headers, fields, indexes
+    # (tools/writer_layout.py's 43 tools) --
+    #
+    # Same raise-on-failure convention as writer_text.py above. Page
+    # style resolution reuses _get_style_family(doc, "PageStyles") --
+    # the same family styles.py/calc_page.py already resolve through.
+    # Bookmarks are UNO-guaranteed-unique-Name (doc.getBookmarks() is a
+    # real XNameAccess, confirmed live), so bookmark_name IS the handle
+    # directly -- no ObjectRegistry, same category as sheets/Writer
+    # tables per docs/OBJECT_HANDLE_DESIGN.md. Fields, hyperlink text
+    # ranges, and document indexes have no natural unique name and go
+    # through the same ObjectRegistry drawing_objects.py established.
+    #
+    # set_chapter_numbering_live has no bridge method and stays
+    # status="stub" -- live-verified ChapterNumberingRules.replaceByIndex()
+    # raises a bare IllegalArgumentException (no message) even passing
+    # back the *exact unmodified* PropertyValue sequence getByIndex()
+    # itself returned, across several variants tried (minimal property
+    # subset, single-property-at-a-time isolation, explicit uno.Any
+    # sequence typing). get_chapter_numbering_live (read-only) IS real.
+    # Same honest-scope-limit precedent as add_chart_series_live/
+    # add_animation_live/create_external_link_live -- a genuinely
+    # resistant write-side API, not a shortcut.
+
+    def _writer_page_style_family(self, doc: Any) -> Any:
+        self._require_writer(doc, "page style resolution")
+        return self._get_style_family(doc, "PageStyles")
+
+    def _active_page_style_name(self, doc: Any) -> str:
+        """The view cursor's PageStyleName reflects the real,
+        currently-rendered page style -- unlike a plain text cursor's
+        PageDescName, which is empty/None unless a paragraph explicitly
+        overrides it (live-verified: a fresh document's first paragraph
+        has PageDescName None despite genuinely being on "Standard")."""
+        return self._get_controller(doc).getViewCursor().PageStyleName
+
+    def _resolve_page_style(self, doc: Any, page_style: Optional[str] = None) -> "tuple[Any, str]":
+        family = self._writer_page_style_family(doc)
+        name = page_style or self._active_page_style_name(doc)
+        if not family.hasByName(name):
+            raise KeyError(f"No such page style '{name}'.")
+        return family.getByName(name), name
+
+    _WRITER_PAGE_LAYOUT_PROPS = (
+        "Width", "Height", "IsLandscape", "LeftMargin", "RightMargin", "TopMargin", "BottomMargin",
+        "GutterMargin", "HeaderIsOn", "FooterIsOn", "HeaderHeight", "FooterHeight",
+    )
+
+    def get_page_layout(self, doc: Any, page_style: Optional[str] = None) -> Dict[str, Any]:
+        style, name = self._resolve_page_style(doc, page_style)
+        result: Dict[str, Any] = {"page_style": name}
+        for prop_name in self._WRITER_PAGE_LAYOUT_PROPS:
+            try:
+                result[prop_name] = self._uno_value_to_plain(style.getPropertyValue(prop_name))
+            except Exception:
+                continue
+        columns = style.TextColumns
+        result["column_count"] = columns.ColumnCount
+        return result
+
+    def set_page_layout(self, doc: Any, width: float, height: float, unit: str, orientation: Optional[str] = None,
+                         margins: Optional[Dict[str, Any]] = None, mirrored: Optional[bool] = None,
+                         gutter: Optional[float] = None, page_style: Optional[str] = None) -> List[str]:
+        style, _ = self._resolve_page_style(doc, page_style)
+        factor = self._LENGTH_UNIT_TO_MM100.get(unit.lower(), 1)
+        applied = ["width", "height"]
+        style.Width = int(width * factor)
+        style.Height = int(height * factor)
+        if orientation is not None:
+            style.IsLandscape = str(orientation).lower() == "landscape"
+            applied.append("orientation")
+        if margins:
+            margin_props = {"left": "LeftMargin", "right": "RightMargin", "top": "TopMargin", "bottom": "BottomMargin"}
+            for key, prop_name in margin_props.items():
+                if key in margins:
+                    setattr(style, prop_name, int(margins[key] * factor))
+                    applied.append(f"margins.{key}")
+        if mirrored is not None:
+            style.PageStyleLayout = uno.Enum("com.sun.star.text.PageStyleLayout", "MIRRORED" if mirrored else "ALL")
+            applied.append("mirrored")
+        if gutter is not None:
+            style.GutterMargin = int(gutter * factor)
+            applied.append("gutter")
+        return applied
+
+    # Trim sizes only -- objectively verifiable industry-standard
+    # dimensions, not genre-specific margin/typography conventions
+    # (e.g. "screenplay"/"manuscript" formatting is real but disputed
+    # across style guides; not guessed at rather than shipping an
+    # unverified convention as if authoritative).
+    _PAGE_PRESETS = {
+        "letter": (8.5, 11.0, "in"), "a4": (210.0, 297.0, "mm"), "a5": (148.0, 210.0, "mm"),
+        "legal": (8.5, 14.0, "in"), "novel_6x9": (6.0, 9.0, "in"), "digest_5.5x8.5": (5.5, 8.5, "in"),
+    }
+
+    def apply_page_preset(self, doc: Any, preset: str, overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        dims = self._PAGE_PRESETS.get(preset.lower())
+        if dims is None:
+            raise ValueError(f"Unknown preset '{preset}'. Supported: {sorted(self._PAGE_PRESETS)}")
+        width, height, unit = dims
+        overrides = dict(overrides or {})
+        kwargs = {"width": overrides.pop("width", width), "height": overrides.pop("height", height),
+                  "unit": overrides.pop("unit", unit)}
+        for key in ("orientation", "margins", "mirrored", "gutter", "page_style"):
+            if key in overrides:
+                kwargs[key] = overrides.pop(key)
+        applied = self.set_page_layout(doc, **kwargs)
+        return {"preset": preset, "applied": applied}
+
+    def list_page_styles(self, doc: Any) -> List[Dict[str, Any]]:
+        family = self._writer_page_style_family(doc)
+        return [{"name": n, "in_use": family.getByName(n).isInUse()} for n in family.getElementNames()]
+
+    def create_page_style(self, doc: Any, style_name: str, based_on: Optional[str] = None,
+                           properties: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        family = self._writer_page_style_family(doc)
+        if family.hasByName(style_name):
+            raise ValueError(f"Page style '{style_name}' already exists.")
+        new_style = doc.createInstance("com.sun.star.style.PageStyle")
+        family.insertByName(style_name, new_style)
+        if based_on:
+            if not family.hasByName(based_on):
+                raise KeyError(f"No such page style '{based_on}' to base on.")
+            source = family.getByName(based_on)
+            info = source.getPropertySetInfo()
+            for prop in info.getProperties():
+                try:
+                    if not (prop.Attributes & 1 << 5):  # READONLY bit
+                        new_style.setPropertyValue(prop.Name, source.getPropertyValue(prop.Name))
+                except Exception:
+                    continue
+        applied = self._apply_direct_properties(new_style, properties) if properties else []
+        return {"style_name": style_name, "applied": applied}
+
+    def update_page_style(self, doc: Any, style_name: str, properties: Dict[str, Any]) -> List[str]:
+        family = self._writer_page_style_family(doc)
+        if not family.hasByName(style_name):
+            raise KeyError(f"No such page style '{style_name}'.")
+        return self._apply_direct_properties(family.getByName(style_name), properties)
+
+    def apply_page_style(self, doc: Any, style_name: str, paragraph: Optional[int] = None,
+                          insert_break: bool = False) -> Dict[str, Any]:
+        """Setting a paragraph's own PageDescName is how Writer marks
+        "this paragraph starts a new page with this style" -- live-
+        verified this alone is sufficient to change the page style from
+        that paragraph forward; `insert_break` additionally sets
+        BreakType=PAGE_BEFORE for a caller that wants the explicit
+        page-break semantics rather than just a style-region change."""
+        family = self._writer_page_style_family(doc)
+        if not family.hasByName(style_name):
+            raise KeyError(f"No such page style '{style_name}'.")
+        n = paragraph if paragraph is not None else self._current_paragraph_index(doc)
+        para = self._get_paragraph_object(doc, n)
+        para.PageDescName = style_name
+        if insert_break:
+            para.BreakType = uno.Enum("com.sun.star.style.BreakType", "PAGE_BEFORE")
+        return {"paragraph": n, "style_name": style_name}
+
+    def set_page_columns(self, doc: Any, count: int, spacing: Optional[float] = None,
+                          widths: Optional[List[float]] = None, separator: Optional[str] = None,
+                          page_style: Optional[str] = None) -> None:
+        """`widths` (1/100mm each) -- if given, builds explicit unequal
+        TextColumn entries via setColumns(); otherwise setColumnCount()
+        for evenly-spaced columns (the common case). `spacing` (1/100mm)
+        maps to ReferenceValue-relative AutomaticDistance when using
+        setColumnCount -- live-verified separately via the equal-width
+        path only; the explicit-widths path's own spacing between
+        columns is expressed as gaps baked into each TextColumn's own
+        Width, not a separate spacing property."""
+        style, _ = self._resolve_page_style(doc, page_style)
+        columns = style.TextColumns
+        if widths:
+            entries = []
+            for w in widths:
+                col = uno.createUnoStruct("com.sun.star.text.TextColumn")
+                col.Width = int(w)
+                entries.append(col)
+            columns.setColumns(tuple(entries))
+        else:
+            columns.setColumnCount(int(count))
+            if spacing is not None:
+                columns.AutomaticDistance = int(spacing)
+        if separator is not None:
+            columns.SeparatorLineIsOn = str(separator).lower() not in ("none", "", "off")
+        style.TextColumns = columns
+
+    def insert_page_break(self, doc: Any, at_position: Optional[int] = None, page_style: Optional[str] = None,
+                           page_number: Optional[int] = None) -> Dict[str, Any]:
+        """Splits the target paragraph at its start (matching split_
+        paragraph's own insertControlCharacter(PARAGRAPH_BREAK) idiom),
+        then marks the resulting new paragraph BreakType=PAGE_BEFORE
+        (+PageDescName/PageNumberOffset if given)."""
+        self._require_writer(doc, "insert_page_break")
+        n = at_position if at_position is not None else self._current_paragraph_index(doc)
+        anchor_para = self._get_paragraph_object(doc, n)
+        text_obj = doc.getText()
+        cursor = text_obj.createTextCursorByRange(anchor_para.getStart())
+        text_obj.insertControlCharacter(cursor, PARAGRAPH_BREAK, False)
+        new_para = self._get_paragraph_object(doc, n + 1)
+        new_para.BreakType = uno.Enum("com.sun.star.style.BreakType", "PAGE_BEFORE")
+        if page_style is not None:
+            new_para.PageDescName = page_style
+        if page_number is not None:
+            new_para.PageNumberOffset = int(page_number)
+        return {"paragraph": n + 1, "page_style": page_style}
+
+    def remove_page_break(self, doc: Any, paragraph: Optional[int] = None, position: Optional[int] = None) -> Dict[str, Any]:
+        """PageDescName is cleared with "" (empty string), not None --
+        live-verified None raises "Type 0 is not supported!" (the
+        property is string-typed; None isn't a legal UNO string value),
+        while "" is accepted and reads back as the same None/unset state
+        insert_page_break's own untouched paragraphs start in."""
+        n = paragraph if paragraph is not None else (position if position is not None else self._current_paragraph_index(doc))
+        para = self._get_paragraph_object(doc, n)
+        para.BreakType = uno.Enum("com.sun.star.style.BreakType", "NONE")
+        para.PageDescName = ""
+        return {"paragraph": n}
+
+    _HEADER_FOOTER_TEXT_PROPS = {
+        "default": ("HeaderText", "FooterText"), "left": ("HeaderTextLeft", "FooterTextLeft"),
+        "first": ("HeaderTextFirst", "FooterTextFirst"),
+    }
+
+    def get_headers_footers(self, doc: Any, page_style: Optional[str] = None) -> Dict[str, Any]:
+        style, name = self._resolve_page_style(doc, page_style)
+        result: Dict[str, Any] = {"page_style": name, "header_on": bool(style.HeaderIsOn), "footer_on": bool(style.FooterIsOn)}
+        for variant, (header_prop, footer_prop) in self._HEADER_FOOTER_TEXT_PROPS.items():
+            try:
+                result[f"header_{variant}"] = style.getPropertyValue(header_prop).getString()
+            except Exception:
+                result[f"header_{variant}"] = None
+            try:
+                result[f"footer_{variant}"] = style.getPropertyValue(footer_prop).getString()
+            except Exception:
+                result[f"footer_{variant}"] = None
+        return result
+
+    def set_header(self, doc: Any, text: str, page_style: Optional[str] = None, variant: str = "default",
+                   properties: Optional[Dict[str, Any]] = None) -> List[str]:
+        header_prop, _ = self._HEADER_FOOTER_TEXT_PROPS.get(variant, (None, None))
+        if header_prop is None:
+            raise ValueError(f"Unknown variant '{variant}'. Supported: {sorted(self._HEADER_FOOTER_TEXT_PROPS)}")
+        style, _ = self._resolve_page_style(doc, page_style)
+        style.HeaderIsOn = True
+        style.getPropertyValue(header_prop).setString(text)
+        applied = ["text"]
+        if properties:
+            applied.extend(self._apply_direct_properties(style, properties))
+        return applied
+
+    def set_footer(self, doc: Any, text: str, page_style: Optional[str] = None, variant: str = "default",
+                   properties: Optional[Dict[str, Any]] = None) -> List[str]:
+        _, footer_prop = self._HEADER_FOOTER_TEXT_PROPS.get(variant, (None, None))
+        if footer_prop is None:
+            raise ValueError(f"Unknown variant '{variant}'. Supported: {sorted(self._HEADER_FOOTER_TEXT_PROPS)}")
+        style, _ = self._resolve_page_style(doc, page_style)
+        style.FooterIsOn = True
+        style.getPropertyValue(footer_prop).setString(text)
+        applied = ["text"]
+        if properties:
+            applied.extend(self._apply_direct_properties(style, properties))
+        return applied
+
+    def clear_header(self, doc: Any, page_style: Optional[str] = None, variant: Optional[str] = None) -> None:
+        header_prop, _ = self._HEADER_FOOTER_TEXT_PROPS.get(variant or "default", (None, None))
+        if header_prop is None:
+            raise ValueError(f"Unknown variant '{variant}'. Supported: {sorted(self._HEADER_FOOTER_TEXT_PROPS)}")
+        style, _ = self._resolve_page_style(doc, page_style)
+        style.getPropertyValue(header_prop).setString("")
+        style.HeaderIsOn = False
+
+    def clear_footer(self, doc: Any, page_style: Optional[str] = None, variant: Optional[str] = None) -> None:
+        _, footer_prop = self._HEADER_FOOTER_TEXT_PROPS.get(variant or "default", (None, None))
+        if footer_prop is None:
+            raise ValueError(f"Unknown variant '{variant}'. Supported: {sorted(self._HEADER_FOOTER_TEXT_PROPS)}")
+        style, _ = self._resolve_page_style(doc, page_style)
+        style.getPropertyValue(footer_prop).setString("")
+        style.FooterIsOn = False
+
+    def _resolve_field_insertion_point(self, doc: Any, target: Optional[str]) -> Any:
+        """`target`: None/"cursor" -> current view cursor position;
+        "header"/"footer" -> that (default-variant) text object on the
+        active page style, live-verified header/footer must already be
+        enabled (HeaderIsOn/FooterIsOn) for their text object to be a
+        real insertion point."""
+        if target in (None, "cursor"):
+            return self._get_controller(doc).getViewCursor()
+        style, _ = self._resolve_page_style(doc, None)
+        if target == "header":
+            if not style.HeaderIsOn:
+                raise ValueError("Header is not enabled on the active page style -- call set_header_live first.")
+            header_text = style.HeaderText
+            cursor = header_text.createTextCursor()
+            cursor.gotoEnd(False)
+            return cursor
+        if target == "footer":
+            if not style.FooterIsOn:
+                raise ValueError("Footer is not enabled on the active page style -- call set_footer_live first.")
+            footer_text = style.FooterText
+            cursor = footer_text.createTextCursor()
+            cursor.gotoEnd(False)
+            return cursor
+        raise ValueError(f"Unknown target '{target}'. Supported: cursor, header, footer.")
+
+    _PAGE_NUMBER_FORMAT_MAP = {"arabic": "ARABIC", "roman_upper": "ROMAN_UPPER", "roman_lower": "ROMAN_LOWER",
+                               "alpha_upper": "CHAR_UPPER_LETTER", "alpha_lower": "CHAR_LOWER_LETTER"}
+
+    def _resolve_page_number_numbering_type(self, format: Optional[str]) -> int:
+        """PageNumber/PageCount fields do NOT default to Arabic numbering --
+        live-verified a freshly created field left at its own UNO default
+        renders page 2 as "B" (alphabetic), not "2". Always set
+        NumberingType explicitly; ARABIC is the default when `format` is
+        omitted since that's what every caller expects "insert a page
+        number" to mean."""
+        name = self._PAGE_NUMBER_FORMAT_MAP.get(format, "ARABIC" if format is None else None)
+        if name is None:
+            raise ValueError(f"Unknown page number format '{format}'. Supported: "
+                              f"{', '.join(self._PAGE_NUMBER_FORMAT_MAP)}.")
+        return uno.getConstantByName(f"com.sun.star.style.NumberingType.{name}")
+
+    def insert_page_number_field(self, doc: Any, target: Optional[str] = None, format: Optional[str] = None,
+                                  offset: int = 0) -> Dict[str, Any]:
+        self._require_writer(doc, "insert_page_number_field")
+        cursor = self._resolve_field_insertion_point(doc, target)
+        field = doc.createInstance("com.sun.star.text.TextField.PageNumber")
+        field.NumberingType = self._resolve_page_number_numbering_type(format)
+        if offset:
+            field.SubType = uno.Enum("com.sun.star.text.PageNumberType", "CURRENT")
+            field.Offset = int(offset)
+        cursor.getText().insertTextContent(cursor, field, False)
+        return {"target": target or "cursor"}
+
+    def insert_page_count_field(self, doc: Any, target: Optional[str] = None, format: Optional[str] = None) -> Dict[str, Any]:
+        self._require_writer(doc, "insert_page_count_field")
+        cursor = self._resolve_field_insertion_point(doc, target)
+        field = doc.createInstance("com.sun.star.text.TextField.PageCount")
+        field.NumberingType = self._resolve_page_number_numbering_type(format)
+        cursor.getText().insertTextContent(cursor, field, False)
+        return {"target": target or "cursor"}
+
+    def insert_date_time_field(self, doc: Any, target: Optional[str] = None, fixed: bool = False,
+                                format: Optional[str] = None) -> Dict[str, Any]:
+        self._require_writer(doc, "insert_date_time_field")
+        cursor = self._resolve_field_insertion_point(doc, target)
+        field = doc.createInstance("com.sun.star.text.TextField.DateTime")
+        field.IsFixed = bool(fixed)
+        field.IsDate = True
+        cursor.getText().insertTextContent(cursor, field, False)
+        return {"target": target or "cursor", "fixed": fixed}
+
+    _DOC_PROPERTY_FIELD_SERVICES = {
+        "author": "com.sun.star.text.TextField.Author",
+        "title": "com.sun.star.text.TextField.DocInfo.Title",
+        "subject": "com.sun.star.text.TextField.DocInfo.Subject",
+        "keywords": "com.sun.star.text.TextField.DocInfo.Keywords",
+        "description": "com.sun.star.text.TextField.DocInfo.Description",
+        "comments": "com.sun.star.text.TextField.DocInfo.Description",
+        "created": "com.sun.star.text.TextField.DocInfo.CreateDateTime",
+        "modified": "com.sun.star.text.TextField.DocInfo.ChangeDateTime",
+    }
+
+    def insert_document_property_field(self, doc: Any, property_name: str, target: Optional[str] = None,
+                                        fixed: bool = False) -> Dict[str, Any]:
+        """Standard document-info properties only (author/title/subject/
+        keywords/description/created/modified) -- a truly custom
+        (user-defined) document property field needs
+        "com.sun.star.text.TextField.DocInfo.Custom" plus a Name
+        parameter this tool's own spec schema doesn't expose, so it's
+        not attempted here."""
+        self._require_writer(doc, "insert_document_property_field")
+        service_name = self._DOC_PROPERTY_FIELD_SERVICES.get(property_name.lower())
+        if service_name is None:
+            raise NotImplementedError(
+                f"insert_document_property_field_live property_name='{property_name}' is not implemented this "
+                f"pass -- supported: {sorted(self._DOC_PROPERTY_FIELD_SERVICES)}."
+            )
+        cursor = self._resolve_field_insertion_point(doc, target)
+        field = doc.createInstance(service_name)
+        if hasattr(field, "IsFixed"):
+            field.IsFixed = bool(fixed)
+        cursor.getText().insertTextContent(cursor, field, False)
+        return {"property_name": property_name, "target": target or "cursor"}
+
+    _FIELD_TYPE_SERVICES = {
+        "page_number": "com.sun.star.text.TextField.PageNumber", "page_count": "com.sun.star.text.TextField.PageCount",
+        "date_time": "com.sun.star.text.TextField.DateTime", "author": "com.sun.star.text.TextField.Author",
+        "cross_reference": "com.sun.star.text.TextField.GetReference", "caption": "com.sun.star.text.TextField.SetExpression",
+    }
+
+    def list_fields(self, doc: Any, field_type: Optional[str] = None) -> List[Any]:
+        """Returns raw field objects for the tools/ layer to register --
+        same ObjectRegistry split drawing_objects.py established."""
+        self._require_writer(doc, "list_fields")
+        wanted_service = self._FIELD_TYPE_SERVICES.get(field_type) if field_type else None
+        fields_enum = doc.getTextFields().createEnumeration()
+        result = []
+        while fields_enum.hasMoreElements():
+            field = fields_enum.nextElement()
+            if wanted_service is not None and not field.supportsService(wanted_service):
+                continue
+            result.append(field)
+        return result
+
+    @staticmethod
+    def get_field_summary(field: Any, field_id: str) -> Dict[str, Any]:
+        try:
+            text = field.getPresentation(False)
+        except Exception:
+            text = None
+        return {"field_id": field_id, "type": field.getSupportedServiceNames()[0] if hasattr(field, "getSupportedServiceNames") else None, "text": text}
+
+    def update_fields(self, doc: Any, field_ids: Optional[List[Any]] = None) -> int:
+        """field_ids, when given, are already-resolved field objects
+        (the tools/ layer resolves each id through ObjectRegistry before
+        calling this) -- when omitted, refreshes every field in the
+        document."""
+        targets = field_ids if field_ids is not None else self.list_fields(doc)
+        for field in targets:
+            try:
+                field.update()
+            except Exception:
+                continue
+        return len(targets)
+
+    def delete_field(self, field: Any, keep_text: bool = True) -> None:
+        """`field` is the already-resolved field object. keep_text
+        replaces the field with its current presentation text in place;
+        otherwise the field (and its presentation) is simply removed."""
+        if keep_text:
+            presentation = field.getPresentation(False)
+            anchor = field.getAnchor()
+            text_obj = anchor.getText()
+            cursor = text_obj.createTextCursorByRange(anchor)
+            field.dispose()
+            text_obj.insertString(cursor, presentation, False)
+        else:
+            field.dispose()
+
+    def list_bookmarks(self, doc: Any) -> List[Dict[str, Any]]:
+        self._require_writer(doc, "list_bookmarks")
+        bookmarks = doc.getBookmarks()
+        result = []
+        for name in bookmarks.getElementNames():
+            bm = bookmarks.getByName(name)
+            result.append({"name": name, "text": bm.getAnchor().getString()})
+        return result
+
+    def add_bookmark(self, doc: Any, name: str, start: Optional[int] = None, end: Optional[int] = None) -> Dict[str, Any]:
+        """`start`/`end` are plain-text character offsets from document
+        start (matching writer_text.py's own select_text_range_live
+        convention) -- omitted means the current selection/cursor."""
+        self._require_writer(doc, "add_bookmark")
+        text_obj = doc.getText()
+        if start is not None:
+            cursor = text_obj.createTextCursor()
+            cursor.gotoStart(False)
+            cursor.goRight(int(start), False)
+            if end is not None:
+                cursor.goRight(int(end) - int(start), True)
+        else:
+            cursor = self._get_controller(doc).getViewCursor()
+        bookmark = doc.createInstance("com.sun.star.text.Bookmark")
+        bookmark.setName(name)
+        text_obj.insertTextContent(cursor, bookmark, start is not None and end is not None)
+        return {"name": name}
+
+    def goto_bookmark(self, doc: Any, name: str, select: bool = False) -> Dict[str, Any]:
+        bookmarks = doc.getBookmarks()
+        if not bookmarks.hasByName(name):
+            raise KeyError(f"No such bookmark '{name}'.")
+        anchor = bookmarks.getByName(name).getAnchor()
+        view_cursor = self._get_controller(doc).getViewCursor()
+        if select:
+            view_cursor.gotoRange(anchor.getStart(), False)
+            view_cursor.gotoRange(anchor.getEnd(), True)
+        else:
+            view_cursor.gotoRange(anchor.getStart(), False)
+        return {"name": name}
+
+    def rename_bookmark(self, doc: Any, old_name: str, new_name: str) -> None:
+        bookmarks = doc.getBookmarks()
+        if not bookmarks.hasByName(old_name):
+            raise KeyError(f"No such bookmark '{old_name}'.")
+        bookmarks.getByName(old_name).setName(new_name)
+
+    def delete_bookmark(self, doc: Any, name: str) -> None:
+        bookmarks = doc.getBookmarks()
+        if not bookmarks.hasByName(name):
+            raise KeyError(f"No such bookmark '{name}'.")
+        bookmarks.getByName(name).dispose()
+
+    def insert_hyperlink(self, doc: Any, url: str, text: Optional[str] = None, target: Optional[str] = None,
+                          name: Optional[str] = None) -> Any:
+        """Returns the raw selecting text range (an XTextCursor snapshot
+        of the just-inserted/just-selected text) for the tools/ layer to
+        register as the hyperlink's handle.
+
+        Two failed approaches, live-verified against a real running
+        server, before landing on this one:
+        - Setting HyperLinkURL on a COLLAPSED cursor positioned *before*
+          inserting the display text does NOT apply to the inserted text.
+        - "Insert with bAbsorb=False, then re-select the range with a
+          second cursor snapshotted before the insert" also does NOT
+          work: a plain cursor captured at the same offset as the
+          insertion point tracks the edit and moves forward right along
+          with it, so the two cursors end up coincident and the
+          "selection" collapses to zero width -- setPropertyValue then
+          silently no-ops on an empty range instead of raising.
+        The fix: insertString(cursor, text, bAbsorb=True) on a cursor
+        that already sits at the insertion point. bAbsorb=True makes the
+        cursor itself become the selection spanning exactly the text it
+        just inserted, so HyperLinkURL applies to the right range."""
+        self._require_writer(doc, "insert_hyperlink")
+        text_obj = doc.getText()
+        view_cursor = self._get_controller(doc).getViewCursor()
+        if text is not None:
+            cursor = text_obj.createTextCursorByRange(view_cursor.getStart())
+            text_obj.insertString(cursor, text, True)
+        elif view_cursor.isCollapsed():
+            cursor = text_obj.createTextCursorByRange(view_cursor.getStart())
+            text_obj.insertString(cursor, url, True)
+        else:
+            cursor = text_obj.createTextCursorByRange(view_cursor)
+        cursor.setPropertyValue("HyperLinkURL", url)
+        if target is not None:
+            cursor.setPropertyValue("HyperLinkTarget", target)
+        if name is not None:
+            cursor.setPropertyValue("HyperLinkName", name)
+        return cursor
+
+    def list_hyperlinks(self, doc: Any) -> List[Any]:
+        """Returns raw text-range objects (one per contiguous hyperlinked
+        text portion) for the tools/ layer to register."""
+        self._require_writer(doc, "list_hyperlinks")
+        result = []
+        para_enum = doc.getText().createEnumeration()
+        while para_enum.hasMoreElements():
+            para = para_enum.nextElement()
+            if not (hasattr(para, "supportsService") and para.supportsService("com.sun.star.text.Paragraph")):
+                continue
+            portion_enum = para.createEnumeration()
+            while portion_enum.hasMoreElements():
+                portion = portion_enum.nextElement()
+                if getattr(portion, "HyperLinkURL", ""):
+                    result.append(portion)
+        return result
+
+    @staticmethod
+    def get_hyperlink_summary(range_obj: Any, hyperlink_id: str) -> Dict[str, Any]:
+        return {"hyperlink_id": hyperlink_id, "url": range_obj.HyperLinkURL, "text": range_obj.getString()}
+
+    def update_hyperlink(self, range_obj: Any, url: Optional[str] = None, text: Optional[str] = None) -> List[str]:
+        applied = []
+        if text is not None:
+            range_obj.setString(text)
+            applied.append("text")
+        if url is not None:
+            range_obj.setPropertyValue("HyperLinkURL", url)
+            applied.append("url")
+        return applied
+
+    def remove_hyperlink(self, range_obj: Any) -> None:
+        range_obj.setPropertyValue("HyperLinkURL", "")
+
+    _REFERENCE_TYPE_MAP = {
+        "bookmark": ("BOOKMARK", "TEXT"), "heading": ("BOOKMARK", "TEXT"),
+        "page": ("BOOKMARK", "PAGE"), "caption": ("SEQUENCE_FIELD", "ONLY_CAPTION"),
+        "caption_number": ("SEQUENCE_FIELD", "ONLY_SEQUENCE_NUMBER"),
+        "caption_full": ("SEQUENCE_FIELD", "CATEGORY_AND_NUMBER"),
+    }
+
+    def insert_cross_reference(self, doc: Any, reference_type: str, target: str, display: str) -> Dict[str, Any]:
+        """`target` is a bookmark name (reference_type in
+        bookmark/heading/page) or a caption category's sequence name
+        (reference_type in caption/caption_number/caption_full, e.g.
+        "Figure"/"Table" -- the caption's own VariableName). `display`
+        selects which ReferenceFieldPart to show -- only the mappings
+        in _REFERENCE_TYPE_MAP were live-verified this pass (bookmark-
+        sourced text/page references, and the three caption-sourced
+        SEQUENCE_FIELD display parts); the full ReferenceFieldPart table
+        (UP_DOWN, PAGE_DESC, CHAPTER, NUMBER_NO_CONTEXT, etc.) wasn't
+        exhaustively mapped. ReferenceFieldSource/ReferenceFieldPart are
+        plain SHORT-typed properties, NOT real UNO enums -- live-verified
+        via getPropertySetInfo() that both report TypeClass SHORT, so
+        uno.Enum(...) raises "enum ... is unknown" even for a legal
+        constant name. Must resolve through uno.getConstantByName()
+        against the com.sun.star.text.ReferenceFieldSource/
+        ReferenceFieldPart constant groups instead, same mechanism
+        insert_caption already uses for NumberingType/SetVariableType."""
+        self._require_writer(doc, "insert_cross_reference")
+        key = f"{reference_type.lower()}"
+        mapping = self._REFERENCE_TYPE_MAP.get(key)
+        if mapping is None:
+            raise NotImplementedError(
+                f"insert_cross_reference_live reference_type='{reference_type}' is not implemented this pass -- "
+                f"supported: {sorted(self._REFERENCE_TYPE_MAP)}."
+            )
+        source_name, default_part = mapping
+        part = display.upper() if display else default_part
+        field = doc.createInstance("com.sun.star.text.TextField.GetReference")
+        field.ReferenceFieldSource = uno.getConstantByName(f"com.sun.star.text.ReferenceFieldSource.{source_name}")
+        field.ReferenceFieldPart = uno.getConstantByName(f"com.sun.star.text.ReferenceFieldPart.{part}")
+        field.SourceName = target
+        view_cursor = self._get_controller(doc).getViewCursor()
+        doc.getText().insertTextContent(view_cursor, field, False)
+        return {"reference_type": reference_type, "target": target}
+
+    _CAPTION_CATEGORIES = {"figure": "Figure", "table": "Table", "illustration": "Illustration",
+                            "drawing": "Drawing", "text": "Text"}
+
+    def insert_caption(self, doc: Any, target_id: Any, label: str = "Figure", text: Optional[str] = None,
+                        position: str = "below") -> Dict[str, Any]:
+        """`target_id` is an already-resolved shape object (the tools/
+        layer resolves it through ObjectRegistry before calling this).
+        Captions use a real com.sun.star.text.TextField.SetExpression
+        field in SEQUENCE subtype, attached to one of Writer's 5
+        pre-existing category field masters (Illustration/Table/Text/
+        Drawing/Figure) -- live-verified VariableName itself is
+        read-only on the field and must be set by attaching the
+        matching master instead, not directly."""
+        self._require_writer(doc, "insert_caption")
+        category = self._CAPTION_CATEGORIES.get(label.lower(), label)
+        master_name = f"com.sun.star.text.fieldmaster.SetExpression.{category}"
+        masters = doc.getTextFieldMasters()
+        if masters.hasByName(master_name):
+            master = masters.getByName(master_name)
+        else:
+            master = doc.createInstance("com.sun.star.text.fieldmaster.SetExpression")
+            master.Name = category
+            master.SubType = uno.getConstantByName("com.sun.star.text.SetVariableType.SEQUENCE")
+
+        anchor = target_id.getAnchor() if hasattr(target_id, "getAnchor") else target_id
+        text_obj = anchor.getText() if hasattr(anchor, "getText") else doc.getText()
+        cursor = text_obj.createTextCursorByRange(anchor.getEnd() if hasattr(anchor, "getEnd") else anchor)
+        if position == "below":
+            text_obj.insertControlCharacter(cursor, PARAGRAPH_BREAK, False)
+
+        field = doc.createInstance("com.sun.star.text.TextField.SetExpression")
+        field.attachTextFieldMaster(master)
+        field.SubType = uno.getConstantByName("com.sun.star.text.SetVariableType.SEQUENCE")
+        field.NumberingType = uno.getConstantByName("com.sun.star.style.NumberingType.ARABIC")
+        text_obj.insertString(cursor, f"{category} ", False)
+        text_obj.insertTextContent(cursor, field, False)
+        if text:
+            text_obj.insertString(cursor, f": {text}", False)
+        return {"category": category, "position": position}
+
+    def list_document_indexes(self, doc: Any) -> List[Any]:
+        """Returns raw index objects (ContentIndex/DocumentIndex/etc.)
+        for the tools/ layer to register -- same "may mint a fresh id
+        on repeat list calls for the same underlying index" caveat
+        calc_data.py's pivot tables carry, not independently re-verified
+        for this object type this pass; see tools/writer_layout.py's
+        module docstring."""
+        self._require_writer(doc, "list_document_indexes")
+        indexes = doc.getDocumentIndexes()
+        return [indexes.getByIndex(i) for i in builtins.range(indexes.getCount())]
+
+    @staticmethod
+    def get_index_summary(index: Any, index_id: str) -> Dict[str, Any]:
+        return {
+            "index_id": index_id, "title": getattr(index, "Title", None),
+            "type": index.getServiceName() if hasattr(index, "getServiceName") else None,
+        }
+
+    def insert_toc(self, doc: Any, at_position: Optional[int] = None, title: Optional[str] = None,
+                    max_level: int = 10, options: Optional[Dict[str, Any]] = None) -> Any:
+        self._require_writer(doc, "insert_toc")
+        toc = doc.createInstance("com.sun.star.text.ContentIndex")
+        toc.CreateFromOutline = True
+        toc.Level = int(max_level)
+        if title is not None:
+            toc.Title = title
+        if options:
+            self._apply_direct_properties(toc, options)
+        if at_position is not None:
+            para = self._get_paragraph_object(doc, at_position)
+            cursor = doc.getText().createTextCursorByRange(para.getStart())
+        else:
+            cursor = self._get_controller(doc).getViewCursor()
+        doc.getText().insertTextContent(cursor, toc, False)
+        toc.update()
+        return toc
+
+    def update_index(self, index: Any) -> None:
+        index.update()
+
+    def delete_index(self, doc: Any, index: Any, keep_content: bool = False) -> None:
+        """keep_content isn't attempted -- disposing a TOC/index removes
+        its generated entries along with the index object itself
+        (there's no separate "convert generated entries to plain text"
+        step exploration-tested this pass); the parameter is accepted
+        but the content is always removed, matching what dispose()
+        actually does."""
+        index.dispose()
+
+    def insert_alphabetical_index(self, doc: Any, at_position: Optional[int] = None, title: Optional[str] = None,
+                                   options: Optional[Dict[str, Any]] = None) -> Any:
+        self._require_writer(doc, "insert_alphabetical_index")
+        index = doc.createInstance("com.sun.star.text.DocumentIndex")
+        if title is not None:
+            index.Title = title
+        if options:
+            self._apply_direct_properties(index, options)
+        if at_position is not None:
+            para = self._get_paragraph_object(doc, at_position)
+            cursor = doc.getText().createTextCursorByRange(para.getStart())
+        else:
+            cursor = self._get_controller(doc).getViewCursor()
+        doc.getText().insertTextContent(cursor, index, False)
+        index.update()
+        return index
+
+    def add_index_mark(self, doc: Any, index_type: str, primary_key: Optional[str] = None,
+                        secondary_key: Optional[str] = None) -> Dict[str, Any]:
+        """`index_type` is accepted for spec-schema completeness but
+        every index mark uses the same com.sun.star.text.
+        DocumentIndexMark service this pass -- alphabetical-index marks
+        are the only kind exploration-tested (table-of-contents/
+        illustration entries are generated automatically from outline
+        levels/captions instead of manual marks, so a separate mark type
+        for those wasn't needed)."""
+        self._require_writer(doc, "add_index_mark")
+        mark = doc.createInstance("com.sun.star.text.DocumentIndexMark")
+        if primary_key is not None:
+            mark.PrimaryKey = primary_key
+        if secondary_key is not None:
+            mark.SecondaryKey = secondary_key
+        view_cursor = self._get_controller(doc).getViewCursor()
+        doc.getText().insertTextContent(view_cursor, mark, False)
+        return {"index_type": index_type, "primary_key": primary_key}
+
+    def get_chapter_numbering(self, doc: Any) -> List[Dict[str, Any]]:
+        self._require_writer(doc, "get_chapter_numbering")
+        rules = doc.ChapterNumberingRules
+        result = []
+        for i in builtins.range(rules.Count):
+            level_props = {p.Name: self._uno_value_to_plain(p.Value) for p in rules.getByIndex(i)}
+            level_props["level"] = i + 1
+            result.append(level_props)
+        return result
+
+    # set_chapter_numbering_live has no bridge method -- see this
+    # section's own docstring above for why.
+
+    def get_line_numbering(self, doc: Any) -> Dict[str, Any]:
+        self._require_writer(doc, "get_line_numbering")
+        lnp = doc.LineNumberingProperties
+        return {
+            "enabled": bool(lnp.IsOn), "interval": lnp.Interval, "restart_each_page": bool(lnp.RestartAtEachPage),
+            "count_empty_lines": bool(lnp.CountEmptyLines), "distance": lnp.Distance,
+        }
+
+    def set_line_numbering(self, doc: Any, enabled: bool, interval: Optional[int] = None,
+                            restart_each_page: Optional[bool] = None) -> List[str]:
+        """`doc.LineNumberingProperties` is a live-linked reference, not a
+        value-type struct snapshot -- live-verified mutating its fields
+        (IsOn/Interval/RestartAtEachPage) applies immediately to the
+        document with no write-back needed. Writing the whole property
+        back afterward (`doc.LineNumberingProperties = lnp`) is not just
+        redundant, it actively raises "property ... is readonly" --
+        caught only because the exception happened to still report
+        `enabled` as applied on a later get_line_numbering_live call,
+        i.e. the previous version of this method reported failure on a
+        call that had, in fact, already taken effect."""
+        self._require_writer(doc, "set_line_numbering")
+        lnp = doc.LineNumberingProperties
+        lnp.IsOn = bool(enabled)
+        applied = ["enabled"]
+        if interval is not None:
+            lnp.Interval = int(interval)
+            applied.append("interval")
+        if restart_each_page is not None:
+            lnp.RestartAtEachPage = bool(restart_each_page)
+            applied.append("restart_each_page")
+        return applied

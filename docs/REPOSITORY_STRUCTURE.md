@@ -33,7 +33,7 @@ mcp-libre/
 │   │       ├── undo_view_selection.py # Phase A, 12/14 IMPLEMENTED: undo/redo/view/zoom/selection/locking (document-events pair still stub)
 │   │       ├── styles.py           # Phase A, IMPLEMENTED: style family/apply/formatting tools
 │   │       ├── writer_text.py      # Phase B, 18/18 IMPLEMENTED: paragraph/character editing, regex find/replace, comments
-│   │       ├── writer_layout.py    # Phase B, stub: page layout, headers/footers, fields, bookmarks, indexes
+│   │       ├── writer_layout.py    # Phase B, 42/43 IMPLEMENTED: page layout, headers/footers, fields, bookmarks, indexes
 │   │       ├── writer_tables.py    # Phase B, stub: tables, sections, footnotes/endnotes, content controls, mail merge
 │   │       ├── drawing_objects.py  # Phase C, 29/31 IMPLEMENTED: shapes, glue points, images, embedded objects
 │   │       ├── charts.py           # Phase C, 19/20 IMPLEMENTED: chart2-based chart tools (Calc-native only)
@@ -72,6 +72,7 @@ mcp-libre/
 │   ├── test_impress.py             # impress.py's 34 implemented tools, tested against fakes
 │   ├── test_calc_data.py           # calc_data.py's 39 implemented tools, tested against fakes
 │   ├── test_calc_page.py           # calc_page.py's 15 implemented tools, tested against fakes
+│   ├── test_writer_layout.py       # writer_layout.py's 42 implemented tools, tested against fakes
 │   ├── test_uno_datetime.py        # DateTime-to-ISO conversion unit tests (no live LibreOffice needed)
 │   ├── test_host_trust.py          # Host/Origin trust check unit tests (no live LibreOffice needed)
 │   └── test_mcp_jsonrpc.py         # Real MCP JSON-RPC 2.0 dispatch unit tests (no live LibreOffice needed)

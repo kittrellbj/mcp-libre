@@ -438,6 +438,38 @@ def test_implemented_calc_data_tools_are_marked_implemented():
         assert registry[name]["status"] == "stub", f"{name} should still be status='stub' (no real code path this pass, see module docstring)"
 
 
+# writer_layout.py is also a mixed module: 42 of its 43 tools are real.
+# The remaining 1 (set_chapter_numbering_live) stays status="stub" --
+# ChapterNumberingRules.replaceByIndex() genuinely doesn't accept a
+# write this pass (see module docstring); get_chapter_numbering_live
+# (read-only) IS real.
+IMPLEMENTED_WRITER_LAYOUT_TOOL_NAMES = {
+    "get_page_layout_live", "set_page_layout_live", "apply_page_preset_live", "list_page_styles_live",
+    "create_page_style_live", "update_page_style_live", "apply_page_style_live", "set_page_columns_live",
+    "insert_page_break_live", "remove_page_break_live", "get_headers_footers_live", "set_header_live",
+    "set_footer_live", "clear_header_live", "clear_footer_live", "insert_page_number_field_live",
+    "insert_page_count_field_live", "insert_date_time_field_live", "insert_document_property_field_live",
+    "list_fields_live", "update_fields_live", "delete_field_live", "list_bookmarks_live", "add_bookmark_live",
+    "goto_bookmark_live", "rename_bookmark_live", "delete_bookmark_live", "insert_hyperlink_live",
+    "list_hyperlinks_live", "update_hyperlink_live", "remove_hyperlink_live", "insert_cross_reference_live",
+    "insert_caption_live", "list_document_indexes_live", "insert_toc_live", "update_index_live",
+    "delete_index_live", "insert_alphabetical_index_live", "add_index_mark_live", "get_chapter_numbering_live",
+    "get_line_numbering_live", "set_line_numbering_live",
+}
+
+
+def test_implemented_writer_layout_tools_are_marked_implemented():
+    """Same guard as test_implemented_modules_tools_are_marked_implemented,
+    for the 42 individually-implemented tools in the mixed
+    writer_layout.py module (see IMPLEMENTED_WRITER_LAYOUT_TOOL_NAMES)."""
+    registry = get_registry()
+    for name in IMPLEMENTED_WRITER_LAYOUT_TOOL_NAMES:
+        assert registry[name]["status"] == "implemented", f"{name} should be status='implemented'"
+    still_stub = EXPECTED_BY_MODULE["writer_layout"] - IMPLEMENTED_WRITER_LAYOUT_TOOL_NAMES
+    for name in still_stub:
+        assert registry[name]["status"] == "stub", f"{name} should still be status='stub' (no real code path this pass, see module docstring)"
+
+
 def test_stub_shape_contract():
     """Every remaining stub, called with placeholder args, returns the
     spec's NOT_IMPLEMENTED error envelope. Tools with status="implemented"
@@ -501,6 +533,7 @@ if __name__ == "__main__":
         test_implemented_chart_tools_are_marked_implemented,
         test_implemented_impress_tools_are_marked_implemented,
         test_implemented_calc_data_tools_are_marked_implemented,
+        test_implemented_writer_layout_tools_are_marked_implemented,
         test_stub_shape_contract,
         test_merge_into_does_not_overwrite_existing_tools_by_default,
         test_error_envelope_rejects_unknown_codes,

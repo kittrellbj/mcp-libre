@@ -17,7 +17,7 @@ up exactly where it left off.
 | Undo, view, selection, events, orchestration | 14 | 0 | 14 | **12/14 Implemented** (`tools/undo_view_selection.py`) -- real logic, live-verified; document-events (2 tools) still stub, separate pass |
 | Styles and formatting infrastructure | 12 | 0 | 12 | **Implemented** (`tools/styles.py`) -- real logic, live-verified |
 | Writer - text, navigation, editing, search, review | 45 | 27 | 18 | **18/18 new tools Implemented** (`tools/writer_text.py`) -- real logic, live-verified; the 27 "(existing)" tools stay in `mcp_server.py`/`uno_bridge.py` under the original 32, not duplicated here |
-| Writer - page layout, publishing, styles, headers, fields, indexes | 43 | 0 | 43 | **Scaffolded** (`tools/writer_layout.py`) |
+| Writer - page layout, publishing, styles, headers, fields, indexes | 43 | 0 | 43 | **42/43 Implemented** (`tools/writer_layout.py`) -- real logic, live-verified; `set_chapter_numbering_live` (P2) still stub -- `ChapterNumberingRules.replaceByIndex()` resists writes this build |
 | Writer - tables, sections, notes, content controls, mail merge | 38 | 0 | 38 | **Scaffolded** (`tools/writer_tables.py`) |
 | Common drawing objects, images, shapes, embedded objects | 31 | 0 | 31 | **29/31 Implemented** (`tools/drawing_objects.py`) -- real logic, live-verified; only insert/activate_embedded_object (P3) still stub (uncertain OLE scope, not dispatch risk -- combine/split/bind/unbind re-enabled once the dispatch-safety finding was corrected) |
 | Charts and data visualizations | 20 | 0 | 20 | **19/20 Implemented** (`tools/charts.py`) -- real logic, live-verified, Calc-native charts only; `add_chart_series_live` (P2) still stub (no XDataProvider construction from raw values this pass) |
@@ -1708,6 +1708,113 @@ mechanics are live-verified instead). Unlike `charts.py`/`impress.py`/
 own `IMPLEMENTED_CALC_PAGE_TOOL_NAMES` set. 395/395 passing under
 `pytest` across the full relevant suite (383 prior + 11 calc_page.py +
 1 for the comment-author warning test added during live-verification).
+
+## Real implementation pass: writer_layout.py (42 of 43 tools)
+
+Third of the four remaining Phase B/C scaffolds (calc_data.py, calc_page.py
+done -> writer_layout.py -> writer_tables.py). Page style resolution reuses
+`_get_style_family(doc, "PageStyles")`, the same family `styles.py`/
+`calc_page.py` already resolve through. Bookmarks are addressed by name
+directly (`doc.getBookmarks()` is a real UNO-guaranteed-unique-Name
+`XNameAccess`, confirmed live) -- no `ObjectRegistry`, same category as
+sheets/Writer tables/Calc's own named charts per
+`docs/OBJECT_HANDLE_DESIGN.md`. Fields, hyperlink text ranges, and document
+indexes have no natural unique name and resolve `field_id`/`hyperlink_id`/
+`index_id` through the same `ObjectRegistry` `drawing_objects.py`
+established. `set_chapter_numbering_live` stays `status="stub"` --
+live-verified `ChapterNumberingRules.replaceByIndex()` raises a bare
+`IllegalArgumentException` even passing back the exact unmodified sequence
+`getByIndex()` itself returned; `get_chapter_numbering_live` (read-only) is
+real.
+
+**Five real bugs found live-verifying, all fixed and re-verified post-fix
+on a rebuild:**
+
+1. `remove_page_break_live` raised a raw `UNO_EXCEPTION` ("Type 0 is not
+   supported!") -- the fix set `PageDescName = None` to clear it, but
+   `None` isn't a legal value for this string-typed property. Fixed to
+   clear with `""` instead, confirmed by reading back the same
+   `BreakType`/`PageDescName` state an untouched paragraph starts in.
+2. `insert_page_number_field_live`/`insert_page_count_field_live` never
+   set `NumberingType` explicitly, and the UNO default for a freshly
+   created field isn't Arabic -- live-verified page 2 rendered as `"B"`
+   (alphabetic numbering), not `"2"`. Fixed to default to `ARABIC` and
+   added a `format` parameter (`arabic`/`roman_upper`/`roman_lower`/
+   `alpha_upper`/`alpha_lower`) for callers who want something else;
+   re-verified `"2"` by default and `"II"` for `roman_upper`.
+3. `insert_hyperlink_live` silently produced a hyperlink whose `HyperLinkURL`
+   never applied, discoverable only by reading the property back off a
+   text-portion scan -- the tool's own success response gave no sign of
+   it. Two approaches failed before landing on a fix: setting the property
+   on a cursor positioned *before* inserting the display text (the
+   property never applies to text that doesn't exist yet), and inserting
+   with `bAbsorb=False` then re-selecting the range with a second cursor
+   snapshotted before the insert (that second cursor tracks the live edit
+   and moves forward right along with it, so the "selection" it ends up
+   with is zero-width and the property set silently no-ops on it). Fixed
+   by inserting with `bAbsorb=True`, which leaves the cursor itself
+   selecting exactly the text it just inserted.
+4. `insert_cross_reference_live` raised `"enum com.sun.star.text.
+   ReferenceFieldSource is unknown"` -- `ReferenceFieldSource`/
+   `ReferenceFieldPart` are plain `SHORT`-typed properties, not real UNO
+   enums (confirmed via `getPropertySetInfo()` reporting `TypeClass
+   SHORT`), so `uno.Enum(...)` can't resolve them. Fixed to use
+   `uno.getConstantByName()` against the `com.sun.star.text.
+   ReferenceFieldSource`/`ReferenceFieldPart` constant groups instead --
+   the same mechanism `insert_caption` already used correctly for
+   `NumberingType`/`SetVariableType`. Re-verified bookmark-sourced text
+   and page references render correctly (`"Target"` and `"1"`).
+5. `set_line_numbering_live` raised `"property ... is readonly"` on
+   `doc.LineNumberingProperties = lnp` -- worse than a clean failure, the
+   preceding in-place field mutations (`lnp.IsOn = ...` etc.) had *already
+   taken effect* on the live document before that final write-back threw,
+   so the tool reported failure on a call that had, in fact, succeeded.
+   `LineNumberingProperties` turned out to be a live-linked reference, not
+   a value-type struct snapshot -- mutating its fields applies immediately;
+   the write-back was both unnecessary and read-only. Fixed by dropping
+   it; re-verified a clean `success: true` with the correct state on
+   readback.
+
+**Id-churn caveat, confirmed for two more object kinds this pass:**
+hyperlink text ranges do NOT compare equal to themselves across two
+separate UNO fetches, same gap as calc_data.py's pivot tables --
+`insert_hyperlink_live`'s own returned `hyperlink_id` differs from what a
+later `list_hyperlinks_live` returns for that same hyperlink, though each
+id keeps working for its own later `update`/`remove` call. Documented in
+both the module docstring and the two tools' `purpose=` strings per
+Buddy's standing note that this belongs in the caller-visible surface.
+`list_document_indexes_live`'s proactively-flagged version of the same
+risk was tested this pass too: `insert_toc_live`'s own id likewise differs
+from a subsequent `list_document_indexes_live` fetch for that same index,
+but repeated `list` calls for the same document state returned a *stable*
+id across three separate fetches (unlike hyperlinks/pivot tables, where
+even list-to-list churns) -- a narrower version of the gap than initially
+assumed.
+
+**Live-verified end to end on a fresh headless LibreOffice 26.2 instance,
+independently checking real document state after every call** (not
+trusting each tool's own success response, and rebuilding/redeploying
+after each of the five fixes above): the full page layout/style/preset/
+columns/page-break lifecycle; headers/footers including the shared-by-
+default `HeaderIsShared`/`FooterIsShared` behavior; all four field-insert
+tools plus `update_fields_live`/`delete_field_live`; the full bookmark
+lifecycle including `rename_bookmark_live`'s real parameter name
+(`old_name`/`new_name`) and a not-found error path; the full hyperlink
+lifecycle; both cross-reference variants; `insert_caption_live` against a
+real shape (`"Figure 1: A test figure"` confirmed via raw text scan); the
+full TOC/alphabetical-index lifecycle including `add_index_mark_live`
+(confirmed via a `DocumentIndexMark` text-portion scan, since index marks
+carry no visible text of their own); `get_chapter_numbering_live`; the
+full line-numbering lifecycle.
+
+**Testing:** `tests/test_writer_layout.py`, 21 new tests (a `FakeUnoBridge`
+modeling page styles/headers/footers/bookmarks as plain dicts and fields/
+hyperlinks/indexes as plain objects registered through the real
+`ObjectRegistry` -- tool-layer plumbing only, real UNO mechanics are
+live-verified instead). Mixed module like `charts.py`/`impress.py`/
+`calc_data.py`: `IMPLEMENTED_WRITER_LAYOUT_TOOL_NAMES` (42 names) added to
+`tests/test_tool_scaffold_contract.py`. 417/417 passing under `pytest`
+across the full relevant suite.
 
 ## What was built
 
