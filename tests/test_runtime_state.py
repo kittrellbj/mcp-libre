@@ -107,6 +107,35 @@ def test_diagnostics_counters_track_calls_and_errors():
     assert counters["error_history_size"] == 1
 
 
+def test_undo_context_starts_unset():
+    state = RuntimeState()
+    assert state.get_undo_context() is None
+
+
+def test_set_undo_context_then_get_returns_a_copy():
+    state = RuntimeState()
+    state.set_undo_context(title="My batch", document_id="doc-1", baseline_count=3)
+    context = state.get_undo_context()
+    assert context == {"title": "My batch", "document_id": "doc-1", "baseline_count": 3}
+
+    context["title"] = "mutated"  # mutating the returned dict must not affect internal state
+    assert state.get_undo_context()["title"] == "My batch"
+
+
+def test_clear_undo_context_resets_to_none():
+    state = RuntimeState()
+    state.set_undo_context(title="My batch", document_id="doc-1", baseline_count=0)
+    state.clear_undo_context()
+    assert state.get_undo_context() is None
+
+
+def test_set_undo_context_overwrites_previous():
+    state = RuntimeState()
+    state.set_undo_context(title="First", document_id="doc-1", baseline_count=0)
+    state.set_undo_context(title="Second", document_id="doc-2", baseline_count=5)
+    assert state.get_undo_context() == {"title": "Second", "document_id": "doc-2", "baseline_count": 5}
+
+
 if __name__ == "__main__":
     tests = [
         test_starts_with_default_profile_and_fresh_session_id,
@@ -120,6 +149,10 @@ if __name__ == "__main__":
         test_error_history_is_bounded,
         test_clear_errors_empties_history_and_resets_error_count,
         test_diagnostics_counters_track_calls_and_errors,
+        test_undo_context_starts_unset,
+        test_set_undo_context_then_get_returns_a_copy,
+        test_clear_undo_context_resets_to_none,
+        test_set_undo_context_overwrites_previous,
     ]
     for test in tests:
         test()

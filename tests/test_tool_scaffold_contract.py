@@ -272,8 +272,18 @@ def test_every_tool_has_a_valid_status():
 
 
 # Modules whose tools have real logic now, not NOT_IMPLEMENTED stub bodies.
-# Update this set (and nothing else) as more modules get implemented.
+# Update this set (and nothing else) as more modules get *fully* implemented.
 IMPLEMENTED_MODULES = ("core_runtime", "document_lifecycle")
+
+# undo_view_selection.py is a mixed module: 6 of its 14 tools (the undo
+# ones) are real; the other 8 (view/zoom/selection/document-update-locking/
+# document-events) are a separate follow-up pass and stay status="stub".
+# Listed by name rather than added to IMPLEMENTED_MODULES since that
+# constant asserts *every* tool in the module.
+IMPLEMENTED_TOOL_NAMES = {
+    "get_undo_state_live", "undo_live", "redo_live",
+    "begin_undo_context_live", "end_undo_context_live", "cancel_undo_context_live",
+}
 
 
 def test_implemented_modules_tools_are_marked_implemented():
@@ -284,6 +294,18 @@ def test_implemented_modules_tools_are_marked_implemented():
     for module_name in IMPLEMENTED_MODULES:
         for name in EXPECTED_BY_MODULE[module_name]:
             assert registry[name]["status"] == "implemented", f"{name} (in {module_name}) should be status='implemented'"
+
+
+def test_implemented_undo_tools_are_marked_implemented():
+    """Same guard as test_implemented_modules_tools_are_marked_implemented,
+    for the 6 individually-implemented tools in the mixed
+    undo_view_selection.py module (see IMPLEMENTED_TOOL_NAMES)."""
+    registry = get_registry()
+    for name in IMPLEMENTED_TOOL_NAMES:
+        assert registry[name]["status"] == "implemented", f"{name} should be status='implemented'"
+    still_stub = EXPECTED_BY_MODULE["undo_view_selection"] - IMPLEMENTED_TOOL_NAMES
+    for name in still_stub:
+        assert registry[name]["status"] == "stub", f"{name} should still be status='stub' (separate follow-up pass)"
 
 
 def test_stub_shape_contract():
@@ -331,9 +353,10 @@ def test_error_codes_match_spec_list():
         "UNSUPPORTED_CAPABILITY", "INVALID_RANGE", "INVALID_PARAMETER", "FILE_EXISTS",
         "PERMISSION_DENIED", "UNO_EXCEPTION", "DATABASE_ERROR", "TIMEOUT", "SECURITY_POLICY_DENIED",
     }
-    # NOT_IMPLEMENTED is a scaffold-only addition, not part of the spec's own list.
+    # NOT_IMPLEMENTED and INVALID_STATE are scaffold-only additions, not part
+    # of the spec's own list -- see envelope.py's ERROR_CODES comment.
     assert spec_codes <= ERROR_CODES
-    assert ERROR_CODES - spec_codes == {"NOT_IMPLEMENTED"}
+    assert ERROR_CODES - spec_codes == {"NOT_IMPLEMENTED", "INVALID_STATE"}
 
 
 if __name__ == "__main__":
@@ -343,6 +366,7 @@ if __name__ == "__main__":
         test_every_tool_has_a_valid_priority,
         test_every_tool_has_a_valid_status,
         test_implemented_modules_tools_are_marked_implemented,
+        test_implemented_undo_tools_are_marked_implemented,
         test_stub_shape_contract,
         test_merge_into_does_not_overwrite_existing_tools_by_default,
         test_error_envelope_rejects_unknown_codes,

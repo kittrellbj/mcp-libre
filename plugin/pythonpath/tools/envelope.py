@@ -12,9 +12,13 @@ with build_success()/build_error() so the shape stays uniform:
 import time
 from typing import Any, Dict, List, Optional
 
-# Stable error codes from spec section 5. NOT_IMPLEMENTED is a scaffold-only
-# addition for stub tools -- it is not part of the spec's official contract.
-# Replace it with a real spec code once a tool is implemented.
+# Stable error codes from spec section 5 ("such as" -- an illustrative, not
+# exhaustive, list). NOT_IMPLEMENTED is a scaffold-only addition for stub
+# tools; replace it with a real spec code once a tool is implemented.
+# INVALID_STATE is a small extension in the same spirit, for an operation
+# that's well-formed but invalid given current session state (e.g. ending
+# an undo context when none is open) -- distinct from INVALID_PARAMETER,
+# which is about the call's arguments, not server state.
 ERROR_CODES = frozenset({
     "NO_ACTIVE_DOCUMENT",
     "WRONG_DOCUMENT_TYPE",
@@ -23,6 +27,7 @@ ERROR_CODES = frozenset({
     "UNSUPPORTED_CAPABILITY",
     "INVALID_RANGE",
     "INVALID_PARAMETER",
+    "INVALID_STATE",
     "FILE_EXISTS",
     "PERMISSION_DENIED",
     "UNO_EXCEPTION",

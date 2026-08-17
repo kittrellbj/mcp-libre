@@ -71,6 +71,10 @@ class FakeUnoBridge:
         )
         self.desktop = FakeDesktop(self.open_documents)
         self._version_success = version_success
+        self._undo_stack = []
+        self._context_open = False
+        self._context_title = None
+        self._context_has_action = False
 
     def get_active_document(self):
         return self.active_document
@@ -91,6 +95,46 @@ class FakeUnoBridge:
                 "XPresentationDocument": True, "XDocumentEventListener": True, "XActionListener": True,
             },
         }
+
+    # -- undo manager (only what batch_execute_live's undo_label wiring
+    # needs to exercise -- see tests/test_undo_view_selection.py for the
+    # fuller fake/tests of the 6 undo tools themselves) --
+
+    def simulate_edit(self):
+        """Test helper: mimic a UNO edit landing right now. If a context is
+        open, it's flagged as having recorded something (real UNO
+        coalesces everything recorded inside a context into one action on
+        leaveUndoContext, regardless of how many); otherwise it lands on
+        the stack immediately, same as an edit outside any context."""
+        if self._context_open:
+            self._context_has_action = True
+        else:
+            self._undo_stack.append("Simulated Edit")
+
+    def begin_undo_context(self, doc, title):
+        baseline_count = len(self._undo_stack)
+        self._context_open = True
+        self._context_title = title
+        self._context_has_action = False
+        return {"baseline_count": baseline_count}
+
+    def end_undo_context(self, doc):
+        if self._context_has_action:
+            self._undo_stack.append(self._context_title)
+        self._context_open = False
+        self._context_has_action = False
+        return {"resulting_count": len(self._undo_stack)}
+
+    def cancel_undo_context(self, doc, baseline_count):
+        if self._context_has_action:
+            self._undo_stack.append(self._context_title)
+        self._context_open = False
+        self._context_has_action = False
+        reverted = 0
+        while len(self._undo_stack) > baseline_count:
+            self._undo_stack.pop()
+            reverted += 1
+        return {"reverted_count": reverted, "restored": len(self._undo_stack) <= baseline_count, "resulting_count": len(self._undo_stack)}
 
 
 def _noop_handler(**kwargs):
@@ -347,11 +391,61 @@ def test_batch_execute_live_reports_unknown_tool_name():
     assert result["result"]["results"][0]["error"]["code"] == "OBJECT_NOT_FOUND"
 
 
-def test_batch_execute_live_warns_about_unsupported_undo_label():
+def test_batch_execute_live_with_undo_label_groups_into_one_undo_step():
     context.reset()
-    _install(extra_tools={"fake_tool": {"description": "", "parameters": {"type": "object", "properties": {}}, "handler": _noop_handler}})
-    result = _handler("batch_execute_live")(operations=[{"tool_name": "fake_tool"}], undo_label="my batch")
-    assert any("undo_label" in w for w in result["warnings"])
+    doc = FakeDocument("writer")
+
+    def edit_a(**kwargs):
+        context.get_context().uno_bridge.simulate_edit()
+        return {"success": True, "result": {}}
+
+    def edit_b(**kwargs):
+        context.get_context().uno_bridge.simulate_edit()
+        return {"success": True, "result": {}}
+
+    uno_bridge, _, _, _ = _install(active_document=doc, extra_tools={
+        "edit_a": {"description": "", "parameters": {"type": "object", "properties": {}}, "handler": edit_a},
+        "edit_b": {"description": "", "parameters": {"type": "object", "properties": {}}, "handler": edit_b},
+    })
+
+    result = _handler("batch_execute_live")(
+        operations=[{"tool_name": "edit_a"}, {"tool_name": "edit_b"}], undo_label="Test batch",
+    )
+    assert result["success"] is True
+    assert not any("undo_label" in w for w in result["warnings"])  # the old "not implemented" warning is gone
+    assert uno_bridge._undo_stack == ["Test batch"]  # both edits coalesced into ONE undo step
+
+
+def test_batch_execute_live_undo_label_commits_context_even_when_stop_on_error_trips():
+    context.reset()
+    doc = FakeDocument("writer")
+
+    def edit_then_fail(**kwargs):
+        context.get_context().uno_bridge.simulate_edit()
+        return {"success": False, "error": {"code": "UNO_EXCEPTION", "message": "boom"}}
+
+    uno_bridge, _, runtime_state, _ = _install(active_document=doc, extra_tools={
+        "edit_then_fail": {"description": "", "parameters": {"type": "object", "properties": {}}, "handler": edit_then_fail},
+    })
+
+    result = _handler("batch_execute_live")(operations=[{"tool_name": "edit_then_fail"}], undo_label="Partial batch")
+    assert result["success"] is True  # the batch call itself succeeds; the per-op failure is in results
+    assert result["result"]["failed_count"] == 1
+    # Committed (one visible Undo step for the partial progress), not rolled back --
+    # see core_runtime.py's batch_execute_live comment for the reasoning.
+    assert uno_bridge._undo_stack == ["Partial batch"]
+    assert runtime_state.get_undo_context() is None  # context was still closed cleanly
+
+
+def test_batch_execute_live_undo_label_fails_cleanly_if_context_already_open():
+    context.reset()
+    doc = FakeDocument("writer")
+    _, _, runtime_state, _ = _install(active_document=doc)
+    runtime_state.set_undo_context(title="Already open", document_id=None, baseline_count=0)
+
+    result = _handler("batch_execute_live")(operations=[{"tool_name": "list_open_documents"}], undo_label="New batch")
+    assert result["success"] is False
+    assert result["error"]["code"] == "INVALID_STATE"
 
 
 def test_batch_execute_live_rejects_empty_operations():
@@ -462,7 +556,9 @@ if __name__ == "__main__":
         test_batch_execute_live_stops_on_error_by_default,
         test_batch_execute_live_continues_past_error_when_stop_on_error_false,
         test_batch_execute_live_reports_unknown_tool_name,
-        test_batch_execute_live_warns_about_unsupported_undo_label,
+        test_batch_execute_live_with_undo_label_groups_into_one_undo_step,
+        test_batch_execute_live_undo_label_commits_context_even_when_stop_on_error_trips,
+        test_batch_execute_live_undo_label_fails_cleanly_if_context_already_open,
         test_batch_execute_live_rejects_empty_operations,
         test_validate_tool_call_live_accepts_valid_parameters,
         test_validate_tool_call_live_catches_missing_required_parameter,

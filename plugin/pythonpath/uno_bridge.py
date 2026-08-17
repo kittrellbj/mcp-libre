@@ -565,6 +565,129 @@ class UNOBridge:
     def set_modified_state(self, doc: Any, modified: bool) -> None:
         doc.setModified(modified)
 
+    # -- Undo manager (com.sun.star.document.XUndoManagerSupplier/XUndoManager) --
+
+    def _get_undo_manager(self, doc: Any) -> Any:
+        """Return doc's XUndoManager via XUndoManagerSupplier.getUndoManager().
+
+        Duck-typed like the rest of this file (hasattr, not an explicit UNO
+        interface cast) -- every document type this bridge supports
+        implements com.sun.star.document.OfficeDocument, which carries
+        XUndoManagerSupplier, but guard anyway in case a future document
+        type/build doesn't.
+
+        Raises:
+            NotImplementedError: doc has no getUndoManager() (or it returned
+                nothing) -- callers should map this to UNSUPPORTED_CAPABILITY.
+        """
+        get_manager = getattr(doc, "getUndoManager", None)
+        if get_manager is None:
+            raise NotImplementedError("This document does not support XUndoManagerSupplier.getUndoManager().")
+        manager = get_manager()
+        if manager is None:
+            raise NotImplementedError("Document's getUndoManager() returned nothing.")
+        return manager
+
+    def get_undo_state(self, doc: Any) -> Dict[str, Any]:
+        """Return undo/redo availability and the title of the next action
+        each direction would apply, per XUndoManager.isUndoPossible()/
+        isRedoPossible()/getCurrentUndoActionTitle()/getCurrentRedoActionTitle().
+        """
+        manager = self._get_undo_manager(doc)
+        can_undo = manager.isUndoPossible()
+        can_redo = manager.isRedoPossible()
+        return {
+            "can_undo": can_undo,
+            "can_redo": can_redo,
+            "undo_title": manager.getCurrentUndoActionTitle() if can_undo else None,
+            "redo_title": manager.getCurrentRedoActionTitle() if can_redo else None,
+        }
+
+    def undo(self, doc: Any, count: int = 1) -> Dict[str, Any]:
+        """Undo up to `count` actions, stopping cleanly (no exception) when
+        the undo stack is exhausted rather than assuming `count` are always
+        available.
+        """
+        manager = self._get_undo_manager(doc)
+        applied = 0
+        for _ in range(count):
+            if not manager.isUndoPossible():
+                break
+            manager.undo()
+            applied += 1
+        return {
+            "requested": count, "applied": applied,
+            "can_undo": manager.isUndoPossible(), "can_redo": manager.isRedoPossible(),
+        }
+
+    def redo(self, doc: Any, count: int = 1) -> Dict[str, Any]:
+        """Redo up to `count` actions, stopping cleanly when the redo stack
+        is exhausted (e.g. because a new action was recorded since the last
+        undo, which clears the redo stack per UNO semantics)."""
+        manager = self._get_undo_manager(doc)
+        applied = 0
+        for _ in range(count):
+            if not manager.isRedoPossible():
+                break
+            manager.redo()
+            applied += 1
+        return {
+            "requested": count, "applied": applied,
+            "can_undo": manager.isUndoPossible(), "can_redo": manager.isRedoPossible(),
+        }
+
+    def begin_undo_context(self, doc: Any, title: str) -> Dict[str, Any]:
+        """Open a named undo context (XUndoManager.enterUndoContext) that
+        coalesces every undo action recorded until end/cancel into one
+        visible Undo step.
+
+        Returns {"baseline_count": N} -- the undo stack depth (per
+        getAllUndoActionTitles()) immediately before the context opened.
+        Callers must hold onto this and pass it back into
+        cancel_undo_context(); it's how cancel tells "the context added one
+        coalesced action to revert" apart from "the context was empty and
+        UNO silently discarded it" without needing an XUndoManagerListener.
+        """
+        manager = self._get_undo_manager(doc)
+        baseline_count = len(manager.getAllUndoActionTitles())
+        manager.enterUndoContext(title)
+        return {"baseline_count": baseline_count}
+
+    def end_undo_context(self, doc: Any) -> Dict[str, Any]:
+        """Close the current undo context (XUndoManager.leaveUndoContext),
+        coalescing everything recorded inside it into one Undo step (or, if
+        nothing was recorded, UNO discards the context with no visible
+        step -- see begin_undo_context's docstring).
+        """
+        manager = self._get_undo_manager(doc)
+        manager.leaveUndoContext()
+        return {"resulting_count": len(manager.getAllUndoActionTitles())}
+
+    def cancel_undo_context(self, doc: Any, baseline_count: int) -> Dict[str, Any]:
+        """Close the current undo context and revert whatever it recorded.
+
+        XUndoManager has no direct "cancel" primitive, so this leaves the
+        context the same way end_undo_context does (which is what commits
+        the pending actions into one coalesced step -- undo() raises
+        UndoContextNotClosedException while a context is still open), then
+        calls undo() while the stack is deeper than baseline_count to
+        revert exactly the step(s) that context produced. Normally that's
+        at most one undo() call (a closed context coalesces to a single
+        action), but the loop (capped) is defensive rather than assuming
+        that invariant always holds.
+        """
+        manager = self._get_undo_manager(doc)
+        manager.leaveUndoContext()
+        reverted = 0
+        max_iterations = 1000
+        while len(manager.getAllUndoActionTitles()) > baseline_count and reverted < max_iterations:
+            if not manager.isUndoPossible():
+                break
+            manager.undo()
+            reverted += 1
+        resulting_count = len(manager.getAllUndoActionTitles())
+        return {"reverted_count": reverted, "restored": resulting_count <= baseline_count, "resulting_count": resulting_count}
+
     def refresh_document(self, doc: Any) -> None:
         """Refresh fields/links/data via XRefreshable, where the document type supports it."""
         if not hasattr(doc, "refresh"):

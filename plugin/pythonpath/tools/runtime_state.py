@@ -41,6 +41,13 @@ class RuntimeState:
         self._error_history: Deque[Dict[str, Any]] = deque(maxlen=MAX_ERROR_HISTORY)
         self._call_count: int = 0
         self._error_count: int = 0
+        # The currently-open named undo context, if any (see
+        # tools.undo_view_selection.begin_undo_context_live). None of the
+        # values here are UNO references -- document_id is a DocumentRegistry
+        # id and baseline_count is a plain int (undo-stack depth at the
+        # moment the context opened) -- so this stays UNO-free like the rest
+        # of this class.
+        self._undo_context: Optional[Dict[str, Any]] = None
 
     @property
     def uptime_seconds(self) -> float:
@@ -104,6 +111,33 @@ class RuntimeState:
         with self._lock:
             self._error_history.clear()
             self._error_count = 0
+
+    def set_undo_context(self, title: str, document_id: Optional[str], baseline_count: int) -> None:
+        """Record that a named undo context is now open.
+
+        Args:
+            title: The context's title, as passed to begin_undo_context_live.
+            document_id: DocumentRegistry id of the document it was opened on.
+            baseline_count: Undo-stack depth immediately before the context
+                opened (see uno_bridge.UNOBridge.begin_undo_context) -- needed
+                by cancel_undo_context_live to know how much to revert.
+        """
+        with self._lock:
+            self._undo_context = {"title": title, "document_id": document_id, "baseline_count": baseline_count}
+
+    def get_undo_context(self) -> Optional[Dict[str, Any]]:
+        """Return {"title", "document_id", "baseline_count"} for the open
+        undo context, or None if no context is currently open."""
+        with self._lock:
+            return dict(self._undo_context) if self._undo_context is not None else None
+
+    def clear_undo_context(self) -> None:
+        """Clear the open-undo-context record. Only call this once the
+        context has actually been closed on the UNO side (end/cancel
+        succeeded) -- clearing it after a failed leaveUndoContext() call
+        would desync this tracker from the real (still-open) UNO context."""
+        with self._lock:
+            self._undo_context = None
 
     def get_diagnostics_counters(self) -> Dict[str, Any]:
         with self._lock:

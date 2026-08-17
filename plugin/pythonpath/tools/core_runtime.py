@@ -24,14 +24,12 @@ Known scope limits (documented rather than hidden):
     _validate_against_schema. Sufficient for the flat schemas
     registry.schema() produces across this package; not a general-purpose
     validator.
-  - batch_execute_live's `undo_label` is accepted but not yet backed by a
-    real named undo context (begin_undo_context_live/end_undo_context_live
-    are still stubs); a warning says so rather than silently ignoring it.
-  - get_session_state_live's `registered_document_handles` reflects
-    DocumentRegistry, which nothing populates yet (open_document_live/
-    create_document_live/etc. are still stubs) -- open_documents is
-    sourced from the live desktop frame list instead, same approach
-    mcp_server.py's list_open_documents uses.
+  - batch_execute_live's `undo_label`, when supplied, wraps the operations
+    in a real named undo context via tools.undo_view_selection's
+    begin_undo_context_live/end_undo_context_live (see that call below) --
+    the batch is always committed as one coalesced Undo step, whether or
+    not stop_on_error stopped it early; it is never rolled back
+    automatically (see the comment at the call site for the reasoning).
 """
 
 import os
@@ -45,6 +43,7 @@ from . import context
 from . import documents
 from . import envelope
 from . import runtime_state as runtime_state_module
+from . import undo_view_selection
 from .registry import register_tool, schema
 
 # Kept in sync manually with plugin/description.xml's <version value="..."/>.
@@ -374,12 +373,9 @@ def get_session_state_live() -> Dict[str, Any]:
     result = {
         "active_document": active_document,
         "open_documents": open_documents,
-        # See module docstring: DocumentRegistry isn't populated by anything
-        # yet, so this is expected to be empty until lifecycle tools that
-        # call register_document() are implemented.
         "registered_document_handles": ctx.document_registry.list_documents(),
         "current_profile": ctx.runtime_state.get_profile(),
-        "pending_undo_context": None,
+        "pending_undo_context": ctx.runtime_state.get_undo_context(),
         "session_id": ctx.runtime_state.session_id,
         "uptime_seconds": round(ctx.runtime_state.uptime_seconds, 1),
     }
@@ -410,51 +406,77 @@ def batch_execute_live(operations: List[Dict[str, Any]], stop_on_error: bool = T
 
     tools_dict = ctx.get_tools()
     warnings = []
+    undo_context_open = False
     if undo_label:
-        warnings.append(
-            "undo_label was supplied but named undo-context grouping is not implemented yet "
-            "(see begin_undo_context_live); operations ran without it."
-        )
+        begin_result = undo_view_selection.begin_undo_context_live(title=undo_label)
+        if not begin_result.get("success"):
+            # Fail the whole batch rather than silently running ungrouped --
+            # e.g. a context from a previous call was never closed. The
+            # caller asked for one undo step; if that can't be set up, no
+            # operations should run under a false promise of grouping.
+            return envelope.build_error(
+                begin_result["error"]["code"],
+                f"Could not start undo context for batch_execute_live: {begin_result['error']['message']}",
+                elapsed_ms=envelope.elapsed_ms_since(start),
+            )
+        undo_context_open = True
 
     results = []
-    for index, operation in enumerate(operations):
-        if not isinstance(operation, dict) or "tool_name" not in operation:
-            results.append({
-                "index": index, "success": False,
-                "error": {"code": "INVALID_PARAMETER", "message": "Each operation must be an object with a 'tool_name' key."},
-            })
-            if stop_on_error:
+    try:
+        for index, operation in enumerate(operations):
+            if not isinstance(operation, dict) or "tool_name" not in operation:
+                results.append({
+                    "index": index, "success": False,
+                    "error": {"code": "INVALID_PARAMETER", "message": "Each operation must be an object with a 'tool_name' key."},
+                })
+                if stop_on_error:
+                    break
+                continue
+
+            tool_name = operation["tool_name"]
+            parameters = operation.get("parameters", {})
+
+            if tool_name not in tools_dict:
+                results.append({
+                    "index": index, "tool_name": tool_name, "success": False,
+                    "error": {"code": "OBJECT_NOT_FOUND", "message": f"No tool named '{tool_name}' is registered."},
+                })
+                if stop_on_error:
+                    break
+                continue
+
+            try:
+                op_result = tools_dict[tool_name]["handler"](**parameters)
+                if not isinstance(op_result, dict):
+                    op_result = {"success": False, "error": {"code": "UNO_EXCEPTION", "message": "handler returned a non-dict result"}}
+            except TypeError as e:
+                op_result = {"success": False, "error": {"code": "INVALID_PARAMETER", "message": str(e)}}
+            except Exception as e:
+                op_result = {"success": False, "error": {"code": "UNO_EXCEPTION", "message": str(e)}}
+
+            results.append({"index": index, "tool_name": tool_name, **op_result})
+
+            # Legacy tools (the original 32) don't always set "success" on their
+            # happy path (see mcp_server.py) -- treat an absent key as success
+            # rather than a failure so this doesn't misreport them as erroring.
+            if op_result.get("success") is False and stop_on_error:
                 break
-            continue
-
-        tool_name = operation["tool_name"]
-        parameters = operation.get("parameters", {})
-
-        if tool_name not in tools_dict:
-            results.append({
-                "index": index, "tool_name": tool_name, "success": False,
-                "error": {"code": "OBJECT_NOT_FOUND", "message": f"No tool named '{tool_name}' is registered."},
-            })
-            if stop_on_error:
-                break
-            continue
-
-        try:
-            op_result = tools_dict[tool_name]["handler"](**parameters)
-            if not isinstance(op_result, dict):
-                op_result = {"success": False, "error": {"code": "UNO_EXCEPTION", "message": "handler returned a non-dict result"}}
-        except TypeError as e:
-            op_result = {"success": False, "error": {"code": "INVALID_PARAMETER", "message": str(e)}}
-        except Exception as e:
-            op_result = {"success": False, "error": {"code": "UNO_EXCEPTION", "message": str(e)}}
-
-        results.append({"index": index, "tool_name": tool_name, **op_result})
-
-        # Legacy tools (the original 32) don't always set "success" on their
-        # happy path (see mcp_server.py) -- treat an absent key as success
-        # rather than a failure so this doesn't misreport them as erroring.
-        if op_result.get("success") is False and stop_on_error:
-            break
+    finally:
+        # Always close a context this call opened -- success, an early
+        # stop_on_error break, or even an unexpected exception escaping the
+        # loop above (belt-and-suspenders; every op is already wrapped in
+        # its own try/except). Deliberately committed (end), never rolled
+        # back (cancel), regardless of failed_count: the spec's requirement
+        # is that the batch "produce one user-visible Undo step", not that
+        # a partial failure erase partial progress -- an agent or user can
+        # still inspect/manually undo that one step. See the module
+        # docstring's batch_execute_live bullet.
+        if undo_context_open:
+            end_result = undo_view_selection.end_undo_context_live()
+            if not end_result.get("success"):
+                warnings.append(
+                    f"Failed to cleanly close the batch's undo context: {end_result['error']['message']}"
+                )
 
     result = {
         "results": results,
