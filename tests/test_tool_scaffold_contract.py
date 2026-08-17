@@ -405,6 +405,39 @@ def test_implemented_impress_tools_are_marked_implemented():
         assert registry[name]["status"] == "stub", f"{name} should still be status='stub' (no real code path this pass, see module docstring)"
 
 
+# calc_data.py is also a mixed module: 39 of its 42 tools are real. The
+# remaining 3 (create/refresh/delete_external_link_live) stay
+# status="stub" -- doc.ExternalDocLinks' write side wasn't
+# exploration-tested this pass (list_external_links_live, the read-only
+# side, IS real), see calc_data.py's module docstring.
+IMPLEMENTED_CALC_DATA_TOOL_NAMES = {
+    "list_named_ranges_live", "create_named_range_live", "update_named_range_live",
+    "delete_named_range_live", "sort_range_live", "apply_filter_live", "clear_filter_live",
+    "get_filter_state_live", "list_conditional_formats_live", "add_conditional_format_live",
+    "update_conditional_format_live", "delete_conditional_format_live", "get_data_validation_live",
+    "set_data_validation_live", "clear_data_validation_live", "create_subtotals_live",
+    "remove_subtotals_live", "list_pivot_tables_live", "create_pivot_table_live", "get_pivot_table_live",
+    "update_pivot_table_live", "refresh_pivot_table_live", "delete_pivot_table_live",
+    "list_scenarios_live", "create_scenario_live", "apply_scenario_live", "delete_scenario_live",
+    "goal_seek_live", "solver_solve_live", "list_database_ranges_live", "create_database_range_live",
+    "delete_database_range_live", "list_external_links_live", "import_csv_to_range_live",
+    "export_range_to_csv_live", "group_rows_live", "ungroup_rows_live", "group_columns_live",
+    "ungroup_columns_live",
+}
+
+
+def test_implemented_calc_data_tools_are_marked_implemented():
+    """Same guard as test_implemented_modules_tools_are_marked_implemented,
+    for the 39 individually-implemented tools in the mixed calc_data.py
+    module (see IMPLEMENTED_CALC_DATA_TOOL_NAMES)."""
+    registry = get_registry()
+    for name in IMPLEMENTED_CALC_DATA_TOOL_NAMES:
+        assert registry[name]["status"] == "implemented", f"{name} should be status='implemented'"
+    still_stub = EXPECTED_BY_MODULE["calc_data"] - IMPLEMENTED_CALC_DATA_TOOL_NAMES
+    for name in still_stub:
+        assert registry[name]["status"] == "stub", f"{name} should still be status='stub' (no real code path this pass, see module docstring)"
+
+
 def test_stub_shape_contract():
     """Every remaining stub, called with placeholder args, returns the
     spec's NOT_IMPLEMENTED error envelope. Tools with status="implemented"
@@ -467,6 +500,7 @@ if __name__ == "__main__":
         test_implemented_drawing_object_tools_are_marked_implemented,
         test_implemented_chart_tools_are_marked_implemented,
         test_implemented_impress_tools_are_marked_implemented,
+        test_implemented_calc_data_tools_are_marked_implemented,
         test_stub_shape_contract,
         test_merge_into_does_not_overwrite_existing_tools_by_default,
         test_error_envelope_rejects_unknown_codes,

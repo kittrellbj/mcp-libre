@@ -22,7 +22,7 @@ up exactly where it left off.
 | Common drawing objects, images, shapes, embedded objects | 31 | 0 | 31 | **29/31 Implemented** (`tools/drawing_objects.py`) -- real logic, live-verified; only insert/activate_embedded_object (P3) still stub (uncertain OLE scope, not dispatch risk -- combine/split/bind/unbind re-enabled once the dispatch-safety finding was corrected) |
 | Charts and data visualizations | 20 | 0 | 20 | **19/20 Implemented** (`tools/charts.py`) -- real logic, live-verified, Calc-native charts only; `add_chart_series_live` (P2) still stub (no XDataProvider construction from raw values this pass) |
 | Calc - sheets, cells, ranges, formulas, layout | 42 | 0 | 42 | **42/42 Implemented** (`tools/calc_sheets.py`) -- real logic, live-verified |
-| Calc - data management, analysis, pivots, validation, external data | 42 | 0 | 42 | **Scaffolded** (`tools/calc_data.py`) |
+| Calc - data management, analysis, pivots, validation, external data | 42 | 0 | 42 | **39/42 Implemented** (`tools/calc_data.py`) -- real logic, live-verified; create/refresh/delete_external_link (P2/P3) still stub -- no write-side ExternalDocLinks mechanism this pass |
 | Calc - page setup, print ranges, annotations, protection | 15 | 0 | 15 | **Scaffolded** (`tools/calc_page.py`) |
 | Impress - slides, masters, notes, transitions, animations, slideshow | 41 | 0 | 41 | **34/41 Implemented** (`tools/impress.py`) -- real logic, live-verified; 7 tools (animation mutation x4, live slideshow-effect control x3) still stub -- no XAnimationNode construction / no headless XSlideShowController this pass |
 | Draw - pages, masters, layers, vector operations | 16 | 0 | 16 | **16/16 Implemented** (`tools/draw.py`) -- real logic, live-verified |
@@ -1512,6 +1512,126 @@ found-but-unexplained work. The second occurrence in particular suggests
 something else is also writing to this exact worktree
 (`E:\Tools\mcp-libre-scaffold`) during this session -- flagged for Buddy/
 Brian, not something this pass's own commits attempt to resolve.
+
+## Real implementation pass: calc_data.py (39 of 42 tools)
+
+First of the four remaining Phase B/C scaffolds Buddy assigned after the
+draw/charts/impress trio closed out (calc_data.py -> calc_page.py ->
+writer_layout.py -> writer_tables.py, 138 tools total). 39 of 42 tools
+real; create_external_link_live/refresh_external_link_live/delete_
+external_link_live stay `status="stub"` -- doc.ExternalDocLinks' write
+side (adding a new link, vs. list_external_links_live's read-only
+enumeration, which IS real) wasn't exploration-tested this pass, same
+honest-scope-limit precedent as add_chart_series_live/add_animation_live.
+
+**Conditional formats use the legacy per-range `range.ConditionalFormat`
+(`XSheetConditionalEntries`), not the newer `sheet.ConditionalFormats`/
+`XConditionalFormat` API** -- explored both; the newer API's
+`createEntry(long, long)` has a genuinely different, much less tractable
+signature than its own IDL parameter *types* implied (neither parameter
+is a condition-type enum or a cell address, both are just `long`, and
+the values that seemed obvious raised `CannotConvertException`) and
+wasn't successfully mapped in the time available. The legacy API
+(`addNew()` takes a plain sequence of `PropertyValue`:
+Operator/Formula1/Formula2/StyleName) is simpler, well-documented, and
+fully live-verified working.
+
+**A real, load-bearing design bug found and fixed mid-pass, before it
+ever reached live-verification against the real server:** the first
+draft registered conditional-format entries and pivot tables as raw
+`(range, entry)`/`XDataPilotTable` object pairs in `ObjectRegistry`,
+following the exact pattern `drawing_objects.py`'s shapes established.
+Live-verifying `add_conditional_format_live` immediately after
+`list_conditional_formats_live` showed two *different* `rule_id`s for
+what should have been the same single rule, and `update_conditional_
+format_live`/`delete_conditional_format_live` both failed with
+"this rule no longer exists" against a rule that plainly still existed.
+Root cause, confirmed via a raw UNO script: a legacy `ConditionalFormat`
+entry does **not** compare equal to itself across two separate fetches
+(`cf.getByIndex(i) == cf.getByIndex(i)` from two different
+`range.ConditionalFormat` reads is `False`) -- unlike shapes/documents
+elsewhere in this codebase, where `ObjectRegistry`'s own docstring
+("PyUNO proxies implement `__eq__`/`__hash__` consistently for the same
+underlying UNO object") holds. Fixed by switching conditional-format
+`rule_id` to a `(sheet_name, range_string, index)` address instead of an
+object reference, re-resolved fresh on every call -- the honest cost,
+documented in `uno_bridge.py`, is the same "filled slot is not the right
+slot" risk any raw index carries if an unrelated `add`/`delete` on the
+same range shifts the index first, but at least a reproducible,
+*working* mechanism instead of one that never worked at all. Pivot
+tables hit the identical `list_pivot_tables_live`-mints-a-different-id
+symptom for the same underlying reason (`XDataPilotTable` doesn't
+compare equal across fetches either) -- **not** fixed the same way,
+since `get_pivot_table_live`/`refresh_pivot_table_live`/
+`delete_pivot_table_live` all operate on the *held* reference directly
+(reading `.Name`/`.OutputRange` or calling `.refresh()`), never
+re-locating it by comparison, so every pivot_id still works correctly
+for its own subsequent calls -- only repeated `list_pivot_tables_live`
+calls mint a fresh, non-matching id for the same underlying pivot each
+time, a real but narrower and lower-priority gap, documented rather than
+fixed this pass.
+
+**Three more real bugs found live-verifying, all fixed and re-verified
+post-fix on a rebuild:**
+
+1. `sort_range_live` reported success but never actually reordered
+   anything -- reconstructing `range.createSortDescriptor()`'s result as
+   a plain dict and rebuilding fresh `PropertyValue`s from it silently
+   dropped `SortFields`' typing: a plain Python tuple of
+   `TableSortField` structs is accepted without error by `range.sort()`
+   but has no effect, while every *other* sequence-valued property in
+   this codebase (`FilterFields`, `DataPilotFields` entries, etc.)
+   works fine as a plain tuple. Root-caused via a bisecting live script;
+   fixed by wrapping the reconstructed value in
+   `uno.Any("[]com.sun.star.table.TableSortField", ...)` explicitly.
+2. `list_scenarios_live` raised a raw `UNO_EXCEPTION: "Comment"` --
+   guessed property name; the real one (confirmed via `dir()` on a live
+   scenario sheet) is `ScenarioComment`.
+3. (Documented as a design choice, not a bug, but worth noting alongside
+   the others): `goal_seek_live` explicitly writes the converged result
+   back to the variable cell -- live-verified `doc.seekGoal()` itself
+   computes and returns the answer but leaves the cell's value
+   unchanged, unlike Calc's own Goal Seek dialog (which commits on
+   accept). Matched the dialog's behavior since a caller asking this
+   tool to "perform goal seek" almost certainly wants the sheet updated.
+
+**Live-verified end to end on a fresh headless LibreOffice 26.2
+instance, independently checking real document state after every
+call** (not trusting each tool's own success response, and re-verifying
+all fixes post-fix on a rebuild): named range CRUD; `sort_range_live`
+post-fix (confirmed real descending reorder); `apply_filter_live`/
+`clear_filter_live` (confirmed real row visibility changes and their
+reversal); the full conditional-format lifecycle post-fix (confirmed a
+real rule's `ConditionalFormat.Count` genuinely reaches 0 after delete);
+data validation get/set/clear (confirmed `Formula1` round-trips through
+a real `LIST` validation); `create_subtotals_live`/`remove_subtotals_
+live` (confirmed real grouped Sum/Grand-Sum rows appear and the sheet
+structure reverts cleanly); the full pivot-table lifecycle (confirmed
+real, correctly-aggregated output data -- East=250, West=200,
+Total=450 -- and confirmed deletion via `DataPilotTables.getCount()`
+independently); the full scenario lifecycle post-fix; `goal_seek_live`
+(confirmed the variable cell genuinely changed to the converged value);
+`solver_solve_live` (confirmed a real constrained-minimization result:
+minimizing x²-4x over [0,10] converged to x≈2, value≈-4, the correct
+analytic minimum); database range CRUD; `list_external_links_live`;
+CSV import/export (confirmed real file content on both sides, including
+non-ASCII-safe quoting); row/column grouping (calls succeed; no direct
+per-row/column outline-level readback property exists on `TableRows`/
+`TableColumns`, live-verified via a full property-name dump, so this is
+call-succeeds verification only, documented rather than silently
+presented as fully confirmed). `tools_count: 287` throughout (248 +
+39).
+
+**Testing:** `tests/test_calc_data.py`, 21 new tests (a `FakeUnoBridge`
+mirroring the real `UNOBridge` methods' public signatures, including
+the `(sheet, range, index)`-address `ObjectRegistry` round-trip for
+conditional formats -- tool-layer plumbing only, real
+`XSheetCellRange`/`XDataPilotTables`/`XSolver` mechanics are
+live-verified instead). `tests/test_tool_scaffold_contract.py` gained
+`IMPLEMENTED_CALC_DATA_TOOL_NAMES` and `test_implemented_calc_data_
+tools_are_marked_implemented`, following the established mixed-module
+precedent. 383/383 passing under `pytest` across the full relevant
+suite (361 prior + 21 calc_data.py + 1 contract).
 
 ## What was built
 

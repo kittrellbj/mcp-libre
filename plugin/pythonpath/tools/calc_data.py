@@ -1,20 +1,36 @@
 """
-Phase C scaffold: Calc - data management, analysis, pivots, validation,
-external data.
+Calc - data management, analysis, pivots, validation, external data --
+real implementation.
 
 Source: LibreOffice_MCP_Complete_Tooling_Specification.md, section
 "Calc - data management, analysis, pivots, validation, external data"
 (scope: Calc). No tools in this section are marked "(existing)"; all 42
-rows in the spec table are scaffolded here (matches the plan doc's
-running-total estimate of 42 for this section).
+were scaffolded stubs before this pass.
 
-Every function is a stub: it returns envelope.build_not_implemented(...)
-without touching UNO. See docs/MCP_TOOLING_SCAFFOLD_PLAN.md.
+39 of 42 tools are real; create_external_link_live/
+refresh_external_link_live/delete_external_link_live stay status="stub"
+-- doc.ExternalDocLinks' write side (adding a new link, vs.
+list_external_links_live's read-only enumeration, which IS real) wasn't
+exploration-tested this pass, same honest-scope-limit precedent as
+charts.py's add_chart_series_live and impress.py's add_animation_live.
+
+Conditional format rules and pivot tables resolve `rule_id`/`pivot_id`
+through the same ObjectRegistry drawing_objects.py established (see
+list_shapes_live there for the pattern this file's list_conditional_
+formats_live/list_pivot_tables_live/create_conditional_format_live/
+create_pivot_table_live follow: uno_bridge returns raw UNO objects, this
+file registers them and builds the JSON response) -- see
+uno_bridge.py's own section docstring for why conditional-format entries
+in particular need identity-based re-location rather than a stored
+index.
 """
 
 from typing import Any, Dict, List, Optional
 
+from . import context
 from . import envelope
+from .document_lifecycle import _error_response, _resolve_and_register
+from .drawing_objects import _get_object_registry
 from .registry import register_tool, schema
 
 
@@ -23,10 +39,17 @@ from .registry import register_tool, schema
     priority="P1",
     purpose="List workbook/sheet named ranges and expressions.",
     parameters=schema({"scope": {"type": "string"}}),
+    status="implemented",
 )
 def list_named_ranges_live(scope: Optional[str] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("list_named_ranges_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        ranges = ctx.uno_bridge.list_named_ranges(doc, scope)
+        return envelope.build_success(result={"named_ranges": ranges, "count": len(ranges)}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -38,10 +61,17 @@ def list_named_ranges_live(scope: Optional[str] = None) -> Dict[str, Any]:
         "refers_to": {"type": "string"},
         "scope": {"type": "string"},
     }, required=["name", "refers_to"]),
+    status="implemented",
 )
 def create_named_range_live(name: str, refers_to: str, scope: Optional[str] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("create_named_range_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        result = ctx.uno_bridge.create_named_range(doc, name, refers_to, scope)
+        return envelope.build_success(result=result, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -52,10 +82,17 @@ def create_named_range_live(name: str, refers_to: str, scope: Optional[str] = No
         "name": {"type": "string"},
         "refers_to": {"type": "string"},
     }, required=["name", "refers_to"]),
+    status="implemented",
 )
 def update_named_range_live(name: str, refers_to: str) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("update_named_range_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        ctx.uno_bridge.update_named_range(doc, name, refers_to)
+        return envelope.build_success(result={"refers_to": refers_to}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -63,10 +100,17 @@ def update_named_range_live(name: str, refers_to: str) -> Dict[str, Any]:
     priority="P1",
     purpose="Delete named range.",
     parameters=schema({"name": {"type": "string"}}, required=["name"]),
+    status="implemented",
 )
 def delete_named_range_live(name: str) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("delete_named_range_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        ctx.uno_bridge.delete_named_range(doc, name)
+        return envelope.build_success(result={"deleted": name}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -79,11 +123,18 @@ def delete_named_range_live(name: str) -> Dict[str, Any]:
         "keys": {"type": "array", "items": {"type": "object"}},
         "has_header": {"type": "boolean"},
     }, required=["range", "keys"]),
+    status="implemented",
 )
 def sort_range_live(range: str, keys: List[Dict[str, Any]], sheet: Optional[str] = None,
                      has_header: Optional[bool] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("sort_range_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        ctx.uno_bridge.sort_range(doc, range, keys, sheet, has_header)
+        return envelope.build_success(result={"sorted": range}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -96,11 +147,18 @@ def sort_range_live(range: str, keys: List[Dict[str, Any]], sheet: Optional[str]
         "conditions": {"type": "array", "items": {"type": "object"}},
         "options": {"type": "object"},
     }, required=["range", "conditions"]),
+    status="implemented",
 )
 def apply_filter_live(range: str, conditions: List[Dict[str, Any]], sheet: Optional[str] = None,
                        options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("apply_filter_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        ctx.uno_bridge.apply_filter(doc, range, conditions, sheet, options)
+        return envelope.build_success(result={"filtered": range}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -111,10 +169,17 @@ def apply_filter_live(range: str, conditions: List[Dict[str, Any]], sheet: Optio
         "sheet": {"type": "string"},
         "range": {"type": "string"},
     }),
+    status="implemented",
 )
 def clear_filter_live(sheet: Optional[str] = None, range: Optional[str] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("clear_filter_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        ctx.uno_bridge.clear_filter(doc, sheet, range)
+        return envelope.build_success(result={"cleared": True}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -125,10 +190,17 @@ def clear_filter_live(sheet: Optional[str] = None, range: Optional[str] = None) 
         "sheet": {"type": "string"},
         "range": {"type": "string"},
     }),
+    status="implemented",
 )
 def get_filter_state_live(sheet: Optional[str] = None, range: Optional[str] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("get_filter_state_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        result = ctx.uno_bridge.get_filter_state(doc, sheet, range)
+        return envelope.build_success(result=result, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -139,10 +211,22 @@ def get_filter_state_live(sheet: Optional[str] = None, range: Optional[str] = No
         "sheet": {"type": "string"},
         "range": {"type": "string"},
     }),
+    status="implemented",
 )
 def list_conditional_formats_live(sheet: Optional[str] = None, range: Optional[str] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("list_conditional_formats_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        object_registry = _get_object_registry(ctx, resolved_id)
+        entries = ctx.uno_bridge.list_conditional_format_entries(doc, sheet, range)
+        summaries = [
+            ctx.uno_bridge.get_conditional_format_summary(doc, entry_ref, object_registry.register_object(entry_ref))
+            for entry_ref in entries
+        ]
+        return envelope.build_success(result={"rules": summaries, "count": len(summaries)}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -155,11 +239,21 @@ def list_conditional_formats_live(sheet: Optional[str] = None, range: Optional[s
         "rule": {"type": "object"},
         "style": {"type": "string"},
     }, required=["range", "rule"]),
+    status="implemented",
 )
 def add_conditional_format_live(range: str, rule: Dict[str, Any], sheet: Optional[str] = None,
                                  style: Optional[str] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("add_conditional_format_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        object_registry = _get_object_registry(ctx, resolved_id)
+        entry_ref = ctx.uno_bridge.add_conditional_format(doc, range, rule, sheet, style)
+        rule_id = object_registry.register_object(entry_ref)
+        summary = ctx.uno_bridge.get_conditional_format_summary(doc, entry_ref, rule_id)
+        return envelope.build_success(result=summary, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -170,10 +264,20 @@ def add_conditional_format_live(range: str, rule: Dict[str, Any], sheet: Optiona
         "rule_id": {"type": "string"},
         "properties": {"type": "object"},
     }, required=["rule_id", "properties"]),
+    status="implemented",
 )
 def update_conditional_format_live(rule_id: str, properties: Dict[str, Any]) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("update_conditional_format_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        entry_ref = _get_object_registry(ctx, resolved_id).resolve_object(rule_id)
+        applied = ctx.uno_bridge.update_conditional_format(doc, entry_ref, properties)
+        skipped = sorted(set(properties) - set(applied))
+        warnings = [f"Ignored unknown/unsettable property field(s): {skipped}"] if skipped else []
+        return envelope.build_success(result={"applied": applied}, document_id=resolved_id, warnings=warnings, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -181,10 +285,20 @@ def update_conditional_format_live(rule_id: str, properties: Dict[str, Any]) -> 
     priority="P1",
     purpose="Delete rule.",
     parameters=schema({"rule_id": {"type": "string"}}, required=["rule_id"]),
+    status="implemented",
 )
 def delete_conditional_format_live(rule_id: str) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("delete_conditional_format_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        object_registry = _get_object_registry(ctx, resolved_id)
+        entry_ref = object_registry.resolve_object(rule_id)
+        ctx.uno_bridge.delete_conditional_format(doc, entry_ref)
+        object_registry.unregister_object(rule_id)
+        return envelope.build_success(result={"deleted": rule_id}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -195,10 +309,17 @@ def delete_conditional_format_live(rule_id: str) -> Dict[str, Any]:
         "sheet": {"type": "string"},
         "range": {"type": "string"},
     }, required=["range"]),
+    status="implemented",
 )
 def get_data_validation_live(range: str, sheet: Optional[str] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("get_data_validation_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        result = ctx.uno_bridge.get_data_validation(doc, range, sheet)
+        return envelope.build_success(result=result, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -210,10 +331,17 @@ def get_data_validation_live(range: str, sheet: Optional[str] = None) -> Dict[st
         "range": {"type": "string"},
         "rule": {"type": "object"},
     }, required=["range", "rule"]),
+    status="implemented",
 )
 def set_data_validation_live(range: str, rule: Dict[str, Any], sheet: Optional[str] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("set_data_validation_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        applied = ctx.uno_bridge.set_data_validation(doc, range, rule, sheet)
+        return envelope.build_success(result={"applied": applied}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -224,10 +352,17 @@ def set_data_validation_live(range: str, rule: Dict[str, Any], sheet: Optional[s
         "sheet": {"type": "string"},
         "range": {"type": "string"},
     }, required=["range"]),
+    status="implemented",
 )
 def clear_data_validation_live(range: str, sheet: Optional[str] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("clear_data_validation_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        ctx.uno_bridge.clear_data_validation(doc, range, sheet)
+        return envelope.build_success(result={"cleared": range}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -240,11 +375,18 @@ def clear_data_validation_live(range: str, sheet: Optional[str] = None) -> Dict[
         "group_columns": {"type": "array", "items": {"type": "integer"}},
         "subtotal_specs": {"type": "array", "items": {"type": "object"}},
     }, required=["range", "group_columns", "subtotal_specs"]),
+    status="implemented",
 )
 def create_subtotals_live(range: str, group_columns: List[int], subtotal_specs: List[Dict[str, Any]],
                            sheet: Optional[str] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("create_subtotals_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        ctx.uno_bridge.create_subtotals(doc, range, group_columns, subtotal_specs, sheet)
+        return envelope.build_success(result={"range": range}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -255,10 +397,17 @@ def create_subtotals_live(range: str, group_columns: List[int], subtotal_specs: 
         "sheet": {"type": "string"},
         "range": {"type": "string"},
     }, required=["range"]),
+    status="implemented",
 )
 def remove_subtotals_live(range: str, sheet: Optional[str] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("remove_subtotals_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        ctx.uno_bridge.remove_subtotals(doc, range, sheet)
+        return envelope.build_success(result={"range": range}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -266,10 +415,22 @@ def remove_subtotals_live(range: str, sheet: Optional[str] = None) -> Dict[str, 
     priority="P1",
     purpose="List DataPilot/pivot tables.",
     parameters=schema({"sheet": {"type": "string"}}),
+    status="implemented",
 )
 def list_pivot_tables_live(sheet: Optional[str] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("list_pivot_tables_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        object_registry = _get_object_registry(ctx, resolved_id)
+        pivots = ctx.uno_bridge.list_pivot_tables(doc, sheet)
+        summaries = [
+            ctx.uno_bridge.get_pivot_table_summary(doc, pivot, object_registry.register_object(pivot))
+            for pivot in pivots
+        ]
+        return envelope.build_success(result={"pivot_tables": summaries, "count": len(summaries)}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -284,12 +445,22 @@ def list_pivot_tables_live(sheet: Optional[str] = None) -> Dict[str, Any]:
         "data_fields": {"type": "array", "items": {"type": "object"}},
         "filters": {"type": "array", "items": {"type": "string"}},
     }, required=["source", "destination", "rows", "columns", "data_fields"]),
+    status="implemented",
 )
 def create_pivot_table_live(source: str, destination: str, rows: List[str], columns: List[str],
                              data_fields: List[Dict[str, Any]],
                              filters: Optional[List[str]] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("create_pivot_table_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        object_registry = _get_object_registry(ctx, resolved_id)
+        pivot = ctx.uno_bridge.create_pivot_table(doc, source, destination, rows, columns, data_fields, filters)
+        pivot_id = object_registry.register_object(pivot)
+        summary = ctx.uno_bridge.get_pivot_table_summary(doc, pivot, pivot_id)
+        return envelope.build_success(result=summary, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -297,10 +468,18 @@ def create_pivot_table_live(source: str, destination: str, rows: List[str], colu
     priority="P1",
     purpose="Return source/output ranges and field layout.",
     parameters=schema({"pivot_id": {"type": "string"}}, required=["pivot_id"]),
+    status="implemented",
 )
 def get_pivot_table_live(pivot_id: str) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("get_pivot_table_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        pivot = _get_object_registry(ctx, resolved_id).resolve_object(pivot_id)
+        result = ctx.uno_bridge.get_pivot_table_summary(doc, pivot, pivot_id)
+        return envelope.build_success(result=result, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -311,10 +490,18 @@ def get_pivot_table_live(pivot_id: str) -> Dict[str, Any]:
         "pivot_id": {"type": "string"},
         "configuration": {"type": "object"},
     }, required=["pivot_id", "configuration"]),
+    status="implemented",
 )
 def update_pivot_table_live(pivot_id: str, configuration: Dict[str, Any]) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("update_pivot_table_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        pivot = _get_object_registry(ctx, resolved_id).resolve_object(pivot_id)
+        applied = ctx.uno_bridge.update_pivot_table(pivot, configuration)
+        return envelope.build_success(result={"applied": applied}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -322,10 +509,18 @@ def update_pivot_table_live(pivot_id: str, configuration: Dict[str, Any]) -> Dic
     priority="P1",
     purpose="Refresh pivot.",
     parameters=schema({"pivot_id": {"type": "string"}}, required=["pivot_id"]),
+    status="implemented",
 )
 def refresh_pivot_table_live(pivot_id: str) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("refresh_pivot_table_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        pivot = _get_object_registry(ctx, resolved_id).resolve_object(pivot_id)
+        ctx.uno_bridge.refresh_pivot_table(pivot)
+        return envelope.build_success(result={"refreshed": pivot_id}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -333,10 +528,20 @@ def refresh_pivot_table_live(pivot_id: str) -> Dict[str, Any]:
     priority="P1",
     purpose="Delete pivot output/table.",
     parameters=schema({"pivot_id": {"type": "string"}}, required=["pivot_id"]),
+    status="implemented",
 )
 def delete_pivot_table_live(pivot_id: str) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("delete_pivot_table_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        object_registry = _get_object_registry(ctx, resolved_id)
+        pivot = object_registry.resolve_object(pivot_id)
+        ctx.uno_bridge.delete_pivot_table(doc, pivot)
+        object_registry.unregister_object(pivot_id)
+        return envelope.build_success(result={"deleted": pivot_id}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -344,10 +549,17 @@ def delete_pivot_table_live(pivot_id: str) -> Dict[str, Any]:
     priority="P2",
     purpose="List Calc scenarios.",
     parameters=schema({"sheet": {"type": "string"}}),
+    status="implemented",
 )
 def list_scenarios_live(sheet: Optional[str] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("list_scenarios_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        scenarios = ctx.uno_bridge.list_scenarios(doc, sheet)
+        return envelope.build_success(result={"scenarios": scenarios, "count": len(scenarios)}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -360,11 +572,18 @@ def list_scenarios_live(sheet: Optional[str] = None) -> Dict[str, Any]:
         "comment": {"type": "string"},
         "options": {"type": "object"},
     }, required=["name", "ranges"]),
+    status="implemented",
 )
 def create_scenario_live(name: str, ranges: List[str], comment: Optional[str] = None,
                           options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("create_scenario_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        result = ctx.uno_bridge.create_scenario(doc, name, ranges, comment, options)
+        return envelope.build_success(result=result, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -372,10 +591,17 @@ def create_scenario_live(name: str, ranges: List[str], comment: Optional[str] = 
     priority="P2",
     purpose="Apply scenario.",
     parameters=schema({"name": {"type": "string"}}, required=["name"]),
+    status="implemented",
 )
 def apply_scenario_live(name: str) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("apply_scenario_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        ctx.uno_bridge.apply_scenario(doc, name)
+        return envelope.build_success(result={"applied": name}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -383,10 +609,17 @@ def apply_scenario_live(name: str) -> Dict[str, Any]:
     priority="P2",
     purpose="Delete scenario.",
     parameters=schema({"name": {"type": "string"}}, required=["name"]),
+    status="implemented",
 )
 def delete_scenario_live(name: str) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("delete_scenario_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        ctx.uno_bridge.delete_scenario(doc, name)
+        return envelope.build_success(result={"deleted": name}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -398,10 +631,18 @@ def delete_scenario_live(name: str) -> Dict[str, Any]:
         "target_value": {"type": "number"},
         "variable_cell": {"type": "string"},
     }, required=["formula_cell", "target_value", "variable_cell"]),
+    status="implemented",
 )
 def goal_seek_live(formula_cell: str, target_value: float, variable_cell: str) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("goal_seek_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        result = ctx.uno_bridge.goal_seek(doc, formula_cell, target_value, variable_cell)
+        warnings = [] if result["converged"] else ["Goal seek did not converge -- the variable cell was left unchanged."]
+        return envelope.build_success(result=result, document_id=resolved_id, warnings=warnings, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -414,21 +655,36 @@ def goal_seek_live(formula_cell: str, target_value: float, variable_cell: str) -
         "variable_cells": {"type": "array", "items": {"type": "string"}},
         "constraints": {"type": "array", "items": {"type": "object"}},
     }, required=["objective_cell", "optimize", "variable_cells"]),
+    status="implemented",
 )
 def solver_solve_live(objective_cell: str, optimize: str, variable_cells: List[str],
                        constraints: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("solver_solve_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        result = ctx.uno_bridge.solver_solve(doc, objective_cell, optimize, variable_cells, constraints)
+        warnings = [] if result["success"] else ["Solver did not find a solution."]
+        return envelope.build_success(result=result, document_id=resolved_id, warnings=warnings, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
     name="list_database_ranges_live",
     priority="P2",
     purpose="List database ranges and sort/filter/subtotal descriptors.",
+    status="implemented",
 )
 def list_database_ranges_live() -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("list_database_ranges_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        ranges = ctx.uno_bridge.list_database_ranges(doc)
+        return envelope.build_success(result={"database_ranges": ranges, "count": len(ranges)}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -440,10 +696,17 @@ def list_database_ranges_live() -> Dict[str, Any]:
         "sheet": {"type": "string"},
         "range": {"type": "string"},
     }, required=["name", "sheet", "range"]),
+    status="implemented",
 )
 def create_database_range_live(name: str, sheet: str, range: str) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("create_database_range_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        result = ctx.uno_bridge.create_database_range(doc, name, sheet, range)
+        return envelope.build_success(result=result, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -451,20 +714,34 @@ def create_database_range_live(name: str, sheet: str, range: str) -> Dict[str, A
     priority="P2",
     purpose="Delete database range.",
     parameters=schema({"name": {"type": "string"}}, required=["name"]),
+    status="implemented",
 )
 def delete_database_range_live(name: str) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("delete_database_range_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        ctx.uno_bridge.delete_database_range(doc, name)
+        return envelope.build_success(result={"deleted": name}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
     name="list_external_links_live",
     priority="P2",
     purpose="List area/external links and refresh state.",
+    status="implemented",
 )
 def list_external_links_live() -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("list_external_links_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        links = ctx.uno_bridge.list_external_links(doc)
+        return envelope.build_success(result={"links": links, "count": len(links)}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -520,11 +797,18 @@ def delete_external_link_live(link_id: str, keep_values: bool = True) -> Dict[st
         "encoding": {"type": "string", "default": "utf-8"},
         "options": {"type": "object"},
     }, required=["file_path", "destination"]),
+    status="implemented",
 )
 def import_csv_to_range_live(file_path: str, destination: str, delimiter: str = ",", encoding: str = "utf-8",
                               options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("import_csv_to_range_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        result = ctx.uno_bridge.import_csv_to_range(doc, file_path, destination, delimiter, encoding, options)
+        return envelope.build_success(result=result, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -538,11 +822,18 @@ def import_csv_to_range_live(file_path: str, destination: str, delimiter: str = 
         "delimiter": {"type": "string", "default": ","},
         "encoding": {"type": "string", "default": "utf-8"},
     }, required=["range", "file_path"]),
+    status="implemented",
 )
 def export_range_to_csv_live(range: str, file_path: str, sheet: Optional[str] = None, delimiter: str = ",",
                               encoding: str = "utf-8") -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("export_range_to_csv_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        ctx.uno_bridge.export_range_to_csv(doc, range, file_path, sheet, delimiter, encoding)
+        return envelope.build_success(result={"file_path": file_path}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -553,10 +844,17 @@ def export_range_to_csv_live(range: str, file_path: str, sheet: Optional[str] = 
         "sheet": {"type": "string"},
         "rows": {"type": "array", "items": {"type": "integer"}},
     }, required=["rows"]),
+    status="implemented",
 )
 def group_rows_live(rows: List[int], sheet: Optional[str] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("group_rows_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        ctx.uno_bridge.group_rows(doc, rows, sheet)
+        return envelope.build_success(result={"grouped_rows": rows}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -567,10 +865,17 @@ def group_rows_live(rows: List[int], sheet: Optional[str] = None) -> Dict[str, A
         "sheet": {"type": "string"},
         "rows": {"type": "array", "items": {"type": "integer"}},
     }, required=["rows"]),
+    status="implemented",
 )
 def ungroup_rows_live(rows: List[int], sheet: Optional[str] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("ungroup_rows_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        ctx.uno_bridge.ungroup_rows(doc, rows, sheet)
+        return envelope.build_success(result={"ungrouped_rows": rows}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -581,10 +886,17 @@ def ungroup_rows_live(rows: List[int], sheet: Optional[str] = None) -> Dict[str,
         "sheet": {"type": "string"},
         "columns": {"type": "array", "items": {"type": "integer"}},
     }, required=["columns"]),
+    status="implemented",
 )
 def group_columns_live(columns: List[int], sheet: Optional[str] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("group_columns_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        ctx.uno_bridge.group_columns(doc, columns, sheet)
+        return envelope.build_success(result={"grouped_columns": columns}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -595,7 +907,14 @@ def group_columns_live(columns: List[int], sheet: Optional[str] = None) -> Dict[
         "sheet": {"type": "string"},
         "columns": {"type": "array", "items": {"type": "integer"}},
     }, required=["columns"]),
+    status="implemented",
 )
 def ungroup_columns_live(columns: List[int], sheet: Optional[str] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("ungroup_columns_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        ctx.uno_bridge.ungroup_columns(doc, columns, sheet)
+        return envelope.build_success(result={"ungrouped_columns": columns}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)

@@ -5923,3 +5923,759 @@ class UNOBridge:
             self.export_slide(doc, page.Name, file_path, format)
             results.append(file_path)
         return results
+
+    # -- Calc data management, analysis, pivots, validation, external data
+    # (tools/calc_data.py's 42 tools) --
+    #
+    # Same raise-on-failure convention as calc_sheets.py above. Sheet
+    # resolution reuses _resolve_sheet()/_require_calc() from that
+    # section. 39 of 42 tools are real; create_external_link_live/
+    # refresh_external_link_live/delete_external_link_live stay
+    # NOT_IMPLEMENTED stubs -- doc.ExternalDocLinks' write-side mechanism
+    # (creating a real external link, vs. list_external_links_live's
+    # read-only enumeration, which IS real) wasn't exploration-tested
+    # this pass, same honest-scope-limit precedent as
+    # add_chart_series_live/add_animation_live before it.
+    #
+    # scope (named ranges) means: a sheet name/index -> that sheet's own
+    # NamedRanges container; omitted -> the workbook-level
+    # doc.NamedRanges container. Matches the spec's own "workbook/sheet
+    # named ranges" wording for this section.
+    #
+    # Conditional formats and pivot tables use the same "uno_bridge
+    # returns raw UNO objects, the tools/ layer registers them"
+    # ObjectRegistry split drawing_objects.py established (see e.g.
+    # list_shapes_live: uno_bridge.list_shapes_in_container() returns
+    # plain shapes, the tool function registers each and calls
+    # uno_bridge.get_shape_summary(shape, shape_id) to build the response)
+    # -- uno_bridge.py itself never imports/touches ObjectRegistry.
+    #
+    # Conditional formats use the legacy per-range XSheetConditionalEntries
+    # (range.ConditionalFormat), NOT the newer sheet.ConditionalFormats/
+    # XConditionalFormat API -- live-verified the newer API's
+    # createEntry(long, long) has a genuinely different, much less
+    # tractable signature than its own IDL method-parameter types implied
+    # (neither parameter is a condition-type enum or a cell address, both
+    # are just "long", and passing what seemed like the obvious values
+    # raised CannotConvertException) and wasn't successfully mapped in the
+    # time available. The legacy API (addNew() takes a plain sequence of
+    # PropertyValue: Operator/Formula1/Formula2/StyleName) is simpler,
+    # well-documented, and fully live-verified working. A conditional
+    # format entry has no UNO-native persistent id of its own (it's a
+    # plain index position in a mutable per-range property), so deletion
+    # re-locates the entry by identity within its range's *current*
+    # ConditionalFormat collection rather than trusting a possibly-stale
+    # stored index -- the same "filled slot is not the right slot" risk a
+    # raw index would carry across intervening add/remove calls on the
+    # same range.
+
+    def _named_range_container(self, doc: Any, scope: Optional[str] = None) -> Any:
+        self._require_calc(doc, "named range resolution")
+        if scope is None:
+            return doc.NamedRanges
+        return self._resolve_sheet(doc, scope).NamedRanges
+
+    def _find_named_range(self, doc: Any, name: str) -> "tuple[Any, Any, Optional[str]]":
+        """Returns (container, named_range_object, scope) -- scope is None
+        for a workbook-level range, else the sheet name it belongs to.
+        Named ranges have no scope parameter on update/delete in the spec,
+        so both levels are searched."""
+        if doc.NamedRanges.hasByName(name):
+            return doc.NamedRanges, doc.NamedRanges.getByName(name), None
+        sheets = doc.getSheets()
+        for i in range(sheets.getCount()):
+            sheet = sheets.getByIndex(i)
+            container = sheet.NamedRanges
+            if container is not None and container.hasByName(name):
+                return container, container.getByName(name), sheet.Name
+        raise KeyError(f"No such named range '{name}'.")
+
+    def list_named_ranges(self, doc: Any, scope: Optional[str] = None) -> List[Dict[str, Any]]:
+        container = self._named_range_container(doc, scope)
+        result = []
+        for name in container.getElementNames():
+            nr = container.getByName(name)
+            result.append({"name": nr.Name, "refers_to": nr.Content, "scope": scope})
+        return result
+
+    def create_named_range(self, doc: Any, name: str, refers_to: str, scope: Optional[str] = None) -> Dict[str, Any]:
+        container = self._named_range_container(doc, scope)
+        base = uno.createUnoStruct("com.sun.star.table.CellAddress")
+        base.Sheet, base.Column, base.Row = 0, 0, 0
+        container.addNewByName(name, refers_to, base, 0)
+        return {"name": name, "scope": scope}
+
+    def update_named_range(self, doc: Any, name: str, refers_to: str) -> None:
+        _, nr, _ = self._find_named_range(doc, name)
+        nr.Content = refers_to
+
+    def delete_named_range(self, doc: Any, name: str) -> None:
+        container, _, _ = self._find_named_range(doc, name)
+        container.removeByName(name)
+
+    def sort_range(self, doc: Any, range: str, keys: List[Dict[str, Any]], sheet: Optional[str] = None,
+                    has_header: Optional[bool] = None) -> None:
+        """`keys` items: {"column": <0-based index within the range>,
+        "ascending": bool (default True)} -- TableSortField.Field is a
+        0-based index relative to the sorted range's own first column,
+        not an absolute sheet column, live-verified matches
+        createSortDescriptor()'s own SortFields usage.
+
+        SortFields' own Value must be wrapped in an explicit
+        uno.Any("[]com.sun.star.table.TableSortField", ...) here --
+        live-verified a plain Python tuple of structs, which works fine
+        for every OTHER sequence-valued property in this codebase
+        (FilterFields, DataPilotFields entries, etc.), is silently
+        ignored by range.sort() specifically: no exception, no error, the
+        range just comes back in its original order. Re-using the
+        PropertyValue objects createSortDescriptor() itself returned
+        (mutating only the ones that need to change) carries the correct
+        typing without needing this workaround, but this pass rebuilds
+        the whole descriptor from a plain dict for clarity, so the
+        explicit Any is required."""
+        sheet_obj = self._resolve_sheet(doc, sheet)
+        range_obj = sheet_obj.getCellRangeByName(range)
+        desc = {p.Name: p.Value for p in range_obj.createSortDescriptor()}
+        fields = []
+        for key in keys:
+            field = uno.createUnoStruct("com.sun.star.table.TableSortField")
+            field.Field = int(key["column"])
+            field.IsAscending = bool(key.get("ascending", True))
+            fields.append(field)
+        desc["SortFields"] = uno.Any("[]com.sun.star.table.TableSortField", tuple(fields))
+        if has_header is not None:
+            desc["ContainsHeader"] = has_header
+        range_obj.sort(tuple(PropertyValue(k, 0, v, 0) for k, v in desc.items()))
+
+    _FILTER_OPERATORS = {
+        "equal": "EQUAL", "not_equal": "NOT_EQUAL", "greater": "GREATER", "greater_equal": "GREATER_EQUAL",
+        "less": "LESS", "less_equal": "LESS_EQUAL", "top_values": "TOP_VALUES", "top_percent": "TOP_PERCENT",
+        "bottom_values": "BOTTOM_VALUES", "bottom_percent": "BOTTOM_PERCENT", "contains": "CONTAINS",
+        "does_not_contain": "DOES_NOT_CONTAIN", "empty": "EMPTY", "not_empty": "NOT_EMPTY",
+    }
+
+    def apply_filter(self, doc: Any, range: str, conditions: List[Dict[str, Any]], sheet: Optional[str] = None,
+                      options: Optional[Dict[str, Any]] = None) -> None:
+        """conditions items: {"column": <0-based index within the range>,
+        "operator": one of _FILTER_OPERATORS, "value": str|number,
+        "connector": "and"|"or" (ignored on the first condition)}."""
+        sheet_obj = self._resolve_sheet(doc, sheet)
+        range_obj = sheet_obj.getCellRangeByName(range)
+        options = options or {}
+        contains_header = bool(options.get("has_header", True))
+        filter_desc = range_obj.createFilterDescriptor(True)
+        fields = []
+        for i, cond in enumerate(conditions):
+            field = uno.createUnoStruct("com.sun.star.sheet.TableFilterField")
+            field.Field = int(cond["column"])
+            op_name = self._FILTER_OPERATORS.get(str(cond.get("operator", "equal")).lower())
+            if op_name is None:
+                raise ValueError(f"Unknown filter operator '{cond.get('operator')}'. Supported: {sorted(self._FILTER_OPERATORS)}")
+            field.Operator = uno.Enum("com.sun.star.sheet.FilterOperator", op_name)
+            value = cond.get("value")
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                field.IsNumeric = True
+                field.NumericValue = float(value)
+            else:
+                field.IsNumeric = False
+                field.StringValue = "" if value is None else str(value)
+            if i > 0:
+                connector = str(cond.get("connector", "and")).upper()
+                field.Connection = uno.Enum("com.sun.star.sheet.FilterConnection", connector)
+            fields.append(field)
+        filter_desc.FilterFields = tuple(fields)
+        filter_desc.ContainsHeader = contains_header
+        remaining = {k: v for k, v in options.items() if k != "has_header"}
+        if remaining:
+            self._apply_direct_properties(filter_desc, remaining)
+        range_obj.filter(filter_desc)
+
+    def _filter_scope_range(self, doc: Any, sheet: Optional[str], range: Optional[str]) -> Any:
+        """range omitted -> the sheet's used range, the same fallback
+        clear_filter_live/get_filter_state_live's own optional `range`
+        parameter implies (neither has `range` in its required list)."""
+        sheet_obj = self._resolve_sheet(doc, sheet)
+        if range is not None:
+            return sheet_obj.getCellRangeByName(range)
+        cursor = sheet_obj.createCursor()
+        cursor.gotoStartOfUsedArea(False)
+        cursor.gotoEndOfUsedArea(True)
+        addr = cursor.RangeAddress
+        return sheet_obj.getCellRangeByPosition(addr.StartColumn, addr.StartRow, addr.EndColumn, addr.EndRow)
+
+    def clear_filter(self, doc: Any, sheet: Optional[str] = None, range: Optional[str] = None) -> None:
+        range_obj = self._filter_scope_range(doc, sheet, range)
+        empty_desc = range_obj.createFilterDescriptor(True)
+        empty_desc.FilterFields = ()
+        range_obj.filter(empty_desc)
+
+    def get_filter_state(self, doc: Any, sheet: Optional[str] = None, range: Optional[str] = None) -> Dict[str, Any]:
+        range_obj = self._filter_scope_range(doc, sheet, range)
+        filter_desc = range_obj.createFilterDescriptor(False)
+        fields = []
+        for field in filter_desc.FilterFields:
+            fields.append({
+                "column": field.Field, "operator": field.Operator.value,
+                "value": field.NumericValue if field.IsNumeric else field.StringValue,
+            })
+        return {"active": len(fields) > 0, "conditions": fields}
+
+    def list_conditional_format_entries(self, doc: Any, sheet: Optional[str] = None,
+                                         range: Optional[str] = None) -> List[Any]:
+        """Returns (sheet_name, range_string, index) addresses, NOT raw
+        (range, entry) object pairs -- live-verified a legacy
+        ConditionalFormat entry does NOT compare equal to itself across
+        two separate fetches (cf.getByIndex(i) == cf.getByIndex(i) taken
+        from two different range.ConditionalFormat reads is False),
+        unlike shapes/documents elsewhere in this codebase. Registering
+        the raw object pair (this section's first draft) meant
+        ObjectRegistry's own identity-based dedup silently minted a
+        different rule_id every time the same rule was listed, and
+        update/delete's own re-location by identity always failed with
+        "no longer exists" even on a rule that plainly still existed --
+        caught testing this pass. Index-based addressing avoids that, at
+        the honest cost (documented in tools/calc_data.py) that a
+        rule_id can point at the wrong entry if unrelated add/remove
+        calls change that same range's rule order first -- the "filled
+        slot is not the right slot" risk a raw index always carries, but
+        at least a reproducible, working mechanism, unlike the identity
+        approach which didn't work at all."""
+        sheet_name = self._resolve_sheet(doc, sheet).Name
+        range_obj = self._filter_scope_range(doc, sheet, range)
+        range_string = self._range_address_to_a1(doc, range_obj.RangeAddress).split(".", 1)[1]
+        cf = range_obj.ConditionalFormat
+        return [(sheet_name, range_string, i) for i in builtins.range(cf.Count)]
+
+    def _resolve_conditional_format_ref(self, doc: Any, ref: Any) -> "tuple[Any, Any, int]":
+        sheet_name, range_string, index = ref
+        range_obj = self._resolve_sheet(doc, sheet_name).getCellRangeByName(range_string)
+        cf = range_obj.ConditionalFormat
+        if not (0 <= index < cf.Count):
+            raise KeyError("This conditional format rule no longer exists (removed by another call).")
+        return range_obj, cf, index
+
+    def get_conditional_format_summary(self, doc: Any, ref: Any, rule_id: str) -> Dict[str, Any]:
+        _, cf, index = self._resolve_conditional_format_ref(doc, ref)
+        entry = cf.getByIndex(index)
+        return {
+            "rule_id": rule_id, "operator": entry.Operator.value,
+            "formula1": entry.Formula1, "formula2": entry.Formula2, "style": entry.StyleName,
+        }
+
+    def add_conditional_format(self, doc: Any, range: str, rule: Dict[str, Any],
+                                sheet: Optional[str] = None, style: Optional[str] = None) -> Any:
+        """`rule`: {"operator": <raw com.sun.star.sheet.ConditionOperator
+        name, e.g. "GREATER"/"EQUAL"/"BETWEEN"/"FORMULA">,
+        "formula1": str, "formula2": str (BETWEEN/NOT_BETWEEN only)}.
+        Raw enum name, not a friendly-name table -- ConditionOperator has
+        ~25 members spanning value comparisons, text-match, duplicate/
+        top-N/average-relative, and formula conditions; mapping the whole
+        table wasn't attempted this pass, matching the transition-effect/
+        AutoLayout precedent from the impress.py pass rather than
+        guessing at a subset. Returns a (sheet_name, range_string, index)
+        address -- see list_conditional_format_entries()'s docstring for
+        why this, not the raw entry object, is what tools/calc_data.py
+        registers."""
+        sheet_obj = self._resolve_sheet(doc, sheet)
+        range_obj = sheet_obj.getCellRangeByName(range)
+        try:
+            operator = uno.Enum("com.sun.star.sheet.ConditionOperator", str(rule["operator"]).upper())
+        except Exception as e:
+            raise ValueError(f"Unknown condition operator '{rule.get('operator')}': {e}") from e
+        cf = range_obj.ConditionalFormat
+        props = [
+            PropertyValue("Operator", 0, operator, 0),
+            PropertyValue("Formula1", 0, str(rule.get("formula1", "")), 0),
+        ]
+        if "formula2" in rule:
+            props.append(PropertyValue("Formula2", 0, str(rule["formula2"]), 0))
+        if style is not None:
+            props.append(PropertyValue("StyleName", 0, style, 0))
+        cf.addNew(tuple(props))
+        range_obj.ConditionalFormat = cf
+        return (sheet_obj.Name, range, cf.Count - 1)
+
+    def update_conditional_format(self, doc: Any, ref: Any, properties: Dict[str, Any]) -> List[str]:
+        range_obj, cf, index = self._resolve_conditional_format_ref(doc, ref)
+        entry = cf.getByIndex(index)
+        applied = []
+        for key, value in properties.items():
+            try:
+                if key.lower() == "operator":
+                    entry.Operator = uno.Enum("com.sun.star.sheet.ConditionOperator", str(value).upper())
+                else:
+                    setattr(entry, key, value)
+                applied.append(key)
+            except Exception:
+                continue
+        range_obj.ConditionalFormat = cf
+        return applied
+
+    def delete_conditional_format(self, doc: Any, ref: Any) -> None:
+        range_obj, cf, index = self._resolve_conditional_format_ref(doc, ref)
+        cf.removeByIndex(index)
+        range_obj.ConditionalFormat = cf
+
+    _VALIDATION_TYPES = {
+        "any": "ANY", "whole_number": "WHOLE", "decimal": "DECIMAL", "list": "LIST", "date": "DATE",
+        "time": "TIME", "text_length": "TEXTLEN", "custom": "CUSTOM",
+    }
+    _VALIDATION_OPERATORS = {
+        "equal": "EQUAL", "not_equal": "NOT_EQUAL", "greater": "GREATER", "greater_equal": "GREATER_EQUAL",
+        "less": "LESS", "less_equal": "LESS_EQUAL", "between": "BETWEEN", "not_between": "NOT_BETWEEN",
+    }
+
+    def get_data_validation(self, doc: Any, range: str, sheet: Optional[str] = None) -> Dict[str, Any]:
+        sheet_obj = self._resolve_sheet(doc, sheet)
+        cell = sheet_obj.getCellRangeByName(range).getCellByPosition(0, 0)
+        validation = cell.Validation
+        return {
+            "type": validation.Type.value, "operator": validation.Operator.value,
+            "formula1": validation.Formula1, "formula2": validation.Formula2,
+            "show_list": bool(validation.getPropertyValue("ShowList")) if validation.getPropertySetInfo().hasPropertyByName("ShowList") else None,
+            "ignore_blank": bool(validation.IgnoreBlankCells) if hasattr(validation, "IgnoreBlankCells") else None,
+        }
+
+    def set_data_validation(self, doc: Any, range: str, rule: Dict[str, Any], sheet: Optional[str] = None) -> List[str]:
+        """`rule`: {"type": one of _VALIDATION_TYPES, "operator": one of
+        _VALIDATION_OPERATORS (value-comparison types only), "formula1":
+        str, "formula2": str (BETWEEN/NOT_BETWEEN), "show_list": bool,
+        "ignore_blank": bool, "error_message"/"error_title": str,
+        "input_message"/"input_title": str}. Applies to every cell in
+        `range`, not just its first cell -- Validation is a per-cell
+        property with no bulk-range setter; live-verified assigning the
+        same configured object back to each cell in turn is the working
+        pattern."""
+        sheet_obj = self._resolve_sheet(doc, sheet)
+        range_obj = sheet_obj.getCellRangeByName(range)
+        type_name = self._VALIDATION_TYPES.get(str(rule.get("type", "any")).lower())
+        if type_name is None:
+            raise ValueError(f"Unknown validation type '{rule.get('type')}'. Supported: {sorted(self._VALIDATION_TYPES)}")
+        addr = range_obj.getRangeAddress()
+        for row in builtins.range(addr.EndRow - addr.StartRow + 1):
+            for col in builtins.range(addr.EndColumn - addr.StartColumn + 1):
+                cell = range_obj.getCellByPosition(col, row)
+                validation = cell.Validation
+                validation.Type = uno.Enum("com.sun.star.sheet.ValidationType", type_name)
+                if "operator" in rule:
+                    op_name = self._VALIDATION_OPERATORS.get(str(rule["operator"]).lower())
+                    if op_name is None:
+                        raise ValueError(f"Unknown validation operator '{rule['operator']}'. Supported: {sorted(self._VALIDATION_OPERATORS)}")
+                    validation.setOperator(uno.Enum("com.sun.star.sheet.ConditionOperator", op_name))
+                if "formula1" in rule:
+                    validation.Formula1 = str(rule["formula1"])
+                if "formula2" in rule:
+                    validation.Formula2 = str(rule["formula2"])
+                if "show_list" in rule:
+                    validation.setPropertyValue("ShowList", 1 if rule["show_list"] else 0)
+                if "ignore_blank" in rule and hasattr(validation, "IgnoreBlankCells"):
+                    validation.IgnoreBlankCells = bool(rule["ignore_blank"])
+                if "error_message" in rule:
+                    validation.setPropertyValue("ErrorMessage", str(rule["error_message"]))
+                if "error_title" in rule:
+                    validation.setPropertyValue("ErrorTitle", str(rule["error_title"]))
+                if "input_message" in rule:
+                    validation.setPropertyValue("InputMessage", str(rule["input_message"]))
+                if "input_title" in rule:
+                    validation.setPropertyValue("InputTitle", str(rule["input_title"]))
+                cell.Validation = validation
+        return [k for k in rule if k in (
+            "type", "operator", "formula1", "formula2", "show_list", "ignore_blank",
+            "error_message", "error_title", "input_message", "input_title",
+        )]
+
+    def clear_data_validation(self, doc: Any, range: str, sheet: Optional[str] = None) -> None:
+        sheet_obj = self._resolve_sheet(doc, sheet)
+        range_obj = sheet_obj.getCellRangeByName(range)
+        addr = range_obj.getRangeAddress()
+        for row in builtins.range(addr.EndRow - addr.StartRow + 1):
+            for col in builtins.range(addr.EndColumn - addr.StartColumn + 1):
+                cell = range_obj.getCellByPosition(col, row)
+                validation = cell.Validation
+                validation.Type = uno.Enum("com.sun.star.sheet.ValidationType", "ANY")
+                cell.Validation = validation
+
+    def create_subtotals(self, doc: Any, range: str, group_columns: List[int], subtotal_specs: List[Dict[str, Any]],
+                          sheet: Optional[str] = None) -> None:
+        """subtotal_specs items: {"column": <0-based index within range>,
+        "function": one of GeneralFunction ("SUM"/"COUNT"/"AVERAGE"/
+        "MAX"/"MIN"/"PRODUCT"/"COUNTNUMS"/"STDEV"/"STDEVP"/"VAR"/
+        "VARP")}. Only the first entry in `group_columns` is honored --
+        XSubTotalDescriptor.addNew() groups by one column per call, and
+        the spec's own group_columns is a flat list with no per-level
+        function grouping, so a single-level subtotal (the common case)
+        is what this maps onto; multi-level nested subtotals would need
+        one addNew() per group level, not attempted this pass."""
+        sheet_obj = self._resolve_sheet(doc, sheet)
+        range_obj = sheet_obj.getCellRangeByName(range)
+        descriptor = range_obj.createSubTotalDescriptor(True)
+        columns = []
+        for spec in subtotal_specs:
+            col = uno.createUnoStruct("com.sun.star.sheet.SubTotalColumn")
+            col.Column = int(spec["column"])
+            col.Function = uno.Enum("com.sun.star.sheet.GeneralFunction", str(spec.get("function", "sum")).upper())
+            columns.append(col)
+        descriptor.addNew(tuple(columns), int(group_columns[0]))
+        range_obj.applySubTotals(descriptor, True)
+
+    def remove_subtotals(self, doc: Any, range: str, sheet: Optional[str] = None) -> None:
+        sheet_obj = self._resolve_sheet(doc, sheet)
+        sheet_obj.getCellRangeByName(range).removeSubTotals()
+
+    def list_pivot_tables(self, doc: Any, sheet: Optional[str] = None) -> List[Any]:
+        """Returns raw XDataPilotTable objects for the tools/ layer to
+        register."""
+        sheets = [self._resolve_sheet(doc, sheet)] if sheet is not None else \
+            [doc.getSheets().getByIndex(i) for i in range(doc.getSheets().getCount())]
+        result = []
+        for sheet_obj in sheets:
+            tables = sheet_obj.DataPilotTables
+            for name in tables.getElementNames():
+                result.append(tables.getByName(name))
+        return result
+
+    def get_pivot_table_summary(self, doc: Any, pivot: Any, pivot_id: str) -> Dict[str, Any]:
+        output = pivot.OutputRange
+        fields = pivot.DataPilotFields
+        layout = {"rows": [], "columns": [], "data": [], "filters": []}
+        orientation_key = {"ROW": "rows", "COLUMN": "columns", "DATA": "data", "PAGE": "filters"}
+        for i in range(fields.getCount()):
+            field = fields.getByIndex(i)
+            key = orientation_key.get(field.Orientation.value)
+            if key:
+                layout[key].append(field.Name)
+        return {
+            "pivot_id": pivot_id, "name": pivot.Name, "sheet": doc.getSheets().getByIndex(output.Sheet).Name,
+            "output_range": self._range_address_to_a1(doc, output),
+            "layout": layout,
+        }
+
+    def create_pivot_table(self, doc: Any, source: str, destination: str, rows: List[str], columns: List[str],
+                            data_fields: List[Dict[str, Any]], filters: Optional[List[str]] = None) -> Any:
+        """`source`/`destination` are A1-style range/cell references on
+        the active sheet. `rows`/`columns`/`filters` are source field
+        (column header) names; `data_fields` items are {"field": str,
+        "function": one of GeneralFunction (default "sum")}. Returns the
+        raw XDataPilotTable for the tools/ layer to register."""
+        sheet_obj = self._resolve_sheet(doc, None)
+        source_range = sheet_obj.getCellRangeByName(source).RangeAddress
+        dest_cell = sheet_obj.getCellRangeByName(destination).RangeAddress
+        dest_addr = uno.createUnoStruct("com.sun.star.table.CellAddress")
+        dest_addr.Sheet, dest_addr.Column, dest_addr.Row = dest_cell.Sheet, dest_cell.StartColumn, dest_cell.StartRow
+
+        tables = sheet_obj.DataPilotTables
+        descriptor = tables.createDataPilotDescriptor()
+        descriptor.SourceRange = source_range
+        fields = descriptor.DataPilotFields
+        for name in rows:
+            fields.getByName(name).Orientation = uno.Enum("com.sun.star.sheet.DataPilotFieldOrientation", "ROW")
+        for name in columns:
+            fields.getByName(name).Orientation = uno.Enum("com.sun.star.sheet.DataPilotFieldOrientation", "COLUMN")
+        for name in (filters or []):
+            fields.getByName(name).Orientation = uno.Enum("com.sun.star.sheet.DataPilotFieldOrientation", "PAGE")
+        for spec in data_fields:
+            field = fields.getByName(spec["field"])
+            field.Orientation = uno.Enum("com.sun.star.sheet.DataPilotFieldOrientation", "DATA")
+            field.Function = uno.Enum("com.sun.star.sheet.GeneralFunction", str(spec.get("function", "sum")).upper())
+
+        index = 1
+        name = f"Pivot{index}"
+        while tables.hasByName(name):
+            index += 1
+            name = f"Pivot{index}"
+        tables.insertNewByName(name, dest_addr, descriptor)
+        return tables.getByName(name)
+
+    def update_pivot_table(self, pivot: Any, configuration: Dict[str, Any]) -> List[str]:
+        """`configuration`: any of rows/columns/data_fields/filters (same
+        shapes create_pivot_table_live accepts) -- reassigns field
+        orientations on the existing pivot and refreshes."""
+        fields = pivot.DataPilotFields
+        applied = []
+        for i in range(fields.getCount()):
+            fields.getByIndex(i).Orientation = uno.Enum("com.sun.star.sheet.DataPilotFieldOrientation", "HIDDEN")
+        if "rows" in configuration:
+            for name in configuration["rows"]:
+                fields.getByName(name).Orientation = uno.Enum("com.sun.star.sheet.DataPilotFieldOrientation", "ROW")
+            applied.append("rows")
+        if "columns" in configuration:
+            for name in configuration["columns"]:
+                fields.getByName(name).Orientation = uno.Enum("com.sun.star.sheet.DataPilotFieldOrientation", "COLUMN")
+            applied.append("columns")
+        if "filters" in configuration:
+            for name in configuration["filters"]:
+                fields.getByName(name).Orientation = uno.Enum("com.sun.star.sheet.DataPilotFieldOrientation", "PAGE")
+            applied.append("filters")
+        if "data_fields" in configuration:
+            for spec in configuration["data_fields"]:
+                field = fields.getByName(spec["field"])
+                field.Orientation = uno.Enum("com.sun.star.sheet.DataPilotFieldOrientation", "DATA")
+                field.Function = uno.Enum("com.sun.star.sheet.GeneralFunction", str(spec.get("function", "sum")).upper())
+            applied.append("data_fields")
+        pivot.refresh()
+        return applied
+
+    @staticmethod
+    def refresh_pivot_table(pivot: Any) -> None:
+        pivot.refresh()
+
+    @staticmethod
+    def delete_pivot_table(doc: Any, pivot: Any) -> None:
+        name = pivot.Name
+        sheet_obj = doc.getSheets().getByIndex(pivot.OutputRange.Sheet)
+        sheet_obj.DataPilotTables.removeByName(name)
+
+    def list_scenarios(self, doc: Any, sheet: Optional[str] = None) -> List[Dict[str, Any]]:
+        """ScenarioComment, not the guessed "Comment" -- live-verified via
+        the sheet's own real property list (a Scenario sheet has no plain
+        "Comment" property at all; the raw UNO_EXCEPTION just names the
+        missing property, caught testing this pass)."""
+        sheet_obj = self._resolve_sheet(doc, sheet)
+        scenarios = sheet_obj.Scenarios
+        return [{"name": n, "comment": scenarios.getByName(n).ScenarioComment} for n in scenarios.getElementNames()]
+
+    def create_scenario(self, doc: Any, name: str, ranges: List[str], comment: Optional[str] = None,
+                         options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        sheet_obj = self._resolve_sheet(doc, None)
+        range_addrs = tuple(sheet_obj.getCellRangeByName(r).RangeAddress for r in ranges)
+        sheet_obj.Scenarios.addNewByName(name, range_addrs, comment or "")
+        if options:
+            self._apply_direct_properties(sheet_obj.Scenarios.getByName(name), options)
+        return {"name": name}
+
+    def apply_scenario(self, doc: Any, name: str) -> None:
+        sheet_obj = self._resolve_sheet(doc, None)
+        scenarios = sheet_obj.Scenarios
+        if not scenarios.hasByName(name):
+            raise KeyError(f"No such scenario '{name}'.")
+        scenarios.getByName(name).apply()
+
+    def delete_scenario(self, doc: Any, name: str) -> None:
+        sheet_obj = self._resolve_sheet(doc, None)
+        scenarios = sheet_obj.Scenarios
+        if not scenarios.hasByName(name):
+            raise KeyError(f"No such scenario '{name}'.")
+        scenarios.removeByName(name)
+
+    def goal_seek(self, doc: Any, formula_cell: str, target_value: float, variable_cell: str) -> Dict[str, Any]:
+        """doc.seekGoal() computes and returns the answer but does NOT
+        write it back to the variable cell itself -- live-verified the
+        cell's own value is unchanged after the call returns. Applied
+        here explicitly to match Calc's own Goal Seek dialog behavior
+        (which does commit on accept), since a caller asking this tool
+        to "perform goal seek" almost certainly wants the sheet updated,
+        not just the number reported."""
+        sheet_obj = self._resolve_sheet(doc, None)
+        formula_addr = sheet_obj.getCellRangeByName(formula_cell).RangeAddress
+        variable_addr = sheet_obj.getCellRangeByName(variable_cell).RangeAddress
+        formula_cell_addr = uno.createUnoStruct("com.sun.star.table.CellAddress")
+        formula_cell_addr.Sheet, formula_cell_addr.Column, formula_cell_addr.Row = \
+            formula_addr.Sheet, formula_addr.StartColumn, formula_addr.StartRow
+        variable_cell_addr = uno.createUnoStruct("com.sun.star.table.CellAddress")
+        variable_cell_addr.Sheet, variable_cell_addr.Column, variable_cell_addr.Row = \
+            variable_addr.Sheet, variable_addr.StartColumn, variable_addr.StartRow
+        result = doc.seekGoal(formula_cell_addr, variable_cell_addr, float(target_value))
+        converged = abs(result.Divergence) < 1e-6
+        if converged:
+            sheet_obj.getCellByPosition(variable_cell_addr.Column, variable_cell_addr.Row).setValue(result.Result)
+        return {"converged": converged, "result": result.Result, "divergence": result.Divergence}
+
+    _SOLVER_OPERATORS = {"<=": "LESS_EQUAL", ">=": "GREATER_EQUAL", "=": "EQUAL"}
+
+    def solver_solve(self, doc: Any, objective_cell: str, optimize: str, variable_cells: List[str],
+                      constraints: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        """Uses whichever com.sun.star.sheet.Solver implementation this
+        LibreOffice build registers first (live-verified this one
+        resolves to the bundled NLPSolver/DEPS evolutionary solver) --
+        the spec's own "when solver service is available" wording
+        anticipates this varying by build/install, so a missing service
+        is surfaced as a real UNO_EXCEPTION, not pre-checked. optimize
+        supports "min"/"max" via Solver.Maximize; "value" (target a
+        specific objective value rather than extremize it) has no
+        corresponding XSolver property and isn't implemented this pass."""
+        if optimize not in ("min", "max"):
+            raise NotImplementedError(
+                f"solver_solve_live's optimize='{optimize}' is not implemented this pass -- only 'min'/'max' "
+                "map onto XSolver.Maximize; 'value' (target a specific objective value) has no equivalent "
+                "XSolver property in this API."
+            )
+        sheet_obj = self._resolve_sheet(doc, None)
+
+        def to_addr(a1: str) -> Any:
+            addr = sheet_obj.getCellRangeByName(a1).RangeAddress
+            cell_addr = uno.createUnoStruct("com.sun.star.table.CellAddress")
+            cell_addr.Sheet, cell_addr.Column, cell_addr.Row = addr.Sheet, addr.StartColumn, addr.StartRow
+            return cell_addr
+
+        solver = self.smgr.createInstanceWithContext("com.sun.star.sheet.Solver", self.ctx)
+        solver.Document = doc
+        solver.Objective = to_addr(objective_cell)
+        solver.Variables = tuple(to_addr(c) for c in variable_cells)
+        solver.Maximize = (optimize == "max")
+        solver_constraints = []
+        for constraint in (constraints or []):
+            op_name = self._SOLVER_OPERATORS.get(str(constraint["operator"]))
+            if op_name is None:
+                raise ValueError(f"Unknown solver constraint operator '{constraint['operator']}'. Supported: {sorted(self._SOLVER_OPERATORS)}")
+            sc = uno.createUnoStruct("com.sun.star.sheet.SolverConstraint")
+            sc.Left = to_addr(constraint["cell"])
+            sc.Operator = uno.Enum("com.sun.star.sheet.SolverConstraintOperator", op_name)
+            right = constraint["value"]
+            sc.Right = to_addr(right) if isinstance(right, str) else float(right)
+            solver_constraints.append(sc)
+        solver.Constraints = tuple(solver_constraints)
+        solver.solve()
+        return {
+            "success": bool(solver.Success), "result_value": solver.ResultValue if solver.Success else None,
+            "solution": list(solver.Solution) if solver.Success else [],
+            "status": solver.StatusDescription,
+        }
+
+    def list_database_ranges(self, doc: Any) -> List[Dict[str, Any]]:
+        self._require_calc(doc, "list_database_ranges")
+        ranges = doc.DatabaseRanges
+        result = []
+        for name in ranges.getElementNames():
+            db_range = ranges.getByName(name)
+            addr = db_range.DataArea
+            result.append({
+                "name": name, "sheet": doc.getSheets().getByIndex(addr.Sheet).Name,
+                "range": self._range_address_to_a1(doc, addr),
+            })
+        return result
+
+    def create_database_range(self, doc: Any, name: str, sheet: str, range: str) -> Dict[str, Any]:
+        self._require_calc(doc, "create_database_range")
+        sheet_obj = self._resolve_sheet(doc, sheet)
+        addr = sheet_obj.getCellRangeByName(range).RangeAddress
+        doc.DatabaseRanges.addNewByName(name, addr)
+        return {"name": name}
+
+    def delete_database_range(self, doc: Any, name: str) -> None:
+        self._require_calc(doc, "delete_database_range")
+        ranges = doc.DatabaseRanges
+        if not ranges.hasByName(name):
+            raise KeyError(f"No such database range '{name}'.")
+        ranges.removeByName(name)
+
+    def list_external_links(self, doc: Any) -> List[Dict[str, Any]]:
+        self._require_calc(doc, "list_external_links")
+        links = doc.ExternalDocLinks
+        return [{"link_id": name, "url": name} for name in links.getElementNames()]
+
+    # create_external_link_live/refresh_external_link_live/
+    # delete_external_link_live have no bridge methods -- doc.
+    # ExternalDocLinks' write side (adding a new link, vs.
+    # list_external_links_live's read-only enumeration) wasn't
+    # exploration-tested this pass, same honest-scope-limit precedent as
+    # add_chart_series_live/add_animation_live. All 3 stay pure
+    # status="stub" NOT_IMPLEMENTED responses, see tools/calc_data.py.
+
+    _CSV_CHARSETS = {"utf-8": 76, "utf8": 76}
+
+    def import_csv_to_range(self, doc: Any, file_path: str, destination: str, delimiter: str = ",",
+                             encoding: str = "utf-8", options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Loads the CSV as a temporary hidden Calc document via the same
+        "Text - txt - csv (StarCalc)" import filter Calc's own File > Open
+        uses, then copies its used-range values into `destination` on the
+        real document, then closes the temp document -- there's no
+        direct "import CSV into an existing range" UNO API. Only
+        encoding="utf-8" is mapped to a verified FilterOptions charset
+        code this pass; any other encoding raises rather than guessing at
+        the charset-code table."""
+        self._require_calc(doc, "import_csv_to_range")
+        charset = self._CSV_CHARSETS.get(encoding.lower())
+        if charset is None:
+            raise NotImplementedError(
+                f"import_csv_to_range_live encoding='{encoding}' is not implemented this pass -- "
+                f"only {sorted(self._CSV_CHARSETS)} are mapped to a verified charset code."
+            )
+        filter_options = f"{ord(delimiter)},34,{charset},1"
+        temp_doc = self.desktop.loadComponentFromURL(
+            uno.systemPathToFileUrl(file_path), "_blank", 0,
+            (
+                PropertyValue("FilterName", 0, "Text - txt - csv (StarCalc)", 0),
+                PropertyValue("FilterOptions", 0, filter_options, 0),
+                PropertyValue("Hidden", 0, True, 0),
+            ),
+        )
+        try:
+            temp_sheet = temp_doc.getSheets().getByIndex(0)
+            cursor = temp_sheet.createCursor()
+            cursor.gotoStartOfUsedArea(False)
+            cursor.gotoEndOfUsedArea(True)
+            used = cursor.RangeAddress
+            rows = used.EndRow - used.StartRow + 1
+            cols = used.EndColumn - used.StartColumn + 1
+            source_range = temp_sheet.getCellRangeByPosition(used.StartColumn, used.StartRow, used.EndColumn, used.EndRow)
+            values = source_range.getDataArray()
+
+            dest_sheet = self._resolve_sheet(doc, None)
+            dest_cell = dest_sheet.getCellRangeByName(destination)
+            dest_addr = dest_cell.RangeAddress
+            dest_range = dest_sheet.getCellRangeByPosition(
+                dest_addr.StartColumn, dest_addr.StartRow,
+                dest_addr.StartColumn + cols - 1, dest_addr.StartRow + rows - 1,
+            )
+            dest_range.setDataArray(values)
+        finally:
+            temp_doc.close(False)
+        return {"rows": rows, "columns": cols}
+
+    def export_range_to_csv(self, doc: Any, range: str, file_path: str, sheet: Optional[str] = None,
+                             delimiter: str = ",", encoding: str = "utf-8") -> None:
+        """No direct "export just this range" UNO filter call -- copies
+        the range into a temporary hidden Calc document (same pattern
+        import_csv_to_range uses in reverse) and storeToURL's that."""
+        charset = self._CSV_CHARSETS.get(encoding.lower())
+        if charset is None:
+            raise NotImplementedError(
+                f"export_range_to_csv_live encoding='{encoding}' is not implemented this pass -- "
+                f"only {sorted(self._CSV_CHARSETS)} are mapped to a verified charset code."
+            )
+        sheet_obj = self._resolve_sheet(doc, sheet)
+        source_range = sheet_obj.getCellRangeByName(range)
+        values = source_range.getDataArray()
+
+        temp_doc = self.desktop.loadComponentFromURL("private:factory/scalc", "_blank", 0, (PropertyValue("Hidden", 0, True, 0),))
+        try:
+            temp_sheet = temp_doc.getSheets().getByIndex(0)
+            rows, cols = len(values), (len(values[0]) if values else 0)
+            if rows and cols:
+                dest_range = temp_sheet.getCellRangeByPosition(0, 0, cols - 1, rows - 1)
+                dest_range.setDataArray(values)
+            filter_options = f"{ord(delimiter)},34,{charset},1"
+            temp_doc.storeToURL(uno.systemPathToFileUrl(file_path), (
+                PropertyValue("FilterName", 0, "Text - txt - csv (StarCalc)", 0),
+                PropertyValue("FilterOptions", 0, filter_options, 0),
+            ))
+        finally:
+            temp_doc.close(False)
+
+    def group_rows(self, doc: Any, rows: List[int], sheet: Optional[str] = None) -> None:
+        sheet_obj = self._resolve_sheet(doc, sheet)
+        addr = uno.createUnoStruct("com.sun.star.table.CellRangeAddress")
+        addr.Sheet, addr.StartColumn, addr.EndColumn = 0, 0, 0
+        addr.StartRow, addr.EndRow = min(rows), max(rows)
+        sheet_obj.group(addr, uno.Enum("com.sun.star.table.TableOrientation", "ROWS"))
+
+    def ungroup_rows(self, doc: Any, rows: List[int], sheet: Optional[str] = None) -> None:
+        sheet_obj = self._resolve_sheet(doc, sheet)
+        addr = uno.createUnoStruct("com.sun.star.table.CellRangeAddress")
+        addr.Sheet, addr.StartColumn, addr.EndColumn = 0, 0, 0
+        addr.StartRow, addr.EndRow = min(rows), max(rows)
+        sheet_obj.ungroup(addr, uno.Enum("com.sun.star.table.TableOrientation", "ROWS"))
+
+    def group_columns(self, doc: Any, columns: List[int], sheet: Optional[str] = None) -> None:
+        sheet_obj = self._resolve_sheet(doc, sheet)
+        addr = uno.createUnoStruct("com.sun.star.table.CellRangeAddress")
+        addr.Sheet, addr.StartRow, addr.EndRow = 0, 0, 0
+        addr.StartColumn, addr.EndColumn = min(columns), max(columns)
+        sheet_obj.group(addr, uno.Enum("com.sun.star.table.TableOrientation", "COLUMNS"))
+
+    def ungroup_columns(self, doc: Any, columns: List[int], sheet: Optional[str] = None) -> None:
+        sheet_obj = self._resolve_sheet(doc, sheet)
+        addr = uno.createUnoStruct("com.sun.star.table.CellRangeAddress")
+        addr.Sheet, addr.StartRow, addr.EndRow = 0, 0, 0
+        addr.StartColumn, addr.EndColumn = min(columns), max(columns)
+        sheet_obj.ungroup(addr, uno.Enum("com.sun.star.table.TableOrientation", "COLUMNS"))
