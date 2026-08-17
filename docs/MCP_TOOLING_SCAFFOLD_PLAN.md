@@ -697,6 +697,85 @@ tests; 4 new cases in `tests/test_document_registry.py`), not yet wired
 into any Phase C/D tool -- that's for whichever pass makes Calc-sheets/
 Impress/Draw/drawing-objects/charts real.
 
+## Real MCP JSON-RPC 2.0 transport
+
+Mandated item #4, run in parallel rather than gated on the tool catalog
+(per Buddy: "there is no architectural reason to postpone it until the
+tool catalog is complete"). Before this pass, confirmed by grep: zero
+occurrences of `initialize`/`tools/list`/`tools/call`/`jsonrpc` anywhere
+in the codebase -- `ai_interface.py`'s `MCPRequestHandler` served only a
+bespoke REST shim (`GET /`, `GET /tools`, `GET /health`, `POST /execute`,
+`POST /tools/{tool_name}`), no MCP protocol layer at all.
+
+**`plugin/pythonpath/mcp_jsonrpc.py`** is the actual JSON-RPC 2.0
+message-level dispatch (`initialize`, `notifications/initialized`,
+`ping`, `tools/list`, `tools/call`, `resources/list`/`prompts/list`
+-- both always empty, this server exposes no MCP resources/prompts),
+kept UNO/HTTP-independent (takes a plain tools dict and an
+`execute_tool` callable) so it's unit-testable with fakes --
+`tests/test_mcp_jsonrpc.py`, 22 tests. JSON-RPC batch arrays are
+supported; notifications get no response entry, matching spec. Reuses
+the two-layer error model this project's own WriterAgent research
+surfaced: a tool-level failure (this project's envelope has
+`success: false`) is `isError: true` on a normal 200-shaped
+`tools/call` result, not a JSON-RPC error object -- only protocol-level
+faults (bad method, malformed params, an exception escaping the
+handler) are real JSON-RPC errors (`-32601`/`-32602`/`-32603`, the
+standard reserved codes).
+
+**`ai_interface.py`** wires this in as `POST /mcp` (plus `/sse` and
+`/messages` as aliases for clients hardcoded to the older split-SSE
+transport's path names, dispatched through the identical handler),
+`GET /mcp` (405 -- no server-initiated SSE stream, this server has
+nothing to push), and `DELETE /mcp` (acknowledges session termination;
+no real per-session state to tear down yet, see below). Mints an
+`Mcp-Session-Id` on `initialize` and echoes the negotiated
+`Mcp-Protocol-Version`; CORS headers extended with
+`Access-Control-Expose-Headers` so a browser-hosted MCP client's JS can
+read both. The pre-existing REST bridge (`/tools`, `/execute`, etc.) is
+untouched and still works -- confirmed side-by-side this pass, same
+server, same session, both code paths live at once.
+
+**Scoped down, deliberately, for this first real-transport pass:**
+`Mcp-Protocol-Version` negotiation is permissive (always echoes back
+whatever version the client's `initialize` requested, rather than
+validating against a fixed supported-version list) -- reasonable with
+one server version to support today; a future pass adding real
+multi-version negotiation should tighten this. `Mcp-Session-Id` is
+minted and echoed but not yet validated/enforced on subsequent
+requests -- there is no per-session state to isolate yet (no
+per-document mutation lock either, see
+`docs/DOCUMENT_TARGETING_DECISION.md`'s flagged gap), so a session id
+today is a courtesy for clients that expect the header, not a real
+guarantee. Responses are always a single JSON object/array
+(`Content-Type: application/json`), never an SSE stream -- valid per
+the Streamable HTTP spec (SSE is for a server that needs to push
+multiple messages per request; this server never does), but means no
+server-initiated progress notifications mid-call.
+
+**Live-verified against a real MCP client, not just curl** (the
+mandate's explicit bar): `npx @modelcontextprotocol/inspector --cli`
+(the official reference MCP Inspector, doing real protocol negotiation
+and JSON-RPC framing, not hand-crafted curl JSON) connected to a live
+headless LibreOffice 26.2 instance running this build, ran `tools/list`
+and got back the real, full 108-tool catalog, then `tools/call
+insert_paragraph_live` with a real text argument -- independently
+confirmed the paragraph genuinely landed in the live document via a
+completely separate code path (`get_text_content_live` through the
+pre-existing REST bridge), not just trusting the JSON-RPC response.
+Also curl-verified directly: `initialize` (protocol version echo,
+session id minted), `notifications/initialized` (202, empty body),
+batch requests (notification correctly dropped, only the two `id`-
+bearing responses returned, in order), unknown tool (`isError: true`,
+not a JSON-RPC error -- confirms the two-layer model), unknown method
+(`-32601`), invalid JSON (`-32700`), `GET /mcp` (405), `DELETE /mcp`
+(200 ack), `/sse`/`/messages` aliases, and CORS preflight
+(`OPTIONS /mcp` with an `Origin` header returns the right
+`Access-Control-*` headers).
+
+**Testing:** `tests/test_mcp_jsonrpc.py`, 22 new tests. 212/212 passing
+under `pytest` across the full relevant suite (190 prior + 22 new).
+
 ## What was built
 
 **Shared plumbing (`plugin/pythonpath/tools/`):**

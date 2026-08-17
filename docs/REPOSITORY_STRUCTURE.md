@@ -16,7 +16,8 @@ mcp-libre/
 │   ├── 📁 pythonpath/              # Python extension modules
 │   │   ├── uno_bridge.py           # UNO API bridge for LibreOffice
 │   │   ├── mcp_server.py           # Embedded MCP server
-│   │   ├── ai_interface.py         # HTTP API for AI assistants
+│   │   ├── ai_interface.py         # HTTP API for AI assistants -- REST bridge (/tools, /execute) + real MCP JSON-RPC (/mcp)
+│   │   ├── mcp_jsonrpc.py          # Real MCP JSON-RPC 2.0 message dispatch (unit-testable, no UNO/HTTP needed) for ai_interface.py's /mcp
 │   │   ├── host_trust.py           # Host/Origin trust check (DNS-rebinding guard) for ai_interface.py
 │   │   ├── uno_datetime.py         # com.sun.star.util.DateTime -> ISO-8601 string (unit-testable, no UNO needed)
 │   │   ├── registration.py         # Extension registration and lifecycle
@@ -65,7 +66,8 @@ mcp-libre/
 │   ├── test_styles.py              # styles.py's 12 implemented tools, tested against fakes
 │   ├── test_writer_text.py         # writer_text.py's 18 implemented tools, tested against fakes
 │   ├── test_uno_datetime.py        # DateTime-to-ISO conversion unit tests (no live LibreOffice needed)
-│   └── test_host_trust.py          # Host/Origin trust check unit tests (no live LibreOffice needed)
+│   ├── test_host_trust.py          # Host/Origin trust check unit tests (no live LibreOffice needed)
+│   └── test_mcp_jsonrpc.py         # Real MCP JSON-RPC 2.0 dispatch unit tests (no live LibreOffice needed)
 ├── 📁 examples/                    # Demo and example scripts
 │   ├── __init__.py                 # Examples package initialization
 │   ├── demo_editing.py             # Document editing demonstrations
@@ -116,7 +118,8 @@ mcp-libre/
 
 - `pythonpath/uno_bridge.py`: Bridge between MCP and LibreOffice UNO API
 - `pythonpath/mcp_server.py`: Embedded MCP server for the extension
-- `pythonpath/ai_interface.py`: HTTP API server for AI assistant connections
+- `pythonpath/ai_interface.py`: HTTP API server for AI assistant connections (REST bridge + real MCP JSON-RPC `/mcp`)
+- `pythonpath/mcp_jsonrpc.py`: Real MCP JSON-RPC 2.0 message dispatch (initialize/tools list/call/etc.)
 - `pythonpath/registration.py`: Extension lifecycle management
 - `META-INF/manifest.xml`: Extension packaging manifest
 - `Addons.xcu`: LibreOffice menu and toolbar configuration

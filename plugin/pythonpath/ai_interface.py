@@ -11,12 +11,21 @@ import json
 import logging
 import socketserver
 import threading
+import uuid
 from http.server import BaseHTTPRequestHandler
 from typing import Any, Dict
 from urllib.parse import urlparse
 
+import mcp_jsonrpc
 import mcp_server
 from host_trust import is_trusted_host
+
+# Real MCP JSON-RPC 2.0 endpoint (mandated item #4) accepts POSTs on any
+# of these paths -- /mcp is the canonical Streamable HTTP route; /sse and
+# /messages are aliases for MCP clients hardcoded to the older
+# split-SSE-transport path names, dispatched through the exact same
+# handler (see docs/MCP_TOOLING_SCAFFOLD_PLAN.md's transport pass).
+MCP_JSONRPC_PATHS = ("/mcp", "/sse", "/messages")
 
 
 # Set up logging
@@ -70,6 +79,20 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                     }
                 )
 
+            elif path in MCP_JSONRPC_PATHS:
+                # Streamable HTTP allows a server-initiated SSE stream on
+                # GET; this server has nothing to push (no server-
+                # initiated notifications), so per spec a server that
+                # doesn't support that MAY reply 405 rather than
+                # implementing an always-idle stream.
+                self.send_response(405)
+                self.send_header("Allow", "POST, DELETE, OPTIONS")
+                self._send_cors_headers()
+                self.send_header("Content-Length", "0")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.close_connection = True
+
             else:
                 self._send_response(
                     404,
@@ -118,14 +141,23 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                     UnicodeDecodeError,
                     json.JSONDecodeError
                 ):
-                    self._send_response(
-                        400,
-                        {"error": "Invalid JSON"}
-                    )
+                    if path in MCP_JSONRPC_PATHS:
+                        # JSON-RPC 2.0 has its own reserved shape for this
+                        # (id is necessarily null -- the request couldn't
+                        # even be parsed far enough to find one).
+                        self._send_json_rpc_response(
+                            mcp_jsonrpc.build_error(None, mcp_jsonrpc.PARSE_ERROR, "Parse error: invalid JSON"),
+                            400,
+                        )
+                    else:
+                        self._send_response(
+                            400,
+                            {"error": "Invalid JSON"}
+                        )
                     return
 
             else:
-                data = {}
+                data = {} if path not in MCP_JSONRPC_PATHS else None
 
             if path.startswith("/tools/"):
                 tool_name = path[len("/tools/"):]
@@ -160,6 +192,9 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                     tool_name,
                     parameters
                 )
+
+            elif path in MCP_JSONRPC_PATHS:
+                self._handle_mcp_jsonrpc(data)
 
             else:
                 self._send_response(
@@ -198,6 +233,25 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
 
         self.close_connection = True
 
+    def do_DELETE(self):
+        """Handle DELETE requests -- only meaningful for /mcp session
+        termination. This server has no per-session state to actually
+        tear down yet (see _handle_mcp_jsonrpc()'s Mcp-Session-Id note),
+        so this just acknowledges the client's intent to end the session
+        rather than rejecting the request outright."""
+        parsed_path = urlparse(self.path)
+        path = parsed_path.path
+
+        logger.info(f"HTTP DELETE {path}")
+
+        if not self._reject_untrusted_host():
+            return
+
+        if path in MCP_JSONRPC_PATHS:
+            self._send_response(200, {"status": "session terminated"})
+        else:
+            self._send_response(404, {"error": "Not found"})
+
     def _reject_untrusted_host(self) -> bool:
         """Send 403 and return False for a request whose Host header isn't localhost.
 
@@ -216,6 +270,18 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
         self._send_response(403, {"error": "Untrusted Host header; this server only accepts localhost requests"})
         return False
 
+    def _execute_tool_sync(self, tool_name: str, parameters: Dict[str, Any]) -> Any:
+        """Run self.mcp_server.execute_tool() to completion and return its
+        result, whether execute_tool() is async (current implementation)
+        or a future synchronous one. Shared by the REST bridge's
+        _handle_tool_execution() and the real MCP JSON-RPC tools/call
+        path (_handle_mcp_jsonrpc()) so there's exactly one place that
+        knows how to run it."""
+        result = self.mcp_server.execute_tool(tool_name, parameters)
+        if inspect.isawaitable(result):
+            result = asyncio.run(result)
+        return result
+
     def _handle_tool_execution(
         self,
         tool_name: str,
@@ -227,15 +293,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                 f"HTTP tool execution starting: {tool_name}"
             )
 
-            result = self.mcp_server.execute_tool(
-                tool_name,
-                parameters
-            )
-
-            # Support both the current async implementation and a
-            # future synchronous execute_tool() implementation.
-            if inspect.isawaitable(result):
-                result = asyncio.run(result)
+            result = self._execute_tool_sync(tool_name, parameters)
 
             logger.info(
                 f"HTTP tool execution completed: {tool_name}"
@@ -266,25 +324,102 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                 tool_name=tool_name
             )
 
+    def _handle_mcp_jsonrpc(self, data: Any):
+        """Real MCP JSON-RPC 2.0 endpoint (mandated item #4) -- POST
+        /mcp, /sse, /messages all land here. `data` is whatever
+        json.loads() produced: a dict (single message), a list (JSON-RPC
+        batch), or None (empty POST body, invalid for this endpoint).
+        Message-level parsing/routing lives in mcp_jsonrpc.py, kept
+        separate so it's unit-testable without an HTTP server or UNO;
+        this method only handles the HTTP-transport concerns (session
+        header, status code, response framing).
+        """
+        if data is None:
+            self._send_json_rpc_response(
+                mcp_jsonrpc.build_error(None, mcp_jsonrpc.INVALID_REQUEST, "Invalid Request: empty body"),
+                400,
+            )
+            return
+
+        is_initialize = isinstance(data, dict) and data.get("method") == "initialize"
+
+        response_body, status = mcp_jsonrpc.dispatch(
+            data,
+            self.mcp_server.tools,
+            self._execute_tool_sync,
+        )
+
+        # Mint an Mcp-Session-Id on initialize and echo it on every
+        # response (including this one) -- permissive, not yet validated
+        # against subsequent requests (see mcp_jsonrpc.py's module
+        # docstring for the same scope note on protocol-version
+        # negotiation). There is no per-session state to isolate today;
+        # this exists so clients that expect the header to be present
+        # get it, without this server pretending to enforce a guarantee
+        # it doesn't actually provide yet.
+        session_id = self.headers.get("Mcp-Session-Id")
+        protocol_version = None
+        if is_initialize and not session_id:
+            session_id = uuid.uuid4().hex
+        if is_initialize and isinstance(response_body, dict):
+            protocol_version = (response_body.get("result") or {}).get("protocolVersion")
+
+        self._send_json_rpc_response(response_body, status, session_id=session_id, protocol_version=protocol_version)
+
+    def _send_json_rpc_response(self, body: Any, status: int, session_id: str = None, protocol_version: str = None):
+        """Send a JSON-RPC response (or an empty 202/204 body) with the
+        headers a Streamable HTTP MCP client expects."""
+        if body is None:
+            payload = b""
+        else:
+            payload = json.dumps(body, default=str).encode("utf-8")
+
+        self.send_response(status)
+        if payload:
+            self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        if session_id:
+            self.send_header("Mcp-Session-Id", session_id)
+        if protocol_version:
+            self.send_header("Mcp-Protocol-Version", protocol_version)
+        self._send_cors_headers()
+        self.send_header("Connection", "close")
+        self.end_headers()
+
+        if payload:
+            self.wfile.write(payload)
+            self.wfile.flush()
+
+        self.close_connection = True
+
     def _get_server_info(self) -> Dict[str, Any]:
         """Get server information."""
         return {
             "name": "LibreOffice MCP Extension",
             "version": "1.0.0",
             "description": (
-                "LibreOffice-native HTTP tool bridge designed for MCP integration "
-                "(custom REST API, not native MCP JSON-RPC)"
+                "LibreOffice-native HTTP tool bridge. POST /mcp is real MCP "
+                "JSON-RPC 2.0 (Streamable HTTP, single-JSON-response mode); "
+                "the GET/POST /tools, /execute endpoints are a separate, "
+                "pre-existing custom REST API kept for backward compatibility."
             ),
             "endpoints": {
                 "GET /": "Server information",
-                "GET /tools": "List available tools",
+                "GET /tools": "List available tools (custom REST API)",
                 "GET /health": "Health check",
                 "POST /tools/{tool_name}": (
-                    "Execute specific tool"
+                    "Execute specific tool (custom REST API)"
                 ),
                 "POST /execute": (
-                    "Execute tool specified in request body"
-                )
+                    "Execute tool specified in request body (custom REST API)"
+                ),
+                "POST /mcp": (
+                    "Real MCP JSON-RPC 2.0 endpoint (initialize, tools/list, "
+                    "tools/call, ping, resources/list, prompts/list). "
+                    "/sse and /messages are aliases for the same handler."
+                ),
+                "GET /mcp": "405 (no server-initiated SSE stream)",
+                "DELETE /mcp": "Acknowledge MCP session termination",
             },
             "tools_count": len(
                 self.mcp_server.tools
@@ -402,12 +537,21 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
 
         self.send_header(
             "Access-Control-Allow-Methods",
-            "GET, POST, OPTIONS"
+            "GET, POST, DELETE, OPTIONS"
         )
 
         self.send_header(
             "Access-Control-Allow-Headers",
-            "Content-Type, Authorization"
+            "Content-Type, Authorization, Mcp-Session-Id, Mcp-Protocol-Version"
+        )
+
+        # So a browser-hosted MCP client's JS can read these two
+        # response headers on a cross-origin request -- without this,
+        # CORS hides them even though Access-Control-Allow-Origin lets
+        # the response body through.
+        self.send_header(
+            "Access-Control-Expose-Headers",
+            "Mcp-Session-Id, Mcp-Protocol-Version"
         )
 
     def log_message(self, format, *args):
