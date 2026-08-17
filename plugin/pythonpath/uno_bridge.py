@@ -5,6 +5,7 @@ This module provides a bridge between MCP operations and LibreOffice UNO API,
 enabling direct manipulation of LibreOffice documents.
 """
 
+import builtins
 import uno
 import unohelper
 from com.sun.star.beans import PropertyValue
@@ -3985,3 +3986,520 @@ class UNOBridge:
 
     def delete_embedded_object(self, doc: Any, shape: Any) -> None:
         self.delete_shape(doc, shape)
+
+    # -- Calc sheets, cells, ranges, formulas (tools/calc_sheets.py's 42 tools) --
+    #
+    # Same raise-on-failure convention as writer_text.py/drawing_objects.py
+    # above. Sheet resolution is the live name-or-index scheme
+    # docs/OBJECT_HANDLE_DESIGN.md designed (no registry) --
+    # _resolve_sheet_by_name_or_index() (already shared with
+    # drawing_objects.py's container resolution) is reused directly;
+    # _resolve_sheet() below adds the "omitted -> active sheet" fallback
+    # this module's tools need on top of it.
+    #
+    # Cell/range addressing uses A1 notation directly via
+    # XCellRangeAccess.getCellRangeByName() -- live-verified this accepts
+    # both single cells ("B3") and ranges ("A1:C3") with no manual address
+    # parsing needed; the object it returns implements both XCell and
+    # XCellRange simultaneously for a single-cell reference.
+
+    def _require_calc(self, doc: Any, operation: str) -> None:
+        doc_type = self._get_document_type(doc)
+        if doc_type != "calc":
+            raise NotImplementedError(f"{operation} is only implemented for Calc documents, not '{doc_type}'.")
+
+    def _resolve_sheet(self, doc: Any, sheet: Optional[str] = None) -> Any:
+        self._require_calc(doc, "sheet resolution")
+        if sheet is None:
+            return doc.getCurrentController().getActiveSheet()
+        return self._resolve_sheet_by_name_or_index(doc.getSheets(), sheet)
+
+    @staticmethod
+    def _column_row_to_a1(col: int, row: int) -> str:
+        letters = ""
+        c = col
+        while True:
+            letters = chr(ord('A') + c % 26) + letters
+            c = c // 26 - 1
+            if c < 0:
+                break
+        return f"{letters}{row + 1}"
+
+    def list_sheets(self, doc: Any) -> List[Dict[str, Any]]:
+        self._require_calc(doc, "list_sheets")
+        sheets = doc.getSheets()
+        result = []
+        for i in range(sheets.getCount()):
+            sheet = sheets.getByIndex(i)
+            result.append({
+                "index": i, "name": sheet.Name, "visible": bool(sheet.IsVisible),
+                "protected": bool(sheet.isProtected()) if hasattr(sheet, "isProtected") else False,
+            })
+        return result
+
+    def get_active_sheet(self, doc: Any) -> Dict[str, Any]:
+        self._require_calc(doc, "get_active_sheet")
+        sheet = doc.getCurrentController().getActiveSheet()
+        # A sheet's own index isn't exposed directly -- read it off any
+        # cell's address on that sheet (RangeAddress.Sheet), the standard
+        # UNO idiom for this.
+        index = sheet.getCellRangeByName("A1").RangeAddress.Sheet
+        return {"index": index, "name": sheet.Name, "visible": bool(sheet.IsVisible)}
+
+    def activate_sheet(self, doc: Any, sheet: str) -> None:
+        self._require_calc(doc, "activate_sheet")
+        sheet_obj = self._resolve_sheet_by_name_or_index(doc.getSheets(), sheet)
+        doc.getCurrentController().setActiveSheet(sheet_obj)
+
+    def insert_sheet(self, doc: Any, name: str, position: Optional[int] = None) -> None:
+        self._require_calc(doc, "insert_sheet")
+        sheets = doc.getSheets()
+        index = position if position is not None else sheets.getCount()
+        sheets.insertNewByName(name, index)
+
+    def delete_sheet(self, doc: Any, sheet: str) -> None:
+        self._require_calc(doc, "delete_sheet")
+        sheets = doc.getSheets()
+        sheet_obj = self._resolve_sheet_by_name_or_index(sheets, sheet)
+        sheets.removeByName(sheet_obj.Name)
+
+    def rename_sheet(self, doc: Any, sheet: str, new_name: str) -> None:
+        self._require_calc(doc, "rename_sheet")
+        sheet_obj = self._resolve_sheet_by_name_or_index(doc.getSheets(), sheet)
+        sheet_obj.Name = new_name
+
+    def move_sheet(self, doc: Any, sheet: str, destination_index: int) -> None:
+        self._require_calc(doc, "move_sheet")
+        sheets = doc.getSheets()
+        sheet_obj = self._resolve_sheet_by_name_or_index(sheets, sheet)
+        sheets.moveByName(sheet_obj.Name, destination_index)
+
+    def copy_sheet(self, doc: Any, sheet: str, new_name: str, destination_index: Optional[int] = None) -> None:
+        self._require_calc(doc, "copy_sheet")
+        sheets = doc.getSheets()
+        sheet_obj = self._resolve_sheet_by_name_or_index(sheets, sheet)
+        index = destination_index if destination_index is not None else sheets.getCount()
+        sheets.copyByName(sheet_obj.Name, new_name, index)
+
+    def hide_sheet(self, doc: Any, sheet: str) -> None:
+        self._require_calc(doc, "hide_sheet")
+        self._resolve_sheet_by_name_or_index(doc.getSheets(), sheet).IsVisible = False
+
+    def show_sheet(self, doc: Any, sheet: str) -> None:
+        self._require_calc(doc, "show_sheet")
+        self._resolve_sheet_by_name_or_index(doc.getSheets(), sheet).IsVisible = True
+
+    def get_cell(self, doc: Any, cell: str, sheet: Optional[str] = None) -> Dict[str, Any]:
+        self._require_calc(doc, "get_cell")
+        cell_obj = self._resolve_sheet(doc, sheet).getCellRangeByName(cell)
+        return {
+            "cell": cell, "value": cell_obj.getValue(), "formula": cell_obj.getFormula(),
+            "display": cell_obj.getString(), "error": cell_obj.getError(),
+        }
+
+    def set_cell(self, doc: Any, cell: str, sheet: Optional[str] = None,
+                 value: Optional[Any] = None, formula: Optional[str] = None) -> Dict[str, Any]:
+        self._require_calc(doc, "set_cell")
+        cell_obj = self._resolve_sheet(doc, sheet).getCellRangeByName(cell)
+        if formula is not None:
+            cell_obj.setFormula(formula)
+        elif value is not None:
+            if isinstance(value, bool):
+                cell_obj.setValue(1.0 if value else 0.0)
+            elif isinstance(value, (int, float)):
+                cell_obj.setValue(float(value))
+            else:
+                cell_obj.setString(str(value))
+        else:
+            cell_obj.setString("")
+        return {"cell": cell, "display": cell_obj.getString()}
+
+    def get_range(self, doc: Any, range: str, sheet: Optional[str] = None, mode: str = "values") -> Dict[str, Any]:
+        self._require_calc(doc, "get_range")
+        sheet_obj = self._resolve_sheet(doc, sheet)
+        range_obj = sheet_obj.getCellRangeByName(range)
+        result: Dict[str, Any] = {"range": range}
+        if mode in ("values", "all"):
+            result["values"] = [list(row) for row in range_obj.getDataArray()]
+        if mode in ("formulas", "all"):
+            result["formulas"] = [list(row) for row in range_obj.getFormulaArray()]
+        if mode in ("display", "all"):
+            # NOTE: `range` is shadowed by this method's own parameter --
+            # builtins.range(...) here is deliberate, not a typo.
+            addr = range_obj.RangeAddress
+            display = []
+            for r in builtins.range(addr.StartRow, addr.EndRow + 1):
+                row = [sheet_obj.getCellByPosition(c, r).getString() for c in builtins.range(addr.StartColumn, addr.EndColumn + 1)]
+                display.append(row)
+            result["display"] = display
+        return result
+
+    def set_range(self, doc: Any, values: List[List[Any]], sheet: Optional[str] = None,
+                   range: Optional[str] = None, start_cell: Optional[str] = None) -> Dict[str, Any]:
+        self._require_calc(doc, "set_range")
+        sheet_obj = self._resolve_sheet(doc, sheet)
+        if range is not None:
+            target = sheet_obj.getCellRangeByName(range)
+        elif start_cell is not None:
+            start_addr = sheet_obj.getCellRangeByName(start_cell).RangeAddress
+            end_row = start_addr.StartRow + len(values) - 1
+            end_col = start_addr.StartColumn + max((len(r) for r in values), default=1) - 1
+            target = sheet_obj.getCellRangeByPosition(start_addr.StartColumn, start_addr.StartRow, end_col, end_row)
+        else:
+            raise ValueError("Either range or start_cell must be given.")
+        # Stringify every value so Calc's own formula-parser auto-detects
+        # numbers/text/formulas the same way typing into a cell would --
+        # live-verified setDataArray() does NOT do this (a string like
+        # "=1+1" is stored as literal text, not evaluated); setFormulaArray()
+        # is the one that does real input-style parsing.
+        string_rows = tuple(tuple("" if v is None else str(v) for v in row) for row in values)
+        target.setFormulaArray(string_rows)
+        return {"applied_rows": len(values)}
+
+    _CLEAR_FLAG_PRESETS = {
+        "contents": 1 | 2 | 4 | 16,      # VALUE|DATETIME|STRING|FORMULA
+        "formats": 32 | 64 | 256 | 512,  # HARDATTR|STYLES|EDITATTR|FORMATTED
+        "comments": 8,                   # ANNOTATION
+        "objects": 128,                  # OBJECTS
+        "all": 1023,
+    }
+
+    def clear_range(self, doc: Any, range: str, sheet: Optional[str] = None, what: str = "contents") -> None:
+        self._require_calc(doc, "clear_range")
+        flags = self._CLEAR_FLAG_PRESETS.get(what)
+        if flags is None:
+            raise ValueError(f"Unknown 'what' value '{what}'. Supported: {sorted(self._CLEAR_FLAG_PRESETS)}")
+        self._resolve_sheet(doc, sheet).getCellRangeByName(range).clearContents(flags)
+
+    def get_used_range(self, doc: Any, sheet: Optional[str] = None) -> Dict[str, Any]:
+        self._require_calc(doc, "get_used_range")
+        sheet_obj = self._resolve_sheet(doc, sheet)
+        start_cursor = sheet_obj.createCursor()
+        start_cursor.gotoStartOfUsedArea(False)
+        start_addr = start_cursor.RangeAddress
+        end_cursor = sheet_obj.createCursor()
+        end_cursor.gotoEndOfUsedArea(False)
+        end_addr = end_cursor.RangeAddress
+        return {
+            "start_column": start_addr.StartColumn, "start_row": start_addr.StartRow,
+            "end_column": end_addr.EndColumn, "end_row": end_addr.EndRow,
+        }
+
+    def insert_rows(self, doc: Any, index: int, sheet: Optional[str] = None, count: int = 1) -> None:
+        self._require_calc(doc, "insert_rows")
+        self._resolve_sheet(doc, sheet).getRows().insertByIndex(index, count)
+
+    def delete_rows(self, doc: Any, index: int, sheet: Optional[str] = None, count: int = 1) -> None:
+        self._require_calc(doc, "delete_rows")
+        self._resolve_sheet(doc, sheet).getRows().removeByIndex(index, count)
+
+    def insert_columns(self, doc: Any, index: int, sheet: Optional[str] = None, count: int = 1) -> None:
+        self._require_calc(doc, "insert_columns")
+        self._resolve_sheet(doc, sheet).getColumns().insertByIndex(index, count)
+
+    def delete_columns(self, doc: Any, index: int, sheet: Optional[str] = None, count: int = 1) -> None:
+        self._require_calc(doc, "delete_columns")
+        self._resolve_sheet(doc, sheet).getColumns().removeByIndex(index, count)
+
+    _CELL_SHIFT_INSERT = {"right": "RIGHT", "down": "DOWN"}
+    _CELL_SHIFT_DELETE = {"left": "LEFT", "up": "UP"}
+
+    def insert_cells(self, doc: Any, range: str, shift: str, sheet: Optional[str] = None) -> None:
+        self._require_calc(doc, "insert_cells")
+        mode_name = self._CELL_SHIFT_INSERT.get(shift.lower())
+        if mode_name is None:
+            raise ValueError(f"shift must be one of {sorted(self._CELL_SHIFT_INSERT)}, got '{shift}'")
+        sheet_obj = self._resolve_sheet(doc, sheet)
+        range_addr = sheet_obj.getCellRangeByName(range).RangeAddress
+        sheet_obj.insertCells(range_addr, uno.Enum("com.sun.star.sheet.CellInsertMode", mode_name))
+
+    def delete_cells(self, doc: Any, range: str, shift: str, sheet: Optional[str] = None) -> None:
+        self._require_calc(doc, "delete_cells")
+        mode_name = self._CELL_SHIFT_DELETE.get(shift.lower())
+        if mode_name is None:
+            raise ValueError(f"shift must be one of {sorted(self._CELL_SHIFT_DELETE)}, got '{shift}'")
+        sheet_obj = self._resolve_sheet(doc, sheet)
+        range_addr = sheet_obj.getCellRangeByName(range).RangeAddress
+        # Live-verified this container's real method name is removeRange(),
+        # not removeCells() -- it doesn't exist (AttributeError) -- the
+        # same class of "guessed name is wrong" mistake as
+        # delete_glue_point_live's fix in the drawing_objects.py pass.
+        sheet_obj.removeRange(range_addr, uno.Enum("com.sun.star.sheet.CellDeleteMode", mode_name))
+
+    @staticmethod
+    def _cell_address_from_range(range_obj: Any) -> Any:
+        addr = range_obj.RangeAddress
+        return uno.createUnoStruct("com.sun.star.table.CellAddress", addr.Sheet, addr.StartColumn, addr.StartRow)
+
+    def copy_range(self, doc: Any, source_range: str, dest_cell: str, source_sheet: Optional[str] = None,
+                    dest_sheet: Optional[str] = None, include: Optional[Dict[str, Any]] = None) -> None:
+        self._require_calc(doc, "copy_range")
+        src_sheet_obj = self._resolve_sheet(doc, source_sheet)
+        dst_sheet_obj = self._resolve_sheet(doc, dest_sheet) if dest_sheet is not None else src_sheet_obj
+        source_addr = src_sheet_obj.getCellRangeByName(source_range).RangeAddress
+        dest_addr = self._cell_address_from_range(dst_sheet_obj.getCellRangeByName(dest_cell))
+        dst_sheet_obj.copyRange(dest_addr, source_addr)
+
+    def move_range(self, doc: Any, source_range: str, dest_cell: str,
+                    source_sheet: Optional[str] = None, dest_sheet: Optional[str] = None) -> None:
+        self._require_calc(doc, "move_range")
+        src_sheet_obj = self._resolve_sheet(doc, source_sheet)
+        dst_sheet_obj = self._resolve_sheet(doc, dest_sheet) if dest_sheet is not None else src_sheet_obj
+        source_addr = src_sheet_obj.getCellRangeByName(source_range).RangeAddress
+        dest_addr = self._cell_address_from_range(dst_sheet_obj.getCellRangeByName(dest_cell))
+        dst_sheet_obj.moveRange(dest_addr, source_addr)
+
+    _FILL_DIRECTIONS = {"down": "TO_BOTTOM", "up": "TO_TOP", "right": "TO_RIGHT", "left": "TO_LEFT"}
+    _FILL_MODES = {"linear": "LINEAR", "growth": "GROWTH", "date": "DATE", "auto": "AUTO", "simple": "SIMPLE"}
+
+    def fill_series(self, doc: Any, range: str, direction: str, mode: str, sheet: Optional[str] = None,
+                     start: Optional[Any] = None, step: Optional[float] = None, end: Optional[Any] = None) -> None:
+        self._require_calc(doc, "fill_series")
+        direction_name = self._FILL_DIRECTIONS.get(direction.lower())
+        if direction_name is None:
+            raise ValueError(f"direction must be one of {sorted(self._FILL_DIRECTIONS)}, got '{direction}'")
+        mode_name = self._FILL_MODES.get(mode.lower())
+        if mode_name is None:
+            raise ValueError(f"mode must be one of {sorted(self._FILL_MODES)}, got '{mode}'")
+        sheet_obj = self._resolve_sheet(doc, sheet)
+        range_obj = sheet_obj.getCellRangeByName(range)
+        if start is not None:
+            # fillSeries needs a seed value already present in the range's
+            # first cell -- live-verified an empty first cell produces an
+            # entirely empty result, not a series starting from 0.
+            first_addr = range_obj.RangeAddress
+            first_cell = sheet_obj.getCellByPosition(first_addr.StartColumn, first_addr.StartRow)
+            if isinstance(start, (int, float)) and not isinstance(start, bool):
+                first_cell.setValue(float(start))
+            else:
+                first_cell.setString(str(start))
+        range_obj.fillSeries(
+            uno.Enum("com.sun.star.sheet.FillDirection", direction_name),
+            uno.Enum("com.sun.star.sheet.FillMode", mode_name),
+            uno.Enum("com.sun.star.sheet.FillDateMode", "FILL_DATE_DAY"),
+            float(step) if step is not None else 1.0,
+            float(end) if end is not None else 1e20,
+        )
+
+    def autofill(self, doc: Any, source_range: str, destination_range: str, sheet: Optional[str] = None) -> None:
+        self._require_calc(doc, "autofill")
+        sheet_obj = self._resolve_sheet(doc, sheet)
+        source_addr = sheet_obj.getCellRangeByName(source_range).RangeAddress
+        dest_addr = sheet_obj.getCellRangeByName(destination_range).RangeAddress
+        if dest_addr.StartColumn > source_addr.EndColumn:
+            direction = "TO_RIGHT"
+        elif dest_addr.EndColumn < source_addr.StartColumn:
+            direction = "TO_LEFT"
+        elif dest_addr.StartRow > source_addr.EndRow:
+            direction = "TO_BOTTOM"
+        else:
+            direction = "TO_TOP"
+        source_count = (source_addr.EndRow - source_addr.StartRow + 1) * (source_addr.EndColumn - source_addr.StartColumn + 1)
+        # fillAuto's own range argument must span source+destination
+        # together (live-verified against a simple down-fill case) --
+        # not just the destination.
+        full_range = sheet_obj.getCellRangeByPosition(
+            min(source_addr.StartColumn, dest_addr.StartColumn), min(source_addr.StartRow, dest_addr.StartRow),
+            max(source_addr.EndColumn, dest_addr.EndColumn), max(source_addr.EndRow, dest_addr.EndRow),
+        )
+        full_range.fillAuto(uno.Enum("com.sun.star.sheet.FillDirection", direction), source_count)
+
+    def _resolve_number_format_key(self, doc: Any, format_string: str) -> int:
+        formats = doc.getNumberFormats()
+        locale = uno.createUnoStruct("com.sun.star.lang.Locale")
+        key = formats.queryKey(format_string, locale, False)
+        if key == -1:
+            key = formats.addNew(format_string, locale)
+        return key
+
+    def set_range_format(self, doc: Any, range: str, properties: Dict[str, Any], sheet: Optional[str] = None) -> List[str]:
+        self._require_calc(doc, "set_range_format")
+        range_obj = self._resolve_sheet(doc, sheet).getCellRangeByName(range)
+        applied = []
+        for key, val in properties.items():
+            try:
+                if key == "NumberFormat" and isinstance(val, str):
+                    range_obj.setPropertyValue("NumberFormat", self._resolve_number_format_key(doc, val))
+                else:
+                    range_obj.setPropertyValue(key, val)
+                applied.append(key)
+            except Exception:
+                continue
+        return applied
+
+    _RANGE_FORMAT_PROPERTIES = (
+        "CellBackColor", "CharColor", "CharWeight", "CharPosture", "CharHeight",
+        "HoriJustify", "VertJustify", "IsTextWrapped", "NumberFormat", "IsCellProtected",
+    )
+
+    def get_range_format(self, doc: Any, range: str, sheet: Optional[str] = None) -> Dict[str, Any]:
+        self._require_calc(doc, "get_range_format")
+        range_obj = self._resolve_sheet(doc, sheet).getCellRangeByName(range)
+        result: Dict[str, Any] = {}
+        for prop_name in self._RANGE_FORMAT_PROPERTIES:
+            try:
+                value = self._uno_value_to_plain(range_obj.getPropertyValue(prop_name))
+                if self._is_json_safe(value):
+                    result[prop_name] = value
+            except Exception:
+                continue
+        return result
+
+    def merge_cells(self, doc: Any, range: str, sheet: Optional[str] = None, center: bool = False) -> None:
+        self._require_calc(doc, "merge_cells")
+        range_obj = self._resolve_sheet(doc, sheet).getCellRangeByName(range)
+        range_obj.merge(True)
+        if center:
+            range_obj.HoriJustify = uno.Enum("com.sun.star.table.CellHoriJustify", "CENTER")
+            range_obj.VertJustify = uno.Enum("com.sun.star.table.CellVertJustify", "CENTER")
+
+    def unmerge_cells(self, doc: Any, range: str, sheet: Optional[str] = None) -> None:
+        self._require_calc(doc, "unmerge_cells")
+        self._resolve_sheet(doc, sheet).getCellRangeByName(range).merge(False)
+
+    _LENGTH_UNIT_TO_MM100 = {"mm100": 1, "mm": 100, "cm": 1000, "in": 2540, "pt": 35.28}
+
+    def set_row_height(self, doc: Any, rows: List[int], sheet: Optional[str] = None,
+                        height: Optional[float] = None, unit: Optional[str] = None, optimal: bool = False) -> None:
+        self._require_calc(doc, "set_row_height")
+        row_container = self._resolve_sheet(doc, sheet).getRows()
+        factor = self._LENGTH_UNIT_TO_MM100.get((unit or "mm100").lower(), 1)
+        for idx in rows:
+            row_obj = row_container.getByIndex(idx)
+            if optimal:
+                row_obj.OptimalHeight = True
+            elif height is not None:
+                row_obj.Height = int(height * factor)
+
+    def set_column_width(self, doc: Any, columns: List[int], sheet: Optional[str] = None,
+                          width: Optional[float] = None, unit: Optional[str] = None, optimal: bool = False) -> None:
+        self._require_calc(doc, "set_column_width")
+        col_container = self._resolve_sheet(doc, sheet).getColumns()
+        factor = self._LENGTH_UNIT_TO_MM100.get((unit or "mm100").lower(), 1)
+        for idx in columns:
+            col_obj = col_container.getByIndex(idx)
+            if optimal:
+                col_obj.OptimalWidth = True
+            elif width is not None:
+                col_obj.Width = int(width * factor)
+
+    def hide_rows(self, doc: Any, rows: List[int], sheet: Optional[str] = None) -> None:
+        self._require_calc(doc, "hide_rows")
+        row_container = self._resolve_sheet(doc, sheet).getRows()
+        for idx in rows:
+            row_container.getByIndex(idx).IsVisible = False
+
+    def show_rows(self, doc: Any, rows: List[int], sheet: Optional[str] = None) -> None:
+        self._require_calc(doc, "show_rows")
+        row_container = self._resolve_sheet(doc, sheet).getRows()
+        for idx in rows:
+            row_container.getByIndex(idx).IsVisible = True
+
+    def hide_columns(self, doc: Any, columns: List[int], sheet: Optional[str] = None) -> None:
+        self._require_calc(doc, "hide_columns")
+        col_container = self._resolve_sheet(doc, sheet).getColumns()
+        for idx in columns:
+            col_container.getByIndex(idx).IsVisible = False
+
+    def show_columns(self, doc: Any, columns: List[int], sheet: Optional[str] = None) -> None:
+        self._require_calc(doc, "show_columns")
+        col_container = self._resolve_sheet(doc, sheet).getColumns()
+        for idx in columns:
+            col_container.getByIndex(idx).IsVisible = True
+
+    def freeze_panes(self, doc: Any, cell: str, sheet: Optional[str] = None) -> None:
+        """Live-verified this only takes effect with a real, visible
+        controller/window -- same caveat undo_view_selection.py's
+        Zoom-property work already documented for view-related state.
+        This server's documents are opened with Hidden=False in normal
+        operation, so this isn't a practical limitation, just a scope
+        note for headless-only testing setups."""
+        self._require_calc(doc, "freeze_panes")
+        sheet_obj = self._resolve_sheet(doc, sheet)
+        addr = sheet_obj.getCellRangeByName(cell).RangeAddress
+        controller = doc.getCurrentController()
+        controller.setActiveSheet(sheet_obj)
+        controller.freezeAtPosition(addr.StartColumn, addr.StartRow)
+
+    def unfreeze_panes(self, doc: Any, sheet: Optional[str] = None) -> None:
+        self._require_calc(doc, "unfreeze_panes")
+        controller = doc.getCurrentController()
+        if sheet is not None:
+            controller.setActiveSheet(self._resolve_sheet(doc, sheet))
+        controller.freezeAtPosition(0, 0)
+
+    def recalculate(self, doc: Any, hard: bool = False) -> None:
+        self._require_calc(doc, "recalculate")
+        if hard:
+            doc.calculateAll()
+        else:
+            doc.calculate()
+
+    def evaluate_formula(self, doc: Any, formula: str, sheet: Optional[str] = None) -> Dict[str, Any]:
+        """Evaluate in workbook context without permanently writing: use
+        the target sheet's own last cell (Calc's actual maximum extent,
+        AMJ1048576) as scratch space -- so relative references in
+        `formula` (e.g. "=A1+B2") resolve against the intended sheet, not
+        some other sheet or workbook, while being about as unlikely to
+        collide with real data as any single cell can be. Original
+        content is saved and restored in a finally block regardless."""
+        self._require_calc(doc, "evaluate_formula")
+        sheet_obj = self._resolve_sheet(doc, sheet)
+        scratch = sheet_obj.getCellByPosition(16383, 1048575)
+        original_formula = scratch.getFormula()
+        try:
+            scratch.setFormula(formula)
+            return {
+                "formula": formula, "value": scratch.getValue(),
+                "display": scratch.getString(), "error": scratch.getError(),
+            }
+        finally:
+            scratch.setFormula(original_formula)
+
+    def _range_address_to_a1(self, doc: Any, addr: Any) -> str:
+        sheet_name = doc.getSheets().getByIndex(addr.Sheet).Name
+        start = self._column_row_to_a1(addr.StartColumn, addr.StartRow)
+        end = self._column_row_to_a1(addr.EndColumn, addr.EndRow)
+        return f"{sheet_name}.{start}" if start == end else f"{sheet_name}.{start}:{end}"
+
+    def get_formula_dependencies(self, doc: Any, range: str, sheet: Optional[str] = None,
+                                  direction: str = "both") -> Dict[str, Any]:
+        self._require_calc(doc, "get_formula_dependencies")
+        range_obj = self._resolve_sheet(doc, sheet).getCellRangeByName(range)
+        result: Dict[str, Any] = {"range": range}
+        if direction in ("precedents", "both"):
+            precedents = range_obj.queryPrecedents(False)
+            result["precedents"] = [self._range_address_to_a1(doc, a) for a in precedents.RangeAddresses]
+        if direction in ("dependents", "both"):
+            dependents = range_obj.queryDependents(False)
+            result["dependents"] = [self._range_address_to_a1(doc, a) for a in dependents.RangeAddresses]
+        return result
+
+    def get_formula_errors(self, doc: Any, sheet: Optional[str] = None, range: Optional[str] = None) -> List[Dict[str, Any]]:
+        self._require_calc(doc, "get_formula_errors")
+        sheet_obj = self._resolve_sheet(doc, sheet)
+        if range is not None:
+            addr = sheet_obj.getCellRangeByName(range).RangeAddress
+        else:
+            # Live-verified gotoEndOfUsedArea(False) alone on a fresh
+            # cursor (starting at A1) collapses to a single cell -- the
+            # end cell -- rather than expanding to cover A1-to-end;
+            # gotoStartOfUsedArea() first, then gotoEndOfUsedArea(True)
+            # (True = extend the existing selection) on the same cursor
+            # is what actually spans the whole used area. Same fix
+            # get_used_range() already applied via two separate cursors;
+            # this method missed it originally.
+            cursor = sheet_obj.createCursor()
+            cursor.gotoStartOfUsedArea(False)
+            cursor.gotoEndOfUsedArea(True)
+            addr = cursor.RangeAddress
+        # NOTE: `range` is shadowed by this method's own parameter --
+        # builtins.range(...) here is deliberate, not a typo.
+        errors = []
+        for r in builtins.range(addr.StartRow, addr.EndRow + 1):
+            for c in builtins.range(addr.StartColumn, addr.EndColumn + 1):
+                cell = sheet_obj.getCellByPosition(c, r)
+                err = cell.getError()
+                if err != 0:
+                    errors.append({"cell": self._column_row_to_a1(c, r), "error_code": err, "display": cell.getString()})
+        return errors

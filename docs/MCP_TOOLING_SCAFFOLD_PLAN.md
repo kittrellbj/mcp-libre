@@ -21,7 +21,7 @@ up exactly where it left off.
 | Writer - tables, sections, notes, content controls, mail merge | 38 | 0 | 38 | **Scaffolded** (`tools/writer_tables.py`) |
 | Common drawing objects, images, shapes, embedded objects | 31 | 0 | 31 | **25/31 Implemented** (`tools/drawing_objects.py`) -- real logic, live-verified; combine/split/bind/unbind + insert/activate_embedded_object (all P3) still stub, dispatch-crash risk |
 | Charts and data visualizations | 20 | 0 | 20 | **Scaffolded** (`tools/charts.py`) |
-| Calc - sheets, cells, ranges, formulas, layout | 42 | 0 | 42 | **Scaffolded** (`tools/calc_sheets.py`) |
+| Calc - sheets, cells, ranges, formulas, layout | 42 | 0 | 42 | **42/42 Implemented** (`tools/calc_sheets.py`) -- real logic, live-verified |
 | Calc - data management, analysis, pivots, validation, external data | 42 | 0 | 42 | **Scaffolded** (`tools/calc_data.py`) |
 | Calc - page setup, print ranges, annotations, protection | 15 | 0 | 15 | **Scaffolded** (`tools/calc_page.py`) |
 | Impress - slides, masters, notes, transitions, animations, slideshow | 41 | 0 | 41 | **Scaffolded** (`tools/impress.py`) |
@@ -897,6 +897,122 @@ clamping, `XShapeGrouper`, `GluePoint2` construction, and
 something a fake can usefully assert). 239/239 passing under `pytest`
 across the full relevant suite (212 prior + 1 new contract test + 26
 new).
+
+## Real implementation pass: calc_sheets.py (all 42 tools)
+
+Second Phase C module, per Buddy's "Calc sheets can proceed in parallel
+since sheet/slide addressing needed no registry per your design doc."
+All 42 tools real -- unlike `drawing_objects.py`, no scope limits were
+needed: every UNO API this module depends on (cell/range addressing,
+`setFormulaArray`, `XCellSeries.fillSeries`/`fillAuto`,
+`XCellRangeMovement`, `NumberFormats`, `queryPrecedents`/
+`queryDependents`) turned out to be a clean, direct, non-dispatch call --
+no repeat of `drawing_objects.py`'s `.uno:Combine` crash risk.
+
+**Sheet addressing confirmed live, not just designed:** `sheet` resolves
+via `UNOBridge._resolve_sheet_by_name_or_index()` (already shared with
+`drawing_objects.py`'s container resolution) plus a new
+`_resolve_sheet()` wrapper for the "omitted -> active sheet" fallback.
+Cell/range addressing uses plain A1-notation strings directly via
+`getCellRangeByName()` -- confirmed live to accept both single cells and
+ranges, an object implementing both `XCell` and `XCellRange`
+simultaneously for a single-cell reference.
+
+**Three real bugs found and fixed by live-verifying:**
+
+1. `range` is shadowed by its own parameter name in `get_range_live`/
+   `get_formula_errors_live` -- a systematic AST-based sweep of the new
+   code (not live-testing) found both call sites where the loop code
+   called `range(start, stop)` intending the *builtin*, but Python
+   resolved the local parameter (a string or `None`) instead, which
+   would have raised `TypeError: 'str'/'NoneType' object is not
+   callable` the first time either code path actually ran. Fixed with
+   an explicit `import builtins` and `builtins.range(...)` at both call
+   sites, commented as deliberate. Caught by writing a small AST script
+   to search every new function for a parameter that shadows a Python
+   builtin *and* a call to that same name inside the function body --
+   cheaper and more complete than waiting to hit it during live testing
+   or unit tests (the fakes-based tests never exercised these specific
+   code paths with real multi-cell ranges either).
+2. `delete_cells_live` called `sheet.removeCells(...)` -- doesn't exist
+   (confirmed via `hasattr`); the real `XCellRangeMovement` method is
+   `removeRange()`. Same class of "guessed method name is wrong"
+   mistake as `drawing_objects.py`'s `delete_glue_point_live` fix, this
+   time caught by exploration (checking `hasattr` against a live UNO
+   object) before writing the implementation, not after.
+3. `get_formula_errors_live` (when `range` is omitted, "scan the whole
+   sheet") only scanned a single cell -- the sheet's last used cell --
+   instead of the whole used area. Root cause: `cursor.
+   gotoEndOfUsedArea(False)` on a fresh cursor (starting at A1)
+   collapses the cursor down to just the end cell rather than expanding
+   it from A1; `get_used_range_live` avoided this by using two separate
+   cursors (one for start, one for end) and reading each `RangeAddress`
+   independently, but `get_formula_errors_live` used a single cursor
+   with only the end call. Fixed to `gotoStartOfUsedArea(False)` then
+   `gotoEndOfUsedArea(True)` (`True` = extend the existing selection)
+   on the same cursor -- live-verified a `#DIV/0!` cell at column G was
+   invisible to the buggy version and correctly found after the fix.
+
+**Not a bug, but live-testing surfaced two UNO behaviors worth
+documenting rather than "fixing" into false simplicity:**
+
+- Copying a range whose source contains a formula (`copy_range_live`)
+  adjusts the formula's relative references by the same offset a normal
+  copy-paste in the Calc UI would -- copying `C1`'s formula `=A2+1`
+  eight columns over does not re-copy the *value* 43, it copies a
+  *retargeted formula* `=I2+1`, which evaluates against whatever (if
+  anything) is actually in `I2`. An initial live test that looked like
+  a "missing column" bug in `copy_range_live` turned out to be exactly
+  this, confirmed by isolating a clean plain-value-only copy (which
+  round-tripped perfectly) from the original mixed formula+merge test
+  case (where an unrelated `merge_cells_live` call on the destination
+  range had also cleared part of what was just copied there, a second,
+  separate expected side effect of merging over already-populated
+  cells).
+- `queryPrecedents()`'s reported bounding range can span (and include)
+  columns beyond the actual individual precedent cells -- for `C1`
+  `=A1+B1`, live-verified via direct UNO reflection (not just this
+  tool) that `queryPrecedents(False)` genuinely returns a single
+  `A1:C1` range (including `C1` itself, the formula cell), not two
+  separate `A1`/`B1` ranges. `get_formula_dependencies_live` reports
+  whatever UNO itself returns rather than trying to second-guess or
+  narrow it.
+
+**Live-verified end to end on a fresh headless LibreOffice 26.2
+instance, independently checking real document state after every call**
+(not trusting each tool's own success response, and re-verifying the
+three fixes above post-fix): sheet CRUD (insert/rename/move/copy/hide/
+show), cell get/set with both plain values and formulas (confirmed a
+formula genuinely computed, not just stored as text), `set_range_live`
+writing a mixed values-and-formula matrix and confirming via
+`get_range_live`'s three modes that the formula was genuinely evaluated
+(43.0) while a formula-looking string in a different cell mode stayed
+literal text where intended; `fill_series_live` (seeded start + step,
+confirmed the real linear sequence) and `autofill_live` (confirmed the
+real extended pattern) via raw UNO reads; `insert_cells_live` shift-down
+(confirmed the shifted value's new position); `copy_range_live`/
+`move_range_live` (confirmed via a clean isolated case after
+untangling the formula-reference-adjustment behavior above);
+`merge_cells_live` and `set_range_format_live`'s `NumberFormat` string
+handling (confirmed the real formatted display, `"1,234.50"`-style, via
+`queryKey`/`addNew`); `hide_rows_live`/`set_row_height_live` (confirmed
+real `IsVisible`/`Height` properties); `freeze_panes_live` (confirmed
+`hasFrozenPanes()` -- same visible-window caveat `drawing_objects.py`'s
+Zoom-property precedent already documented); `evaluate_formula_live`
+(confirmed the scratch-cell technique restores the target sheet's
+actual last cell to its original state afterward, and that
+`get_used_range_live` doesn't see it as used); `get_formula_errors_live`
+post-fix (confirmed a real `#DIV/0!` cell is found);
+`get_formula_dependencies_live` (confirmed against direct UNO
+reflection, not just the tool's own output). `tools_count: 175`
+(133 + 42) throughout.
+
+**Testing:** `tests/test_calc_sheets.py`, 33 new tests (a `FakeUnoBridge`
+modeling sheets as a list of plain dicts and cells as a per-sheet dict
+keyed by A1-notation string -- enough for tool-layer plumbing, not real
+Calc arithmetic; the three live-caught bugs above are exactly the class
+of defect this kind of fake structurally cannot catch). 272/272 passing
+under `pytest` across the full relevant suite (239 prior + 33 new).
 
 ## What was built
 
