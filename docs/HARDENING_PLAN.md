@@ -138,7 +138,72 @@ failure rather than guessed at from a static read.
 
 ## 2. Centralized UNO->JSON conversion (#32)
 
-Not started.
+**Status: substantially done for the shared converter; broader struct
+coverage stays open.**
+
+Structural finding, good news first: there was already exactly ONE
+shared converter, `_uno_value_to_plain()`, reused across all ~10 generic
+property-enumeration call sites in `uno_bridge.py` -- no scattered,
+duplicated ad hoc conversion logic. Centralization was closer to
+already-solved than expected, same pattern as #31.
+
+**Real bug found and fixed, live-verified:** `get_direct_formatting_
+live`'s generic property-enumeration loop was silently DROPPING any
+Locale-typed direct-formatting override (e.g. `CharLocale`, a real,
+commonly-set Writer character property) with no warning. Root cause:
+`_uno_value_to_plain()` only converted `uno.Enum` and `Width`/`Height`-
+shaped structs (e.g. `com.sun.star.awt.Size`); anything else -- including
+`com.sun.star.lang.Locale` -- passed through unconverted, then failed
+`_is_json_safe()` (not a plain type), and `get_direct_formatting()`
+silently excludes (never warns on) anything that fails that check.
+Live-verified precisely: set `CharLocale` to a genuinely different value
+than the document default (confirmed real `PropertyState.DIRECT_VALUE`
+via an independent raw-UNO read), called `get_direct_formatting_live` on
+that exact range -- `CharLocale` was completely absent from the result.
+Fixed by adding a `Language`+`Country` branch (-> `"xx-YY"`, matching
+`_parse_locale()`'s existing reverse-direction string convention) plus
+`X`+`Y`-shaped (`awt.Point`) and full `X`+`Y`+`Width`+`Height`-shaped
+(`awt.Rectangle`) branches for the same reason (not yet observed
+silently dropping something live, but the same structural gap). Rebuilt,
+redeployed, re-verified on a fresh headless instance -- `CharLocale`
+correctly shows `"ja-JP"` now.
+
+**Also found and merged, no bug but a real duplication:** a *second*,
+entirely separate narrow converter already existed --
+`uno_datetime.py`'s `uno_temporal_value_to_plain()` (Date/DateTime/
+Duration structs -> ISO-8601 strings), used from exactly ONE call site
+(`get_custom_properties()`) instead of being available to every other
+`_uno_value_to_plain()` call site. Merged: `_uno_value_to_plain()` now
+delegates to it first, so every one of its ~10 call sites gets Date/
+DateTime/Duration handling for free, not just the one that happened to
+import it directly. `get_custom_properties()` itself switched to call
+`self._uno_value_to_plain()` instead of the standalone function
+directly, for one real entry point. Re-verified live: a `DateTime`-typed
+custom property still correctly converts to an ISO string after the
+merge -- no regression.
+
+**Flagged, deferred (found investigating, not this item's scope):**
+`set_custom_property_live`'s bridge method (`set_custom_property()`)
+accepts a `property_type` parameter that is never actually used in the
+method body -- and a live call with `type="number"` on a plain integer
+value raised a bare, empty-message `UNO_EXCEPTION`. Not touched this
+pass; moved to the PyUNO robustness sweep (item 3) for a proper live
+investigation rather than a guess fixed under a different task's banner.
+
+**Still open, not yet audited:** whether every OTHER struct shape that
+can realistically appear in a generic property enumeration is now
+covered (e.g. `com.sun.star.awt.Color` -- believed to already be a plain
+`long`/int in most read paths, not independently confirmed; sequences of
+structs, e.g. a `TableSortField[]` read back through a generic property
+scan rather than a dedicated getter). `_uno_value_to_plain()` remains,
+by design, not a fully general UNO-struct converter -- anything
+unhandled still passes through to `str()` at the JSON-encoding boundary,
+same as before. `_uno_value_to_plain()` itself has no direct unit test
+coverage -- it lives inside `uno_bridge.py`, which cannot be imported
+outside a running LibreOffice process (confirmed in #31's own finding),
+so it's only exercised via live verification, not the fakes-based suite;
+`uno_datetime.py`'s own functions (which it now delegates to) already
+have 17 direct unit tests in `tests/test_uno_datetime.py`.
 
 ## 3. PyUNO robustness sweep (#33)
 

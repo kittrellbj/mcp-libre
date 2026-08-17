@@ -17,7 +17,7 @@ import os
 import re
 import traceback
 
-from uno_datetime import uno_datetime_to_iso
+from uno_datetime import uno_datetime_to_iso, uno_temporal_value_to_plain
 from tools.documents import WrongDocumentTypeError
 
 # Optional imports - these may not be available in all configurations
@@ -548,13 +548,14 @@ class UNOBridge:
         com.sun.star.util.{Date,DateTime,Duration} structs, not JSON-safe
         values -- str()'d (or json.dumps(default=str)'d) they produce an
         opaque struct repr instead of a readable value. Route every value
-        through the duck-typed converter; plain Text/Number/Yes-No values
-        pass through unchanged.
+        through the shared converter (_uno_value_to_plain(), which
+        includes this exact duck-typed Date/DateTime/Duration handling);
+        plain Text/Number/Yes-No values pass through unchanged.
         """
         container = doc.getDocumentProperties().getUserDefinedProperties()
         names = [p.Name for p in container.getPropertySetInfo().getProperties()]
         return {
-            name: uno_temporal_value_to_plain(container.getPropertyValue(name))
+            name: self._uno_value_to_plain(container.getPropertyValue(name))
             for name in names
         }
 
@@ -1270,18 +1271,44 @@ class UNOBridge:
     @staticmethod
     def _uno_value_to_plain(value: Any) -> Any:
         """Convert common non-JSON-safe UNO value types to a plain Python
-        value. Handles uno.Enum (-> its string name, e.g. "PORTRAIT") and
-        simple Width/Height structs like com.sun.star.awt.Size (-> a dict);
-        live-verified that PropertyValue sequences like XPrintable's
-        getPrinter() return both of these. Not a general UNO-struct
-        converter -- anything else passes through unchanged and falls back
-        to str() at the HTTP JSON-encoding boundary (ai_interface.py's
-        json.dumps(default=str)), same as before this existed.
+        value. Handles uno.Enum (-> its string name, e.g. "PORTRAIT"),
+        Date/DateTime/Duration structs (delegated to uno_datetime.py's
+        duck-typed dispatcher -> an ISO-8601 string), awt.Rectangle/Size/
+        Point-shaped structs (-> a dict), and lang.Locale (-> "xx-YY",
+        the same string shape _parse_locale()'s reverse direction already
+        parses). Live-verified that PropertyValue sequences like
+        XPrintable's getPrinter() return Enum/Size values, and that
+        get_direct_formatting_live's generic property-enumeration loop
+        was silently DROPPING any Locale-typed override (e.g. CharLocale)
+        before this -- confirmed live: setting CharLocale to a genuinely
+        different value than the document default registered as real
+        PropertyState.DIRECT_VALUE, but never appeared in the tool's own
+        output, because the un-converted Locale struct then failed
+        _is_json_safe() and get_direct_formatting() silently excludes
+        (not warns on) anything that fails that check. Was previously two
+        separate, narrower converters -- this one (Enum/Size only) and
+        uno_datetime.py's own uno_temporal_value_to_plain() (Date/
+        DateTime/Duration only, used from exactly one call site,
+        get_custom_properties) -- merged into one so every one of this
+        method's ~10 call sites benefits from both, not just whichever
+        one a given call site happened to already import. Still not a
+        fully general UNO-struct converter -- anything else passes
+        through unchanged and falls back to str() at the HTTP JSON-
+        encoding boundary (ai_interface.py's json.dumps(default=str)).
         """
         if isinstance(value, uno.Enum):
             return value.value
+        temporal = uno_temporal_value_to_plain(value)
+        if temporal is not value:
+            return temporal
+        if hasattr(value, "X") and hasattr(value, "Y") and hasattr(value, "Width") and hasattr(value, "Height"):
+            return {"x": value.X, "y": value.Y, "width": value.Width, "height": value.Height}
         if hasattr(value, "Width") and hasattr(value, "Height"):
             return {"width": value.Width, "height": value.Height}
+        if hasattr(value, "X") and hasattr(value, "Y"):
+            return {"x": value.X, "y": value.Y}
+        if hasattr(value, "Language") and hasattr(value, "Country"):
+            return f"{value.Language}-{value.Country}" if value.Country else value.Language
         return value
 
     @staticmethod
