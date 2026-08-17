@@ -325,7 +325,10 @@ def createInstance(ctx):
 ```xml
 <!-- description.xml -->
 <?xml version="1.0" encoding="UTF-8"?>
-<description xmlns="http://openoffice.org/extensions/description/2006">
+<description xmlns="http://openoffice.org/extensions/description/2006"
+             xmlns:xlink="http://www.w3.org/1999/xlink"
+             xmlns:dep="http://openoffice.org/extensions/description/2006"
+             xmlns:lo="http://libreoffice.org/extensions/description/2011">
     <identifier value="org.mcp.libreoffice.extension"/>
     <version value="1.0.0"/>
     <display-name>
@@ -335,7 +338,7 @@ def createInstance(ctx):
         <src lang="en" xlink:href="description-en.txt"/>
     </description>
     <dependencies>
-        <OpenOffice.org-minimal-version value="24.2"/>
+        <lo:LibreOffice-minimal-version value="24.2" dep:name="LibreOffice 24.2"/>
     </dependencies>
 </description>
 ```
