@@ -4503,3 +4503,259 @@ class UNOBridge:
                 if err != 0:
                     errors.append({"cell": self._column_row_to_a1(c, r), "error_code": err, "display": cell.getString()})
         return errors
+
+    # -- Draw: pages, masters, layers, vector operations (tools/draw.py's 16 tools) --
+    #
+    # Same raise-on-failure convention as calc_sheets.py/drawing_objects.py
+    # above. Page addressing (page: index or name) is the same live
+    # name-or-index resolution docs/OBJECT_HANDLE_DESIGN.md designed for
+    # Impress/Draw pages -- _resolve_page_by_name_or_index() (already
+    # shared with drawing_objects.py's container resolution) is reused
+    # directly.
+    #
+    # Dispatch-safety correction from the drawing_objects.py pass: that
+    # pass concluded .uno: dispatch commands were broadly unsafe after
+    # .uno:Combine crashed headless soffice. This pass re-investigated
+    # that conclusion before assuming it also blocked move_draw_page_live
+    # (no non-dispatch UNO API exists for arbitrary page reordering) --
+    # and found the crash was an artifact of the *external test script's*
+    # own pattern (connect over URP, dispatch, then call doc.close() on
+    # the same document), not a defect in dispatch commands themselves.
+    # Live-verified through the *actual running extension* (a real
+    # tools/_diagnostic module wired into the live server this pass,
+    # deleted after the investigation): .uno:MovePageFirst dispatched
+    # via the server's own in-process code, confirmed via curl the
+    # server stayed healthy afterward, confirmed via an independent raw
+    # UNO read that soffice.bin was still running and the page had
+    # genuinely moved, and confirmed via a second independent read
+    # (without calling close()) that the move was real and stable. So
+    # move_draw_page_live IS implemented for real here via
+    # .uno:MovePageUp/.uno:MovePageDown dispatch -- see
+    # docs/MCP_TOOLING_SCAFFOLD_PLAN.md's draw.py pass for the full
+    # writeup, including the follow-up this unblocks for
+    # drawing_objects.py's combine/split/bind/unbind.
+
+    def _require_draw(self, doc: Any, operation: str) -> None:
+        doc_type = self._get_document_type(doc)
+        if doc_type != "draw":
+            raise NotImplementedError(f"{operation} is only implemented for Draw documents, not '{doc_type}'.")
+
+    def _resolve_draw_page(self, doc: Any, page: Optional[Any] = None) -> Any:
+        self._require_draw(doc, "draw page resolution")
+        if page is None:
+            return doc.getCurrentController().getCurrentPage()
+        return self._resolve_page_by_name_or_index(doc.getDrawPages(), page)
+
+    @staticmethod
+    def _draw_page_index(pages: Any, page_obj: Any) -> Optional[int]:
+        for i in range(pages.getCount()):
+            if pages.getByIndex(i).Name == page_obj.Name:
+                return i
+        return None
+
+    def list_draw_pages(self, doc: Any) -> List[Dict[str, Any]]:
+        self._require_draw(doc, "list_draw_pages")
+        pages = doc.getDrawPages()
+        return [{"index": i, "name": pages.getByIndex(i).Name} for i in range(pages.getCount())]
+
+    def get_active_draw_page(self, doc: Any) -> Dict[str, Any]:
+        self._require_draw(doc, "get_active_draw_page")
+        page = doc.getCurrentController().getCurrentPage()
+        return {"index": self._draw_page_index(doc.getDrawPages(), page), "name": page.Name}
+
+    def insert_draw_page(self, doc: Any, position: Optional[int] = None, name: Optional[str] = None) -> Dict[str, Any]:
+        self._require_draw(doc, "insert_draw_page")
+        pages = doc.getDrawPages()
+        index = position if position is not None else pages.getCount()
+        new_page = pages.insertNewByIndex(index)
+        if name:
+            new_page.Name = name
+        return {"index": index, "name": new_page.Name}
+
+    def _move_draw_page_to_index(self, doc: Any, current_index: int, destination_index: int) -> None:
+        pages = doc.getDrawPages()
+        if not (0 <= destination_index < pages.getCount()):
+            raise IndexError(f"destination_index {destination_index} out of range (document has {pages.getCount()} page(s)).")
+        if current_index == destination_index:
+            return
+        controller = doc.getCurrentController()
+        controller.setCurrentPage(pages.getByIndex(current_index))
+        frame = controller.getFrame()
+        dispatch_helper = self.smgr.createInstanceWithContext("com.sun.star.frame.DispatchHelper", self.ctx)
+        command = ".uno:MovePageDown" if destination_index > current_index else ".uno:MovePageUp"
+        for _ in range(abs(destination_index - current_index)):
+            dispatch_helper.executeDispatch(frame, command, "", 0, ())
+
+    def duplicate_draw_page(self, doc: Any, page: Any, destination: Optional[int] = None) -> Dict[str, Any]:
+        """doc.duplicate() (XDrawPageDuplicator) copies the page and all
+        its shapes and inserts the copy immediately after the source --
+        there's no direct 'duplicate at index N' primitive, so an
+        explicit destination is applied afterward via the same
+        dispatch-based move insert_draw_page/move_draw_page use."""
+        self._require_draw(doc, "duplicate_draw_page")
+        source_page = self._resolve_draw_page(doc, page)
+        new_page = doc.duplicate(source_page)
+        pages = doc.getDrawPages()
+        current_index = self._draw_page_index(pages, new_page)
+        if destination is not None and destination != current_index:
+            self._move_draw_page_to_index(doc, current_index, destination)
+            current_index = destination
+        return {"index": current_index, "name": new_page.Name}
+
+    def delete_draw_page(self, doc: Any, page: Any) -> None:
+        self._require_draw(doc, "delete_draw_page")
+        pages = doc.getDrawPages()
+        pages.remove(self._resolve_draw_page(doc, page))
+
+    def move_draw_page(self, doc: Any, page: Any, destination_index: int) -> None:
+        self._require_draw(doc, "move_draw_page")
+        pages = doc.getDrawPages()
+        page_obj = self._resolve_draw_page(doc, page)
+        current_index = self._draw_page_index(pages, page_obj)
+        self._move_draw_page_to_index(doc, current_index, destination_index)
+
+    def rename_draw_page(self, doc: Any, page: Any, name: str) -> None:
+        self._require_draw(doc, "rename_draw_page")
+        self._resolve_draw_page(doc, page).Name = name
+
+    def set_draw_page_size(self, doc: Any, width: float, height: float, unit: str, page: Optional[Any] = None) -> None:
+        """No `orientation` parameter exists in this tool's spec schema
+        (only width/height/unit, despite the purpose text mentioning
+        orientation) -- matches spec exactly rather than inventing one;
+        landscape vs. portrait is expressed by which of width/height is
+        larger, the same convention the spec's own parameter list implies."""
+        self._require_draw(doc, "set_draw_page_size")
+        page_obj = self._resolve_draw_page(doc, page)
+        factor = self._LENGTH_UNIT_TO_MM100.get(unit.lower(), 1)
+        page_obj.Width = int(width * factor)
+        page_obj.Height = int(height * factor)
+
+    def set_draw_page_background(self, doc: Any, page: Any, properties: Dict[str, Any]) -> List[str]:
+        """Live-verified a Draw page's fill properties (FillColor,
+        FillStyle, etc.) are NOT direct properties of the page itself --
+        setting them there raises AttributeError. The real mechanism:
+        create a fresh com.sun.star.drawing.Background instance via
+        doc.createInstance() (a document-scoped service, not the global
+        ServiceManager -- that returns None), apply properties to that
+        object (it's a genuine FillProperties implementor), then assign
+        it to page.Background. The page's own PropertySetInfo only
+        exposes "Background" (an opaque object reference) and
+        "IsBackgroundDark" (read-only) -- not "IsBackgroundVisible" or
+        "FillColor" as this tool's own scaffolded parameter naming might
+        suggest."""
+        page_obj = self._resolve_draw_page(doc, page)
+        background = doc.createInstance("com.sun.star.drawing.Background")
+        applied = self._apply_direct_properties(background, properties)
+        page_obj.Background = background
+        return applied
+
+    def list_layers(self, doc: Any) -> List[Dict[str, Any]]:
+        self._require_draw(doc, "list_layers")
+        layer_manager = doc.getLayerManager()
+        result = []
+        for i in range(layer_manager.getCount()):
+            layer = layer_manager.getByIndex(i)
+            result.append({
+                "index": i, "name": layer.Name, "visible": bool(layer.IsVisible),
+                "locked": bool(layer.IsLocked), "printable": bool(layer.IsPrintable),
+            })
+        return result
+
+    def create_layer(self, doc: Any, name: str, visible: bool = True, locked: bool = False, printable: bool = True) -> Dict[str, Any]:
+        self._require_draw(doc, "create_layer")
+        layer_manager = doc.getLayerManager()
+        layer = layer_manager.insertNewByIndex(layer_manager.getCount())
+        layer.Name = name
+        layer.IsVisible = visible
+        layer.IsLocked = locked
+        layer.IsPrintable = printable
+        return {"name": layer.Name}
+
+    def update_layer(self, doc: Any, layer: str, properties: Dict[str, Any]) -> List[str]:
+        self._require_draw(doc, "update_layer")
+        layer_obj = doc.getLayerManager().getByName(layer)
+        applied = []
+        for key, value in properties.items():
+            try:
+                if key == "name":
+                    layer_obj.Name = value
+                else:
+                    layer_obj.setPropertyValue(key, value)
+                applied.append(key)
+            except Exception:
+                continue
+        return applied
+
+    def delete_layer(self, doc: Any, layer: str) -> None:
+        self._require_draw(doc, "delete_layer")
+        layer_manager = doc.getLayerManager()
+        layer_manager.remove(layer_manager.getByName(layer))
+
+    def assign_shape_layer(self, doc: Any, shape: Any, layer: str) -> None:
+        self._require_draw(doc, "assign_shape_layer")
+        layer_manager = doc.getLayerManager()
+        layer_manager.attachShapeToLayer(shape, layer_manager.getByName(layer))
+
+    _EXPORT_MEDIA_TYPES = {"png": "image/png", "jpeg": "image/jpeg", "jpg": "image/jpeg", "svg": "image/svg+xml"}
+
+    def export_draw_page(self, doc: Any, page: Any, file_path: str, format: str, options: Optional[Dict[str, Any]] = None) -> None:
+        page_obj = self._resolve_draw_page(doc, page)
+        media_type = self._EXPORT_MEDIA_TYPES.get(format.lower())
+        if media_type is None:
+            raise NotImplementedError(
+                f"export_draw_page format '{format}' is not implemented -- supported: "
+                f"{sorted(self._EXPORT_MEDIA_TYPES)}. PDF export needs the whole-document "
+                "storeToURL('impress_pdf_Export'/'draw_pdf_Export') path convert_document_file_live "
+                "already uses, not GraphicExportFilter, which is image/vector-graphics only."
+            )
+        export_filter = self.smgr.createInstanceWithContext("com.sun.star.drawing.GraphicExportFilter", self.ctx)
+        export_filter.setSourceDocument(page_obj)
+        props = [
+            PropertyValue("URL", 0, uno.systemPathToFileUrl(file_path), 0),
+            PropertyValue("MediaType", 0, media_type, 0),
+        ]
+        if options:
+            filter_data = uno.Any("[]com.sun.star.beans.PropertyValue", tuple(
+                PropertyValue(k, 0, v, 0) for k, v in options.items()
+            ))
+            props.append(PropertyValue("FilterData", 0, filter_data, 0))
+        export_filter.filter(tuple(props))
+
+    def export_selection(self, doc: Any, file_path: str, format: str = "png", dpi: Optional[int] = None) -> None:
+        """Live-verified GraphicExportFilter.setSourceDocument() accepts a
+        multi-shape ShapeCollection directly -- no need to group the
+        selection first (which would mutate the document as an unwanted
+        side effect of what's meant to be a read-only export)."""
+        self._require_draw(doc, "export_selection")
+        selection = doc.getCurrentController().getSelection()
+        if not hasattr(selection, "getCount") or selection.getCount() == 0:
+            raise ValueError("No shapes are currently selected.")
+        export_filter = self.smgr.createInstanceWithContext("com.sun.star.drawing.GraphicExportFilter", self.ctx)
+        export_filter.setSourceDocument(selection)
+        media_type = self._EXPORT_MEDIA_TYPES.get(format.lower())
+        if media_type is None:
+            raise NotImplementedError(f"export_selection format '{format}' is not implemented -- supported: {sorted(self._EXPORT_MEDIA_TYPES)}.")
+        props = [
+            PropertyValue("URL", 0, uno.systemPathToFileUrl(file_path), 0),
+            PropertyValue("MediaType", 0, media_type, 0),
+        ]
+        if dpi:
+            # Combined bounding box across every selected shape, same
+            # 1/100mm-to-pixel conversion export_shape() uses for a
+            # single shape.
+            lefts, tops, rights, bottoms = [], [], [], []
+            for i in range(selection.getCount()):
+                bounds = self._shape_bounds(selection.getByIndex(i))
+                lefts.append(bounds["left"]); tops.append(bounds["top"])
+                rights.append(bounds["right"]); bottoms.append(bounds["bottom"])
+            width_mm100 = max(rights) - min(lefts)
+            height_mm100 = max(bottoms) - min(tops)
+            pixel_width = round((width_mm100 / 100 / 25.4) * dpi)
+            pixel_height = round((height_mm100 / 100 / 25.4) * dpi)
+            filter_data = uno.Any("[]com.sun.star.beans.PropertyValue", (
+                PropertyValue("PixelWidth", 0, max(pixel_width, 1), 0),
+                PropertyValue("PixelHeight", 0, max(pixel_height, 1), 0),
+            ))
+            props.append(PropertyValue("FilterData", 0, filter_data, 0))
+        export_filter.filter(tuple(props))
+

@@ -41,7 +41,7 @@ mcp-libre/
 │   │       ├── calc_data.py        # Phase C, stub: named ranges, filters, pivots, validation, external data
 │   │       ├── calc_page.py        # Phase C, stub: page layout, print areas, comments, protection
 │   │       ├── impress.py          # Phase D, stub: slides, masters, notes, transitions, animations, slideshow
-│   │       └── draw.py             # Phase D, stub: Draw pages, layers, vector operations
+│   │       └── draw.py             # Phase D, 16/16 IMPLEMENTED: Draw pages, layers, vector operations
 │   ├── Addons.xcu                  # LibreOffice menu configuration
 │   ├── ProtocolHandler.xcu         # Protocol handler configuration
 │   ├── description.xml             # Extension description
@@ -67,6 +67,7 @@ mcp-libre/
 │   ├── test_writer_text.py         # writer_text.py's 18 implemented tools, tested against fakes
 │   ├── test_drawing_objects.py     # drawing_objects.py's 25 implemented tools, tested against fakes
 │   ├── test_calc_sheets.py         # calc_sheets.py's 42 implemented tools, tested against fakes
+│   ├── test_draw.py                # draw.py's 16 implemented tools, tested against fakes
 │   ├── test_uno_datetime.py        # DateTime-to-ISO conversion unit tests (no live LibreOffice needed)
 │   ├── test_host_trust.py          # Host/Origin trust check unit tests (no live LibreOffice needed)
 │   └── test_mcp_jsonrpc.py         # Real MCP JSON-RPC 2.0 dispatch unit tests (no live LibreOffice needed)

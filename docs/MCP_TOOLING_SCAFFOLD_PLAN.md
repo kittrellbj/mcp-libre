@@ -25,7 +25,7 @@ up exactly where it left off.
 | Calc - data management, analysis, pivots, validation, external data | 42 | 0 | 42 | **Scaffolded** (`tools/calc_data.py`) |
 | Calc - page setup, print ranges, annotations, protection | 15 | 0 | 15 | **Scaffolded** (`tools/calc_page.py`) |
 | Impress - slides, masters, notes, transitions, animations, slideshow | 41 | 0 | 41 | **Scaffolded** (`tools/impress.py`) |
-| Draw - pages, masters, layers, vector operations | 16 | 0 | 16 | **Scaffolded** (`tools/draw.py`) |
+| Draw - pages, masters, layers, vector operations | 16 | 0 | 16 | **16/16 Implemented** (`tools/draw.py`) -- real logic, live-verified |
 | Base and database access | 34 | 0 | 0 | Not started |
 | Forms and controls | 16 | 0 | 0 | Not started |
 | Math formula documents and embedded formulas | 7 | 0 | 0 | Not started |
@@ -1013,6 +1013,129 @@ keyed by A1-notation string -- enough for tool-layer plumbing, not real
 Calc arithmetic; the three live-caught bugs above are exactly the class
 of defect this kind of fake structurally cannot catch). 272/272 passing
 under `pytest` across the full relevant suite (239 prior + 33 new).
+
+## Real implementation pass: draw.py (all 16 tools) -- and a dispatch-safety correction
+
+First of `charts.py`/`impress.py`/`draw.py`, per Buddy's go-ahead
+("they're the modules that sit on top of the drawing_objects.py/
+ObjectRegistry primitive you just built"). All 16 tools real. Page
+addressing (`page`: index or name) reuses `_resolve_page_by_name_or_index()`
+(already shared with `drawing_objects.py`'s container resolution);
+`shape_id` (`assign_shape_layer_live`) resolves through the same
+`ObjectRegistry`.
+
+**Important correction to the `drawing_objects.py` pass's conclusion,**
+found while investigating `move_draw_page_live` (no non-dispatch UNO API
+exists for arbitrary page reordering, so this tool genuinely needed to
+resolve the dispatch-safety question, not route around it): that pass
+concluded `.uno:` dispatch commands were broadly unsafe after
+`.uno:Combine` crashed headless soffice with a `DisposedException` on
+the very next UNO call. Re-investigating before assuming that also
+blocked `move_draw_page_live`, this pass found the crash was an artifact
+of the *external test script's own pattern* -- connecting over a URP
+socket, dispatching, then calling `doc.close()` on the same document --
+not a defect in dispatch commands themselves. Live-verified precisely:
+
+- A harmless `.uno:SelectAll` dispatch, from the same kind of external
+  script, crashed headless soffice on the very next `doc.close()` call
+  too -- proving the trigger isn't specific to `.uno:Combine`'s
+  shape-structural nature.
+- Intermediate read-only UNO calls (page count, `getURL()`) after a
+  dispatch, and even a 1-second sleep, did NOT crash -- only `close()`
+  specifically did, and only on the *same* document a dispatch had just
+  run against.
+- Most importantly: a real diagnostic tool was wired into the actual
+  running extension this pass (`tools/_diagnostic_dispatch_test.py`,
+  deleted after the investigation, never committed) and called via
+  `curl` through the live REST bridge -- i.e. the dispatch ran from the
+  extension's own in-process code, the real production code path, not
+  an external URP connection. `.uno:MovePageFirst` executed
+  successfully, the server stayed healthy for a follow-up `curl
+  /health` call, `soffice.bin` was still running, and an independent
+  raw-UNO read (itself never calling `close()`) confirmed the page had
+  genuinely moved and stayed moved.
+
+**Conclusion: dispatch commands ARE safe to use for real from within the
+extension's own tool implementations** -- the actual usage pattern never
+calls `document.close()` immediately after a dispatch on the same
+document within one tool call, so the specific trigger this pass
+isolated never fires in production. `move_draw_page_live` and
+`duplicate_draw_page_live`'s `destination` parameter are therefore
+implemented for real via `.uno:MovePageUp`/`.uno:MovePageDown` dispatch
+(no native "move to arbitrary index" UNO API exists; iterating the
+up/down dispatch the right number of times is the working substitute).
+This also means `drawing_objects.py`'s `combine_shapes_live`/
+`split_shape_live`/`bind_shapes_live`/`unbind_shape_live` scope limits
+from the prior pass were more conservative than necessary -- see the
+follow-up fix immediately after this section.
+
+**One real bug found and fixed by live-verifying:**
+`set_draw_page_background_live` initially tried
+`page.setPropertyValue(key, value)` directly on the page object for
+properties like `FillColor`/`FillStyle`/`IsBackgroundVisible` -- all
+three raised `AttributeError`, silently swallowed by the tool's own
+best-effort skip-unsettable-properties contract, so the tool reported
+success with an empty `applied` list and a warning, not an outright
+error. A Draw page's fill properties are not direct page properties at
+all: the real mechanism is `doc.createInstance("com.sun.star.drawing.
+Background")` (document-scoped -- the same call via the global
+`ServiceManager` returns `None`), apply properties to *that* object
+(a genuine `FillProperties` implementor), then assign it to
+`page.Background`. `page`'s own `PropertySetInfo` only exposes
+`Background` (an opaque object reference, `None` until assigned) and
+the read-only `IsBackgroundDark` -- not `FillColor`/`FillStyle`/
+`IsBackgroundVisible` as the tool's own scaffolded parameter naming
+might suggest. Fixed, rebuilt, and re-verified live: `FillColor`/
+`FillStyle` genuinely landed on `page.Background`, confirmed via an
+independent raw UNO read.
+
+**Live-verified end to end on a fresh headless LibreOffice 26.2
+instance, independently checking real document state after every call**
+(not trusting each tool's own success response, and re-verifying the
+background fix post-fix): page CRUD (list/insert/rename/delete),
+`move_draw_page_live`'s dispatch-based reorder (confirmed via an
+independent raw UNO read the page order genuinely changed, and that the
+server stayed healthy and `soffice.bin` stayed alive throughout);
+`duplicate_draw_page_live` with an explicit `destination` (confirmed the
+duplicate landed at the requested index, not just after the source);
+`set_draw_page_size_live`; `set_draw_page_background_live` post-fix;
+layer CRUD (`list_layers_live` showing the 5 real built-in layers --
+layout/background/backgroundobjects/controls/measurelines --
+`create_layer_live`/`update_layer_live`/`delete_layer_live`);
+`assign_shape_layer_live` (confirmed via `LayerManager.getLayerForShape()`
+that the shape's real layer assignment changed, not just its `LayerID`
+property); `export_draw_page_live` (confirmed a real PNG file, correctly
+rejects `format="pdf"` with a documented `UNSUPPORTED_CAPABILITY`
+explaining the real fix -- whole-document `storeToURL` export, not
+`GraphicExportFilter`); `export_selection_live` (confirmed
+`GraphicExportFilter.setSourceDocument()` accepts a multi-shape
+`ShapeCollection` directly -- no need to group the selection first,
+which would have mutated the document as an unwanted side effect of a
+supposedly read-only export -- confirmed a real exported file with a
+real selection). `tools_count: 191` (175 + 16) throughout.
+
+**Testing:** `tests/test_draw.py`, 17 new tests (a `FakeUnoBridge`
+modeling pages/layers as plain dicts, reusing `test_drawing_objects.py`'s
+`FakeShape`/`ObjectRegistry` pattern for `assign_shape_layer_live` --
+real `XDrawPages`/`XLayerManager` mechanics and the dispatch-based move
+are live-verified instead, not something a fake can usefully assert).
+289/289 passing under `pytest` across the full relevant suite (272 prior
++ 17 new).
+
+## Follow-up fix: drawing_objects.py's combine/split/bind/unbind, re-enabled
+
+Direct consequence of the dispatch-safety correction above. Re-tested
+`combine_shapes_live`/`split_shape_live`/`bind_shapes_live`/
+`unbind_shape_live` (all P3) through the same real-server-diagnostic
+methodology (not an external script that also calls `close()`) and
+confirmed `.uno:Combine`/`.uno:Split`/`.uno:Bind`/`.uno:Unbind` are safe
+from the extension's own in-process code. Implemented for real; see the
+dedicated commit for detail (kept separate from `draw.py`'s own commit
+for reviewability -- one topic per commit). `insert_embedded_object_live`/
+`activate_embedded_object_live` remain `status="stub"` -- that scope
+limit was never about dispatch safety (embedded-object creation is
+broad/uncertain in scope; OLE activation wasn't exploration-tested this
+pass either), so it's unaffected by this correction.
 
 ## What was built
 

@@ -273,7 +273,7 @@ def test_every_tool_has_a_valid_status():
 
 # Modules whose tools have real logic now, not NOT_IMPLEMENTED stub bodies.
 # Update this set (and nothing else) as more modules get *fully* implemented.
-IMPLEMENTED_MODULES = ("core_runtime", "document_lifecycle", "styles", "writer_text", "calc_sheets")
+IMPLEMENTED_MODULES = ("core_runtime", "document_lifecycle", "styles", "writer_text", "calc_sheets", "draw")
 
 # undo_view_selection.py is a mixed module: 12 of its 14 tools (undo +
 # view/selection/locking) are real; the remaining 2 (document event
