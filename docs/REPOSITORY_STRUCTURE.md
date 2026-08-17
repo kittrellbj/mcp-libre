@@ -25,7 +25,10 @@ mcp-libre/
 │   │       ├── core_runtime.py     # Phase A: discovery/capability/profile tools
 │   │       ├── document_lifecycle.py # Phase A: open/save/convert/properties tools
 │   │       ├── undo_view_selection.py # Phase A: undo/redo/view/selection tools
-│   │       └── styles.py           # Phase A: style family/apply/formatting tools
+│   │       ├── styles.py           # Phase A: style family/apply/formatting tools
+│   │       ├── writer_text.py      # Phase B: paragraph/character editing, regex find/replace, comments
+│   │       ├── writer_layout.py    # Phase B: page layout, headers/footers, fields, bookmarks, indexes
+│   │       └── writer_tables.py    # Phase B: tables, sections, footnotes/endnotes, content controls, mail merge
 │   ├── Addons.xcu                  # LibreOffice menu configuration
 │   ├── ProtocolHandler.xcu         # Protocol handler configuration
 │   ├── description.xml             # Extension description
@@ -39,7 +42,8 @@ mcp-libre/
 │   ├── __init__.py                 # Test package initialization
 │   ├── test_client.py              # Interactive MCP client test
 │   ├── test_insert_fix.py          # Specific function tests
-│   └── test_phase_a_stubs.py       # Tool scaffold contract tests (no live LibreOffice needed)
+│   ├── test_tool_scaffold_contract.py # Tool scaffold contract tests (no live LibreOffice needed)
+│   └── test_document_registry.py   # DocumentRegistry unit tests (no live LibreOffice needed)
 ├── 📁 examples/                    # Demo and example scripts
 │   ├── __init__.py                 # Examples package initialization
 │   ├── demo_editing.py             # Document editing demonstrations

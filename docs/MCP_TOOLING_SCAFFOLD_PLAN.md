@@ -4,9 +4,9 @@ Tracks scaffolding progress against `LibreOffice_MCP_Complete_Tooling_Specificat
 (the design doc, kept one level up in `E:\Tools\` on the machine this fork
 lives on -- not copied into this repo). That spec targets **484 tool
 definitions**: 32 existing/baseline (P0), 218 core (P1), 193 extended (P2),
-41 advanced (P3), across 18 catalog sections plus a security/advanced-UNO
-section. This document is maintained by the scaffolding pass so a later
-session (or a senior engineer) can pick up exactly where it left off.
+41 advanced (P3), across 19 catalog sections. This document is maintained
+by the scaffolding pass so a later session (or a senior engineer) can pick
+up exactly where it left off.
 
 ## Status
 
@@ -16,9 +16,9 @@ session (or a senior engineer) can pick up exactly where it left off.
 | Document and session lifecycle | 27 | 5 | 22 | **Scaffolded** (`tools/document_lifecycle.py`) |
 | Undo, view, selection, events, orchestration | 14 | 0 | 14 | **Scaffolded** (`tools/undo_view_selection.py`) |
 | Styles and formatting infrastructure | 12 | 0 | 12 | **Scaffolded** (`tools/styles.py`) |
-| Writer - text, navigation, editing, search, review | 45 | 27 | 0 | Not started |
-| Writer - page layout, publishing, styles, headers, fields, indexes | 43 | 0 | 0 | Not started |
-| Writer - tables, sections, notes, content controls, mail merge | 38 | 0 | 0 | Not started |
+| Writer - text, navigation, editing, search, review | 45 | 27 | 18 | **Scaffolded** (`tools/writer_text.py`) |
+| Writer - page layout, publishing, styles, headers, fields, indexes | 43 | 0 | 43 | **Scaffolded** (`tools/writer_layout.py`) |
+| Writer - tables, sections, notes, content controls, mail merge | 38 | 0 | 38 | **Scaffolded** (`tools/writer_tables.py`) |
 | Common drawing objects, images, shapes, embedded objects | 31 | 0 | 0 | Not started |
 | Charts and data visualizations | 20 | 0 | 0 | Not started |
 | Calc - sheets, cells, ranges, formulas, layout | 42 | 0 | 0 | Not started |
@@ -31,92 +31,105 @@ session (or a senior engineer) can pick up exactly where it left off.
 | Math formula documents and embedded formulas | 7 | 0 | 0 | Not started |
 | Linguistic services, accessibility, publishing QA | 15 | 0 | 0 | Not started |
 | Security, scripts, events, advanced UNO escape hatch | 14 | 0 | 0 | Not started |
-| **Total** | **484** | **32** | **60** | **60 / 452 net-new tools scaffolded** |
+| **Total** | **484** | **32** | **159** | **159 / 452 net-new tools scaffolded** |
 
 "Scaffolded" means: registered under the exact spec tool name with the
 correct priority and a JSON Schema `parameters` block built from the
 spec's Key Parameters column, with a docstring/purpose copied from the
 spec's Purpose column, and a handler body that returns the standard
 `NOT_IMPLEMENTED` error envelope. **No UNO logic has been written for any
-of these 60 tools** -- that is deliberately left for a senior engineer, per
-the phased plan below.
+of these 159 tools** -- that is deliberately left for a senior engineer.
 
-This first pass covers exactly Implementation Phase A from the spec's own
-section 10 ("Runtime hardening and common document API: discovery, handles,
-lifecycle, metadata, undo, batch execution, styles, export/print") --
-picked because every later phase's tools describe operations *on* a
-document, and Phase A is where the document-handle and response-envelope
-plumbing those operations depend on gets defined.
+This covers Implementation Phases A and B from the spec's own section 10:
+
+- **Phase A** ("Runtime hardening and common document API": discovery,
+  handles, lifecycle, metadata, undo, batch execution, styles,
+  export/print) -- picked first because every later phase's tools describe
+  operations *on* a document, and Phase A is where the document-handle and
+  response-envelope plumbing those operations depend on gets defined.
+- **Phase B** ("Writer complete": page layout/publishing, tables,
+  sections, fields, indexes, footnotes/endnotes, content controls,
+  graphics -- graphics itself is the separate "Common drawing objects"
+  section and is *not* included here, since it's shared with
+  Calc/Impress/Draw rather than Writer-specific).
 
 ## What was built
 
-- `plugin/pythonpath/tools/registry.py` -- `@register_tool(name, priority,
-  purpose, parameters)` decorator + `merge_into()`. Mirrors the
-  `{description, parameters, handler}` dict shape
-  `mcp_server.py`'s `_register_tools()` already uses for the original 32
-  tools, so a senior engineer can move a finished stub's registration
-  in-place if they'd rather not depend on this package at all.
-- `plugin/pythonpath/tools/envelope.py` -- `build_success()` / `build_error()`
-  implementing the spec's section 5 contract (`{success, result, warnings,
-  error, document_id, elapsed_ms}`) and the spec's 13 stable error codes,
-  plus a scaffold-only `NOT_IMPLEMENTED` code for stub responses.
-- `plugin/pythonpath/tools/documents.py` -- `DocumentRegistry`, a stub for
-  the stable `document_id` handle concept the spec requires (section 2) and
-  that **does not exist anywhere in the codebase today** (`uno_bridge.py`
-  only ever resolves "the active document"). Every method raises
-  `NotImplementedError`; the docstrings describe the intended design
-  (uuid4-keyed map, dispose-listener eviction) for whoever implements it.
-  This is the single biggest real gap blocking Phase A from becoming real.
-- Four Phase A tool modules (`core_runtime.py`, `document_lifecycle.py`,
-  `undo_view_selection.py`, `styles.py`), 60 stub functions total.
-- `tests/test_phase_a_stubs.py` -- contract tests that don't need a live
-  LibreOffice or the `uno` module: registry completeness/no-collision,
-  every stub's response shape, `merge_into()` non-destructiveness, and the
-  error-code set. Run with `python tests/test_phase_a_stubs.py` or
-  `uv run pytest tests/test_phase_a_stubs.py`. Verified passing locally
-  (6/6) against this commit.
-- One opt-in integration hook in `mcp_server.py`
-  (`_register_phase_a_stub_tools`, gated by env var
-  `MCP_LIBRE_ENABLE_PHASE_A_STUBS`): additive-only via `merge_into()`, so
-  the original 32 tools' behavior is unchanged when the flag is unset
-  (the default). This exists so a senior engineer can flip it on locally
-  and see the new tools show up in `/tools` while implementing them, without
-  the scaffold silently expanding the tool surface exposed to any current
-  users of the extension.
+**Shared plumbing (`plugin/pythonpath/tools/`):**
 
-## Update (same day, after Brian's "proceed")
+- `registry.py` -- `@register_tool(name, priority, purpose, parameters)`
+  decorator + `merge_into()`. Mirrors the `{description, parameters,
+  handler}` dict shape `mcp_server.py`'s `_register_tools()` already uses
+  for the original 32 tools, so a senior engineer can move a finished
+  stub's registration in-place if they'd rather not depend on this package
+  at all.
+- `envelope.py` -- `build_success()` / `build_error()` implementing the
+  spec's section 5 contract (`{success, result, warnings, error,
+  document_id, elapsed_ms}`) and the spec's 13 stable error codes, plus a
+  scaffold-only `NOT_IMPLEMENTED` code for stub responses.
+- `documents.py` -- `DocumentRegistry`, a **real, working implementation**
+  (not a stub) of the stable `document_id` handle concept the spec
+  requires (section 2) and that did not exist anywhere in the codebase
+  before this pass (`uno_bridge.py` only ever resolves "the active
+  document"). Thread-safe in-memory register/resolve/unregister/list,
+  uuid4 ids, idempotent re-registration of an already-known object.
+  Unit-tested with fake document/uno_bridge objects (no live LibreOffice
+  needed, since the registry never calls into UNO itself) in
+  `tests/test_document_registry.py`, 9/9 passing.
+  **Still open, left for a senior engineer** because it needs a live
+  LibreOffice/UNO context to build and validate safely: dispose-listener
+  eviction, so a document closed by the user outside of any MCP call gets
+  cleanly evicted instead of surfacing as a wrapped UNO exception on next
+  resolve. `register_document()` takes an unused `on_dispose` hook
+  reserved for this -- see the module docstring for the full list,
+  including the note that this only covers the top-level `document_id`,
+  not the finer-grained handles (`shape_id`, `table_id`, etc.) later
+  phases will also need.
+  **Not yet wired into any tool stub's body** -- every stub below still
+  returns `NOT_IMPLEMENTED` regardless of arguments; wiring the registry
+  into a handler is real tool-by-tool implementation work, not scaffolding.
 
-`tools/documents.py`'s `DocumentRegistry` is now a real implementation, not
-a stub: thread-safe register/resolve/unregister/list backed by a plain
-in-memory dict, uuid4 ids, idempotent re-registration of the same live
-object. Unit-tested with fake document/uno_bridge objects in
-`tests/test_document_registry.py` (9/9 passing, no live LibreOffice
-needed -- the registry never touches UNO itself, it only stores whatever
-object it's handed).
+**Tool modules, 159 stub functions across 7 files:**
 
-**Still open, deliberately left for a senior engineer** (needs a live
-LibreOffice/UNO context to build and validate safely): dispose-listener
-eviction, so a document closed by the user outside of any MCP call gets
-cleanly evicted instead of surfacing as a wrapped UNO exception on next
-resolve. `register_document()` takes an unused `on_dispose` hook reserved
-for this. See the module docstring for the full list.
+- Phase A: `core_runtime.py` (12), `document_lifecycle.py` (22 new, on top
+  of 5 pre-existing), `undo_view_selection.py` (14), `styles.py` (12).
+- Phase B: `writer_text.py` (18 new, on top of 27 pre-existing),
+  `writer_layout.py` (43), `writer_tables.py` (38).
 
-The registry is **not yet wired into any tool stub's body** -- the 60
-Phase A stubs still all return `NOT_IMPLEMENTED` regardless of arguments.
-Wiring it into `core_runtime.py`/`document_lifecycle.py` handlers is real
-tool-by-tool implementation work, not scaffolding, so it's left with
-`DocumentRegistry` itself for whoever picks up Phase A for real.
+**Tests:**
+
+- `tests/test_tool_scaffold_contract.py` -- registry completeness checked
+  **by exact name per module**, not just by count (a tool landing under
+  the wrong name, or in the wrong module, fails loudly even if the total
+  count still matches); no collisions with the 32 existing compat tools;
+  every stub's response shape; `merge_into()` non-destructiveness; the
+  error-code set. Run with `python tests/test_tool_scaffold_contract.py`
+  or `uv run pytest tests/test_tool_scaffold_contract.py`. 7/7 passing
+  locally, 159 tools registered.
+- `tests/test_document_registry.py` -- 9 unit tests for `DocumentRegistry`
+  against fakes, 9/9 passing.
+
+**Integration:** one opt-in hook in `mcp_server.py`
+(`_register_scaffold_stub_tools`, merges in all 159 tools via
+`tools.merge_into()`, gated by env var
+`MCP_LIBRE_ENABLE_SCAFFOLD_STUBS`): additive-only, so the original 32
+tools' behavior is unchanged when the flag is unset (the default). This
+exists so a senior engineer can flip it on locally and see the new tools
+show up in `/tools` while implementing them, without the scaffold
+silently expanding the tool surface exposed to any current users of the
+extension.
 
 ## What is intentionally NOT done
 
-- **No UNO implementation in the 60 Phase A tool stubs.** They all still
+- **No UNO implementation in any of the 159 tool stubs.** They all
   return `NOT_IMPLEMENTED`. Implementing them needs a working
   `uno`/`unohelper` environment inside LibreOffice, which this scaffolding
   pass didn't have reason to touch.
+- **`DocumentRegistry`'s dispose-listener eviction** -- see above.
 - **Not wired into the live server by default** -- see the env var gate
   above.
-- **Phases B-F (writer, calc, drawing/charts, impress/draw, base/forms/math,
-  quality/expert surface) are untouched.** ~392 more tools remain, per the
+- **Phases C-F (Calc, Impress/Draw + shared drawing/charts, Base/forms/Math,
+  quality/expert surface) are untouched.** 293 more tools remain, per the
   table above.
 
 ## Open architecture question for Morgan
@@ -131,13 +144,14 @@ existing 32-tool implementation. Two ways to continue from here:
    per spec section, as done here), and eventually have `uno_bridge.py`
    grow a matching per-domain split only when someone touches it anyway.
 2. **Fold everything into the existing two files**, matching current
-   convention exactly, and drop the `tools/` package once Phase A stops
+   convention exactly, and drop the `tools/` package once a phase stops
    being purely stubs.
 
 Given the spec targets 484 tools and `uno_bridge.py` is already the
 second-largest file in the repo, (1) seems safer for review size and merge
 conflicts, but this is a real architectural call, not an obvious one --
 flagging for @Morgan (Architect) rather than deciding it unilaterally here.
+Not a blocker: `tools/` stays additive and reversible either way.
 
 ## Repo housekeeping noticed in passing (not touched by this scaffold)
 
@@ -150,15 +164,15 @@ flagging for @Morgan (Architect) rather than deciding it unilaterally here.
 
 ## Suggested next steps
 
-1. ~~Implement `DocumentRegistry` for real~~ -- done, see update above.
-   Dispose-listener eviction remains open.
-2. Implement the 12 core-runtime stubs against it -- `get_server_info_live`,
-   `list_tools_live`, `get_session_state_live`, etc. are the tools every
-   other tool's tests will use to introspect what's available.
-3. Wire `mcp_server.py`'s HTTP layer (`ai_interface.py`) to surface
+1. Implement the 12 core-runtime stubs against `DocumentRegistry` --
+   `get_server_info_live`, `list_tools_live`, `get_session_state_live`,
+   etc. are the tools every other tool's tests will use to introspect
+   what's available.
+2. Wire `mcp_server.py`'s HTTP layer (`ai_interface.py`) to surface
    `NOT_IMPLEMENTED` responses distinctly (e.g. HTTP 501) so a client can
-   tell "not implemented yet" apart from a real runtime error while Phase A
-   is partially built out.
-4. Continue scaffolding Phase B (Writer-complete, 126 tool rows across the
-   three Writer sections) using the same `tools/registry.py` pattern --
-   in progress, see the status table above.
+   tell "not implemented yet" apart from a real runtime error while these
+   phases are partially built out.
+3. Continue scaffolding Phase C (Calc-complete: 3 sections, 99 tool rows)
+   and the shared "Common drawing objects" + "Charts" sections (51 tool
+   rows) Writer's own Phase B intentionally left out, using the same
+   `tools/registry.py` pattern.

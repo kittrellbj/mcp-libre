@@ -1,0 +1,235 @@
+#!/usr/bin/env python3
+"""
+Contract tests for the MCP tooling scaffold (plugin/pythonpath/tools/).
+
+These deliberately do NOT require a running LibreOffice instance or the
+`uno`/`unohelper` modules -- unlike plugin/test_plugin.py (needs a live
+extension) or tests/test_client.py (needs `soffice` on PATH), this suite
+only checks the scaffold's own contract:
+
+  * every scaffolded tool from the design spec is registered exactly once,
+    under its exact name, in its expected module -- checked by name, not
+    just by count, so a tool silently landing in the wrong module (or a
+    typo'd name that still keeps the count right) fails loudly;
+  * none collide with the original 32 compatibility tool names;
+  * every stub handler returns the spec's error envelope shape with code
+    NOT_IMPLEMENTED, regardless of the arguments passed in;
+  * merge_into() never overwrites a pre-existing tool entry unless told to.
+
+Once a senior engineer replaces a stub body with a real implementation,
+that tool's "returns NOT_IMPLEMENTED" assertion in test_stub_shape_contract
+should be replaced with a real behavioral test per spec section 9
+(schema validation, positive/negative cases, undo/redo, persistence, etc.)
+-- this file is not meant to grow real coverage in place.
+"""
+
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugin", "pythonpath"))
+
+from tools import get_registry  # noqa: E402
+from tools.envelope import ERROR_CODES  # noqa: E402
+from tools.registry import merge_into, schema  # noqa: E402
+
+# The 32 spec tools explicitly marked "(existing)" (5 in document/session
+# lifecycle, 27 in Writer text/navigation/editing/search/review). These
+# already live in plugin/pythonpath/mcp_server.py and must never be
+# shadowed by a scaffold stub.
+EXISTING_COMPAT_TOOLS = {
+    "list_open_documents", "create_document_live", "get_document_info_live",
+    "save_document_live", "export_document_live",
+    "insert_text_live", "get_text_content_live", "format_text_live",
+    "get_paragraph_count_live", "get_document_outline_live", "get_paragraph_live",
+    "get_paragraphs_range_live", "goto_paragraph_live", "goto_position_live",
+    "get_cursor_position_live", "get_context_around_cursor_live", "select_paragraph_live",
+    "select_text_range_live", "delete_selection_live", "replace_selection_live",
+    "find_text_live", "find_and_replace_live", "find_and_replace_all_live",
+    "get_comments_live", "add_comment_live", "get_track_changes_status_live",
+    "set_track_changes_live", "get_tracked_changes_live", "accept_tracked_change_live",
+    "reject_tracked_change_live", "accept_all_changes_live", "reject_all_changes_live",
+}
+assert len(EXISTING_COMPAT_TOOLS) == 32, "spec's own baseline is 32 tools -- update this set, not the count"
+
+# Expected registrations per scaffold module, by exact tool name -- Phase A
+# (core runtime, document lifecycle, undo/view/selection, styles) and
+# Phase B - Writer complete (text/nav/editing, page layout/publishing,
+# tables/sections/notes/content-controls/mail-merge).
+EXPECTED_BY_MODULE = {
+    "core_runtime": {
+        "get_server_info_live", "get_capabilities_live", "get_tool_schema_live",
+        "list_tools_live", "set_tool_profile_live", "get_session_state_live",
+        "ping_live", "batch_execute_live", "validate_tool_call_live",
+        "get_recent_errors_live", "get_diagnostics_live", "clear_diagnostics_live",
+    },
+    "document_lifecycle": {
+        "get_active_document_live", "activate_document_live", "open_document_live",
+        "open_from_template_live", "close_document_live", "get_document_statistics_live",
+        "save_as_document_live", "save_copy_live", "convert_document_live",
+        "list_export_filters_live", "get_document_properties_live", "set_document_properties_live",
+        "get_custom_properties_live", "set_custom_property_live", "remove_custom_property_live",
+        "get_modified_state_live", "set_modified_state_live", "refresh_document_live",
+        "reload_document_live", "print_document_live", "get_print_settings_live",
+        "set_print_settings_live",
+    },
+    "undo_view_selection": {
+        "get_undo_state_live", "undo_live", "redo_live", "begin_undo_context_live",
+        "end_undo_context_live", "cancel_undo_context_live", "get_view_state_live",
+        "set_zoom_live", "get_selection_live", "clear_selection_live",
+        "get_document_events_live", "wait_for_document_event_live",
+        "lock_document_updates_live", "unlock_document_updates_live",
+    },
+    "styles": {
+        "list_style_families_live", "list_styles_live", "get_style_live", "create_style_live",
+        "clone_style_live", "update_style_live", "rename_style_live", "delete_style_live",
+        "apply_style_live", "get_direct_formatting_live", "clear_direct_formatting_live",
+        "copy_formatting_live",
+    },
+    "writer_text": {
+        "insert_paragraph_live", "append_paragraph_live", "insert_heading_live",
+        "set_paragraph_text_live", "split_paragraph_live", "merge_paragraphs_live",
+        "move_paragraphs_live", "copy_paragraphs_live", "set_paragraph_format_live",
+        "set_character_format_live", "get_text_range_format_live", "find_regex_live",
+        "replace_regex_live", "find_by_style_live", "replace_style_live",
+        "update_comment_live", "delete_comment_live", "resolve_comment_live",
+    },
+    "writer_layout": {
+        "get_page_layout_live", "set_page_layout_live", "apply_page_preset_live",
+        "list_page_styles_live", "create_page_style_live", "update_page_style_live",
+        "apply_page_style_live", "set_page_columns_live", "insert_page_break_live",
+        "remove_page_break_live", "get_headers_footers_live", "set_header_live",
+        "set_footer_live", "clear_header_live", "clear_footer_live",
+        "insert_page_number_field_live", "insert_page_count_field_live",
+        "insert_date_time_field_live", "insert_document_property_field_live",
+        "list_fields_live", "update_fields_live", "delete_field_live",
+        "list_bookmarks_live", "add_bookmark_live", "goto_bookmark_live",
+        "rename_bookmark_live", "delete_bookmark_live", "insert_hyperlink_live",
+        "list_hyperlinks_live", "update_hyperlink_live", "remove_hyperlink_live",
+        "insert_cross_reference_live", "insert_caption_live", "list_document_indexes_live",
+        "insert_toc_live", "update_index_live", "delete_index_live",
+        "insert_alphabetical_index_live", "add_index_mark_live", "get_chapter_numbering_live",
+        "set_chapter_numbering_live", "get_line_numbering_live", "set_line_numbering_live",
+    },
+    "writer_tables": {
+        "list_tables_live", "insert_table_live", "get_table_live", "get_table_range_live",
+        "set_table_range_live", "insert_table_rows_live", "delete_table_rows_live",
+        "insert_table_columns_live", "delete_table_columns_live", "merge_table_cells_live",
+        "split_table_cell_live", "set_table_format_live", "set_table_cell_format_live",
+        "sort_table_live", "delete_table_live", "convert_text_to_table_live",
+        "convert_table_to_text_live", "list_sections_live", "insert_section_live",
+        "update_section_live", "delete_section_live", "add_footnote_live",
+        "list_footnotes_live", "update_footnote_live", "delete_footnote_live",
+        "add_endnote_live", "list_endnotes_live", "update_endnote_live",
+        "delete_endnote_live", "get_note_settings_live", "set_note_settings_live",
+        "list_content_controls_live", "insert_content_control_live", "get_content_control_live",
+        "set_content_control_live", "delete_content_control_live", "preview_mail_merge_live",
+        "mail_merge_live",
+    },
+}
+
+EXPECTED_TOOL_NAMES = set().union(*EXPECTED_BY_MODULE.values())
+
+
+def _placeholder_for(prop_schema):
+    """Return a type-appropriate throwaway value for a required JSON Schema property."""
+    prop_type = prop_schema.get("type") if isinstance(prop_schema, dict) else None
+    return {
+        "string": "test",
+        "integer": 1,
+        "number": 1.0,
+        "boolean": True,
+        "array": [],
+        "object": {},
+    }.get(prop_type, "test")
+
+
+def _call_with_placeholders(handler, parameters):
+    """Call a stub handler with placeholder values for its required parameters."""
+    properties = parameters.get("properties", {})
+    required = parameters.get("required", [])
+    kwargs = {name: _placeholder_for(properties.get(name, {})) for name in required}
+    return handler(**kwargs)
+
+
+def test_registry_matches_expected_names_exactly():
+    """Registered tool names must equal the expected set -- not just match its size.
+
+    Catches both a missing/typo'd registration and one landing under the
+    wrong name, which a bare len() check would miss.
+    """
+    registry_names = set(get_registry().keys())
+    missing = EXPECTED_TOOL_NAMES - registry_names
+    unexpected = registry_names - EXPECTED_TOOL_NAMES
+    assert not missing, f"expected tools missing from the registry: {sorted(missing)}"
+    assert not unexpected, f"registry has tools not accounted for in EXPECTED_BY_MODULE: {sorted(unexpected)}"
+
+
+def test_no_collisions_with_existing_compat_tools():
+    collisions = set(get_registry().keys()) & EXISTING_COMPAT_TOOLS
+    assert not collisions, f"scaffold stubs must not redefine existing compatibility tools: {collisions}"
+
+
+def test_every_tool_has_a_valid_priority():
+    valid_priorities = {"P0", "P1", "P2", "P3"}
+    for name, metadata in get_registry().items():
+        assert metadata["priority"] in valid_priorities, f"{name} has invalid priority {metadata['priority']!r}"
+
+
+def test_stub_shape_contract():
+    """Every stub, called with placeholder args, returns the spec's NOT_IMPLEMENTED error envelope."""
+    for name, metadata in get_registry().items():
+        result = _call_with_placeholders(metadata["handler"], metadata["parameters"])
+        assert result["success"] is False, f"{name} stub should not report success"
+        assert result["error"]["code"] == "NOT_IMPLEMENTED", f"{name} stub returned unexpected error code"
+        assert "document_id" in result, f"{name} response is missing document_id"
+        assert "elapsed_ms" in result and isinstance(result["elapsed_ms"], int), f"{name} response is missing elapsed_ms"
+
+
+def test_merge_into_does_not_overwrite_existing_tools_by_default():
+    sentinel = object()
+    existing_tools = {"ping_live": {"description": "original", "parameters": schema(), "handler": sentinel}}
+    added = merge_into(existing_tools)
+    assert "ping_live" not in added
+    assert existing_tools["ping_live"]["handler"] is sentinel
+
+    # overwrite=True should replace it
+    added = merge_into(existing_tools, overwrite=True)
+    assert "ping_live" in added
+    assert existing_tools["ping_live"]["handler"] is not sentinel
+
+
+def test_error_envelope_rejects_unknown_codes():
+    from tools import envelope
+
+    try:
+        envelope.build_error("NOT_A_REAL_CODE", "boom")
+        assert False, "expected ValueError for an unknown error code"
+    except ValueError:
+        pass
+
+
+def test_error_codes_match_spec_list():
+    spec_codes = {
+        "NO_ACTIVE_DOCUMENT", "WRONG_DOCUMENT_TYPE", "OBJECT_NOT_FOUND", "AMBIGUOUS_SELECTOR",
+        "UNSUPPORTED_CAPABILITY", "INVALID_RANGE", "INVALID_PARAMETER", "FILE_EXISTS",
+        "PERMISSION_DENIED", "UNO_EXCEPTION", "DATABASE_ERROR", "TIMEOUT", "SECURITY_POLICY_DENIED",
+    }
+    # NOT_IMPLEMENTED is a scaffold-only addition, not part of the spec's own list.
+    assert spec_codes <= ERROR_CODES
+    assert ERROR_CODES - spec_codes == {"NOT_IMPLEMENTED"}
+
+
+if __name__ == "__main__":
+    tests = [
+        test_registry_matches_expected_names_exactly,
+        test_no_collisions_with_existing_compat_tools,
+        test_every_tool_has_a_valid_priority,
+        test_stub_shape_contract,
+        test_merge_into_does_not_overwrite_existing_tools_by_default,
+        test_error_envelope_rejects_unknown_codes,
+        test_error_codes_match_spec_list,
+    ]
+    for test in tests:
+        test()
+        print(f"PASS {test.__name__}")
+    print(f"\nAll {len(tests)} tool scaffold contract tests passed ({len(EXPECTED_TOOL_NAMES)} tools registered).")

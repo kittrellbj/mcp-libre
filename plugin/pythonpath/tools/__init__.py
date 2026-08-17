@@ -1,11 +1,13 @@
 """
-LibreOffice MCP Extension - Phase A tooling scaffold.
+LibreOffice MCP Extension - tooling scaffold.
 
 This package holds stub implementations for the tool catalog defined in
-LibreOffice_MCP_Complete_Tooling_Specification.md, scoped to Implementation
-Phase A ("Runtime hardening and common document API"): discovery, handles,
-lifecycle, undo, and styles. See docs/MCP_TOOLING_SCAFFOLD_PLAN.md for the
-full 484-tool roadmap and what remains for later phases.
+LibreOffice_MCP_Complete_Tooling_Specification.md. Currently covers
+Implementation Phase A ("Runtime hardening and common document API":
+discovery, handles, lifecycle, undo, styles) and Phase B - Writer complete
+(text/navigation/editing, page layout/publishing, tables/sections/notes).
+See docs/MCP_TOOLING_SCAFFOLD_PLAN.md for the full 484-tool roadmap and
+what remains for later phases.
 
 Every tool in this package is a stub: it is registered with the correct
 name, priority, and parameter schema, but its body raises no UNO calls and
@@ -23,6 +25,9 @@ from . import core_runtime  # noqa: F401  (imported for @register_tool side effe
 from . import document_lifecycle  # noqa: F401
 from . import undo_view_selection  # noqa: F401
 from . import styles  # noqa: F401
+from . import writer_text  # noqa: F401
+from . import writer_layout  # noqa: F401
+from . import writer_tables  # noqa: F401
 from .registry import get_registry, merge_into
 
 __all__ = ["get_registry", "merge_into"]
