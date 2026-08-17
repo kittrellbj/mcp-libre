@@ -84,17 +84,35 @@ plumbing those operations depend on gets defined.
   the scaffold silently expanding the tool surface exposed to any current
   users of the extension.
 
+## Update (same day, after Brian's "proceed")
+
+`tools/documents.py`'s `DocumentRegistry` is now a real implementation, not
+a stub: thread-safe register/resolve/unregister/list backed by a plain
+in-memory dict, uuid4 ids, idempotent re-registration of the same live
+object. Unit-tested with fake document/uno_bridge objects in
+`tests/test_document_registry.py` (9/9 passing, no live LibreOffice
+needed -- the registry never touches UNO itself, it only stores whatever
+object it's handed).
+
+**Still open, deliberately left for a senior engineer** (needs a live
+LibreOffice/UNO context to build and validate safely): dispose-listener
+eviction, so a document closed by the user outside of any MCP call gets
+cleanly evicted instead of surfacing as a wrapped UNO exception on next
+resolve. `register_document()` takes an unused `on_dispose` hook reserved
+for this. See the module docstring for the full list.
+
+The registry is **not yet wired into any tool stub's body** -- the 60
+Phase A stubs still all return `NOT_IMPLEMENTED` regardless of arguments.
+Wiring it into `core_runtime.py`/`document_lifecycle.py` handlers is real
+tool-by-tool implementation work, not scaffolding, so it's left with
+`DocumentRegistry` itself for whoever picks up Phase A for real.
+
 ## What is intentionally NOT done
 
-- **No UNO implementation.** Every one of the 60 stubs returns
-  `NOT_IMPLEMENTED`. Implementing them needs a working `uno`/`unohelper`
-  environment inside LibreOffice, which this scaffolding pass didn't have
-  reason to touch.
-- **No `DocumentRegistry` implementation** -- see above. This blocks any
-  stub whose signature takes `document_id` from being real; it should
-  likely be implemented first, since Writer/Calc/Impress/Draw/Base tools in
-  every later phase depend on the same handle concept for
-  documents/sheets/slides/shapes/etc.
+- **No UNO implementation in the 60 Phase A tool stubs.** They all still
+  return `NOT_IMPLEMENTED`. Implementing them needs a working
+  `uno`/`unohelper` environment inside LibreOffice, which this scaffolding
+  pass didn't have reason to touch.
 - **Not wired into the live server by default** -- see the env var gate
   above.
 - **Phases B-F (writer, calc, drawing/charts, impress/draw, base/forms/math,
@@ -132,7 +150,8 @@ flagging for @Morgan (Architect) rather than deciding it unilaterally here.
 
 ## Suggested next steps
 
-1. Implement `DocumentRegistry` for real (see `documents.py` docstrings).
+1. ~~Implement `DocumentRegistry` for real~~ -- done, see update above.
+   Dispose-listener eviction remains open.
 2. Implement the 12 core-runtime stubs against it -- `get_server_info_live`,
    `list_tools_live`, `get_session_state_live`, etc. are the tools every
    other tool's tests will use to introspect what's available.
@@ -141,4 +160,5 @@ flagging for @Morgan (Architect) rather than deciding it unilaterally here.
    tell "not implemented yet" apart from a real runtime error while Phase A
    is partially built out.
 4. Continue scaffolding Phase B (Writer-complete, 126 tool rows across the
-   three Writer sections) using the same `tools/registry.py` pattern.
+   three Writer sections) using the same `tools/registry.py` pattern --
+   in progress, see the status table above.
