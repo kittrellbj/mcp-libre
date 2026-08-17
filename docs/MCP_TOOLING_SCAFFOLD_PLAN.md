@@ -23,7 +23,7 @@ up exactly where it left off.
 | Charts and data visualizations | 20 | 0 | 20 | **19/20 Implemented** (`tools/charts.py`) -- real logic, live-verified, Calc-native charts only; `add_chart_series_live` (P2) still stub (no XDataProvider construction from raw values this pass) |
 | Calc - sheets, cells, ranges, formulas, layout | 42 | 0 | 42 | **42/42 Implemented** (`tools/calc_sheets.py`) -- real logic, live-verified |
 | Calc - data management, analysis, pivots, validation, external data | 42 | 0 | 42 | **39/42 Implemented** (`tools/calc_data.py`) -- real logic, live-verified; create/refresh/delete_external_link (P2/P3) still stub -- no write-side ExternalDocLinks mechanism this pass |
-| Calc - page setup, print ranges, annotations, protection | 15 | 0 | 15 | **Scaffolded** (`tools/calc_page.py`) |
+| Calc - page setup, print ranges, annotations, protection | 15 | 0 | 15 | **15/15 Implemented** (`tools/calc_page.py`) -- real logic, live-verified |
 | Impress - slides, masters, notes, transitions, animations, slideshow | 41 | 0 | 41 | **34/41 Implemented** (`tools/impress.py`) -- real logic, live-verified; 7 tools (animation mutation x4, live slideshow-effect control x3) still stub -- no XAnimationNode construction / no headless XSlideShowController this pass |
 | Draw - pages, masters, layers, vector operations | 16 | 0 | 16 | **16/16 Implemented** (`tools/draw.py`) -- real logic, live-verified |
 | Base and database access | 34 | 0 | 0 | Not started |
@@ -1632,6 +1632,82 @@ live-verified instead). `tests/test_tool_scaffold_contract.py` gained
 tools_are_marked_implemented`, following the established mixed-module
 precedent. 383/383 passing under `pytest` across the full relevant
 suite (361 prior + 21 calc_data.py + 1 contract).
+
+## Real implementation pass: calc_page.py (all 15 tools)
+
+Second of the four remaining Phase B/C scaffolds (calc_data.py done ->
+calc_page.py -> writer_layout.py -> writer_tables.py). All 15 tools
+real. Page layout resolves through the sheet's own `PageStyle` (a
+`com.sun.star.style.PageStyle` in the workbook's `"PageStyles"`
+`StyleFamilies` family -- the same family `styles.py` already resolves
+via `_get_style_family()`), not a direct sheet property.
+`list_number_formats_live` has a documented scope limit, surfaced in
+both its own `purpose=` string and `uno_bridge.py`'s docstring per the
+now-established practice from the calc_data.py pass's pivot-table
+caveat: `XNumberFormats` has no "list every format" API (keyed/query
+access only, live-verified via its actual method list), so it lists the
+standard format for each well-known `NumberFormat` category instead of
+every custom format ever created in the document.
+
+**Two real bugs found live-verifying, both fixed and re-verified
+post-fix on a rebuild:**
+
+1. `add_cell_comment_live` with an `author` raised a raw `UNO_EXCEPTION`
+   ("property at index 6 is readonly") -- `Author` is read-only in this
+   LibreOffice build (auto-derived from the user identity, not
+   settable), confirmed via the exact property-index error. Worse than
+   just failing cleanly: on the *update* path the comment's `text` had
+   already been written via `setString()` before the `Author` write
+   raised, so the whole call aborted with an exception even though the
+   text change should have counted as a success. Fixed to catch the
+   `Author` write specifically, report `author_applied: false` in the
+   result, and have the tool layer turn that into a warning rather than
+   a failure -- the text always lands; the caller finds out honestly
+   whether the author did too.
+2. (Caught during exploration, before it became a live-tool bug, but
+   worth noting alongside the real ones): `list_number_formats_live`'s
+   `NumberFormat` category constants needed
+   `from com.sun.star.util import NumberFormat` at module level, not a
+   locally-scoped import -- since `_NUMBER_FORMAT_CATEGORIES` is a
+   class-body dict literal evaluated at class-definition time (i.e. at
+   `uno_bridge.py`'s own import time), a wrong import location would
+   have failed the *entire extension's* load, not just this one tool.
+   Verified the correct import shape via a standalone script before
+   adding it, rather than guessing and finding out at deploy time.
+
+**Live-verified end to end on a fresh headless LibreOffice 26.2
+instance, independently checking real document state after every
+call** (not trusting each tool's own success response, and re-verifying
+the comment-author fix post-fix on a rebuild): `get_sheet_page_layout_
+live`/`set_sheet_page_layout_live` (confirmed real `Width`/`Height`/
+`IsLandscape`/margins/`PageScale` changes on the underlying `PageStyle`,
+modulo ~1-unit mm-to-1/100mm float rounding); `set_print_area_live`/
+`clear_print_area_live` (confirmed real `PrintAreas`); `set_repeating_
+print_rows_live`/`set_repeating_print_columns_live` (confirmed real
+`TitleRows`/`TitleColumns`); the cell-comment lifecycle including the
+author fix (confirmed real annotation text via an independent read, and
+confirmed `Author` genuinely stays `"Unknown Author"` -- the honest
+outcome the warning describes); `protect_sheet_live`/`unprotect_sheet_
+live`/`set_cell_protection_live` (confirmed real `CellProtection.
+IsLocked`/`IsHidden` changes -- and along the way, confirmed live that
+Calc silently ignores `CellProtection` writes while the sheet itself is
+still protected, which the first verification attempt hit by testing
+in the wrong order; re-verified in the correct order afterward, not a
+code defect); the full number-format lifecycle (confirmed a real,
+correctly-formatted cell display: `1,234.50 USD` after applying a
+custom-created format). `tools_count: 302` throughout (287 + 15).
+
+**Testing:** `tests/test_calc_page.py`, 12 new tests (a `FakeUnoBridge`
+mirroring the real `UNOBridge` methods' public signatures, including a
+dedicated test for the comment-author warning path -- tool-layer
+plumbing only, real `PageStyle`/`XSheetAnnotations`/`XNumberFormats`
+mechanics are live-verified instead). Unlike `charts.py`/`impress.py`/
+`calc_data.py`, this module is *not* mixed -- all 15 tools are real, so
+`calc_page` was added to `IMPLEMENTED_MODULES` in
+`tests/test_tool_scaffold_contract.py` directly rather than getting its
+own `IMPLEMENTED_CALC_PAGE_TOOL_NAMES` set. 395/395 passing under
+`pytest` across the full relevant suite (383 prior + 11 calc_page.py +
+1 for the comment-author warning test added during live-verification).
 
 ## What was built
 

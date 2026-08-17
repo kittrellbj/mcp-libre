@@ -10,6 +10,7 @@ import uno
 import unohelper
 from com.sun.star.beans import PropertyValue
 from com.sun.star.text.ControlCharacter import PARAGRAPH_BREAK
+from com.sun.star.util import NumberFormat
 from typing import Any, Optional, Dict, List
 import logging
 import os
@@ -4455,9 +4456,9 @@ class UNOBridge:
         )
         full_range.fillAuto(uno.Enum("com.sun.star.sheet.FillDirection", direction), source_count)
 
-    def _resolve_number_format_key(self, doc: Any, format_string: str) -> int:
+    def _resolve_number_format_key(self, doc: Any, format_string: str, locale: Optional[Any] = None) -> int:
         formats = doc.getNumberFormats()
-        locale = uno.createUnoStruct("com.sun.star.lang.Locale")
+        locale = locale if locale is not None else uno.createUnoStruct("com.sun.star.lang.Locale")
         key = formats.queryKey(format_string, locale, False)
         if key == -1:
             key = formats.addNew(format_string, locale)
@@ -6692,3 +6693,272 @@ class UNOBridge:
         addr.Sheet, addr.StartRow, addr.EndRow = 0, 0, 0
         addr.StartColumn, addr.EndColumn = min(columns), max(columns)
         sheet_obj.ungroup(addr, uno.Enum("com.sun.star.table.TableOrientation", "COLUMNS"))
+
+    # -- Calc page setup, print ranges, annotations, protection
+    # (tools/calc_page.py's 15 tools) --
+    #
+    # Same raise-on-failure convention as calc_sheets.py/calc_data.py
+    # above. All 15 tools are real this pass.
+
+    def _sheet_page_style(self, doc: Any, sheet: Optional[str] = None) -> "tuple[Any, Any]":
+        """Returns (page_style_object, sheet_object). A Calc page's
+        layout (size/margins/orientation/scale/header/footer) lives on
+        the com.sun.star.style.PageStyle the sheet references by name
+        (sheet.PageStyle), the same StyleFamilies("PageStyles") family
+        styles.py already resolves through _get_style_family() -- not a
+        direct sheet property."""
+        sheet_obj = self._resolve_sheet(doc, sheet)
+        page_styles = doc.StyleFamilies.getByName("PageStyles")
+        return page_styles.getByName(sheet_obj.PageStyle), sheet_obj
+
+    _PAGE_LAYOUT_PROPS = (
+        "Width", "Height", "IsLandscape", "LeftMargin", "RightMargin", "TopMargin", "BottomMargin",
+        "HeaderIsOn", "FooterIsOn", "HeaderHeight", "FooterHeight", "PageScale",
+        "ScaleToPages", "ScaleToPagesX", "ScaleToPagesY", "PrintHeaders",
+    )
+
+    def get_sheet_page_layout(self, doc: Any, sheet: Optional[str] = None) -> Dict[str, Any]:
+        page_style, sheet_obj = self._sheet_page_style(doc, sheet)
+        result: Dict[str, Any] = {"page_style": sheet_obj.PageStyle}
+        for name in self._PAGE_LAYOUT_PROPS:
+            try:
+                result[name] = self._uno_value_to_plain(page_style.getPropertyValue(name))
+            except Exception:
+                continue
+        return result
+
+    def set_sheet_page_layout(self, doc: Any, sheet: Optional[str] = None, width: Optional[float] = None,
+                               height: Optional[float] = None, unit: Optional[str] = None,
+                               orientation: Optional[str] = None, margins: Optional[Dict[str, Any]] = None,
+                               scale: Optional[Dict[str, Any]] = None) -> List[str]:
+        """`margins`: {"left"/"right"/"top"/"bottom": number, same `unit`
+        as width/height}. `scale`: {"percent": int} (PageScale) or
+        {"pages_wide": int, "pages_tall": int} (ScaleToPagesX/Y, 0 means
+        "as many as needed" on that axis, matching Calc's own "fit to N
+        pages wide by M tall" UI semantics) -- live-verified both are
+        real, independent PageStyle properties, not mutually exclusive
+        at the API level even though Calc's UI presents them as
+        radio-button alternatives."""
+        page_style, _ = self._sheet_page_style(doc, sheet)
+        factor = self._LENGTH_UNIT_TO_MM100.get((unit or "mm100").lower(), 1)
+        applied = []
+        if width is not None:
+            page_style.Width = int(width * factor)
+            applied.append("width")
+        if height is not None:
+            page_style.Height = int(height * factor)
+            applied.append("height")
+        if orientation is not None:
+            page_style.IsLandscape = str(orientation).lower() == "landscape"
+            applied.append("orientation")
+        if margins:
+            margin_props = {"left": "LeftMargin", "right": "RightMargin", "top": "TopMargin", "bottom": "BottomMargin"}
+            for key, prop_name in margin_props.items():
+                if key in margins:
+                    setattr(page_style, prop_name, int(margins[key] * factor))
+                    applied.append(f"margins.{key}")
+        if scale:
+            if "percent" in scale:
+                page_style.PageScale = int(scale["percent"])
+                applied.append("scale.percent")
+            if "pages_wide" in scale or "pages_tall" in scale:
+                page_style.ScaleToPagesX = int(scale.get("pages_wide", 0))
+                page_style.ScaleToPagesY = int(scale.get("pages_tall", 0))
+                applied.append("scale.pages")
+        return applied
+
+    def set_print_area(self, doc: Any, ranges: List[str], sheet: Optional[str] = None) -> None:
+        sheet_obj = self._resolve_sheet(doc, sheet)
+        sheet_obj.PrintAreas = tuple(sheet_obj.getCellRangeByName(r).RangeAddress for r in ranges)
+
+    def clear_print_area(self, doc: Any, sheet: Optional[str] = None) -> None:
+        self._resolve_sheet(doc, sheet).PrintAreas = ()
+
+    def set_repeating_print_rows(self, doc: Any, rows: List[int], sheet: Optional[str] = None) -> None:
+        """TitleRows is a single CellRangeAddress spanning the given
+        rows (0-based) -- its Column bounds are live-verified irrelevant
+        to the real effect (a fresh sheet's default TitleRows already
+        reads Column 0-0 despite meaning "no repeat", i.e. Calc reads
+        this as a row-index range regardless of the column span)."""
+        sheet_obj = self._resolve_sheet(doc, sheet)
+        addr = uno.createUnoStruct("com.sun.star.table.CellRangeAddress")
+        addr.Sheet, addr.StartColumn, addr.EndColumn = 0, 0, 0
+        addr.StartRow, addr.EndRow = min(rows), max(rows)
+        sheet_obj.TitleRows = addr
+
+    def set_repeating_print_columns(self, doc: Any, columns: List[int], sheet: Optional[str] = None) -> None:
+        sheet_obj = self._resolve_sheet(doc, sheet)
+        addr = uno.createUnoStruct("com.sun.star.table.CellRangeAddress")
+        addr.Sheet, addr.StartRow, addr.EndRow = 0, 0, 0
+        addr.StartColumn, addr.EndColumn = min(columns), max(columns)
+        sheet_obj.TitleColumns = addr
+
+    def _find_annotation_at(self, annotations: Any, column: int, row: int) -> Optional[Any]:
+        for i in builtins.range(annotations.getCount()):
+            ann = annotations.getByIndex(i)
+            if ann.Position.Column == column and ann.Position.Row == row:
+                return ann
+        return None
+
+    def add_cell_comment(self, doc: Any, cell: str, text: str, sheet: Optional[str] = None,
+                          author: Optional[str] = None) -> Dict[str, Any]:
+        """"Add/update" per the spec's own purpose text -- an existing
+        comment at the same cell is updated in place rather than
+        duplicated, found by scanning Annotations for a matching
+        Position (there's no direct "get comment at cell" lookup).
+
+        Author is read-only in this LibreOffice build (auto-derived from
+        the user identity, not settable) -- live-verified attempting to
+        write it raises a raw "property ... is readonly" UNO_EXCEPTION,
+        which previously aborted the whole call (including the text that
+        had already been applied) rather than just failing to honor the
+        one unsettable field. Caught explicitly now so a caller-supplied
+        `author` that can't be honored doesn't take the actual comment
+        text down with it; `author_applied` in the result tells the
+        caller whether it landed."""
+        sheet_obj = self._resolve_sheet(doc, sheet)
+        cell_addr = sheet_obj.getCellRangeByName(cell).RangeAddress
+        annotations = sheet_obj.Annotations
+        existing = self._find_annotation_at(annotations, cell_addr.StartColumn, cell_addr.StartRow)
+        if existing is None:
+            position = uno.createUnoStruct("com.sun.star.table.CellAddress")
+            position.Sheet, position.Column, position.Row = cell_addr.Sheet, cell_addr.StartColumn, cell_addr.StartRow
+            annotations.insertNew(position, text)
+            existing = self._find_annotation_at(annotations, cell_addr.StartColumn, cell_addr.StartRow)
+        else:
+            existing.setString(text)
+        author_applied = False
+        if author is not None:
+            try:
+                existing.Author = author
+                author_applied = True
+            except Exception:
+                pass
+        return {"cell": cell, "author_applied": author_applied}
+
+    def list_cell_comments(self, doc: Any, sheet: Optional[str] = None, range: Optional[str] = None) -> List[Dict[str, Any]]:
+        sheet_obj = self._resolve_sheet(doc, sheet)
+        bounds = sheet_obj.getCellRangeByName(range).RangeAddress if range is not None else None
+        annotations = sheet_obj.Annotations
+        result = []
+        for i in builtins.range(annotations.getCount()):
+            ann = annotations.getByIndex(i)
+            pos = ann.Position
+            if bounds is not None and not (
+                bounds.StartColumn <= pos.Column <= bounds.EndColumn and bounds.StartRow <= pos.Row <= bounds.EndRow
+            ):
+                continue
+            result.append({"cell": self._column_row_to_a1(pos.Column, pos.Row), "text": ann.getString(), "author": ann.Author})
+        return result
+
+    def delete_cell_comment(self, doc: Any, cell: str, sheet: Optional[str] = None) -> None:
+        sheet_obj = self._resolve_sheet(doc, sheet)
+        cell_addr = sheet_obj.getCellRangeByName(cell).RangeAddress
+        annotations = sheet_obj.Annotations
+        for i in builtins.range(annotations.getCount()):
+            ann = annotations.getByIndex(i)
+            if ann.Position.Column == cell_addr.StartColumn and ann.Position.Row == cell_addr.StartRow:
+                annotations.removeByIndex(i)
+                return
+        raise KeyError(f"No comment at cell '{cell}'.")
+
+    def protect_sheet(self, doc: Any, sheet: Optional[str] = None, password: Optional[str] = None,
+                       options: Optional[Dict[str, Any]] = None) -> List[str]:
+        """`options` (e.g. per-action permission flags) are applied
+        best-effort as direct properties on the sheet after protecting
+        it -- not exploration-tested against a specific known property
+        set this pass, same best-effort skip-unsettable-keys contract
+        _apply_direct_properties uses elsewhere."""
+        sheet_obj = self._resolve_sheet(doc, sheet)
+        sheet_obj.protect(password or "")
+        applied = ["password"] if password else []
+        if options:
+            applied.extend(self._apply_direct_properties(sheet_obj, options))
+        return applied
+
+    def unprotect_sheet(self, doc: Any, sheet: Optional[str] = None, password: Optional[str] = None) -> None:
+        self._resolve_sheet(doc, sheet).unprotect(password or "")
+
+    _CELL_PROTECTION_PROPS = {
+        "locked": "IsLocked", "hidden": "IsHidden",
+        "formula_hidden": "IsFormulaHidden", "print_hidden": "IsPrintHidden",
+    }
+
+    def set_cell_protection(self, doc: Any, range: str, properties: Dict[str, Any],
+                             sheet: Optional[str] = None) -> List[str]:
+        """`properties`: any of "locked"/"hidden"/"formula_hidden"/
+        "print_hidden" (bool) -- the real com.sun.star.util.
+        CellProtection struct's own field names, confirmed via
+        CoreReflection."""
+        sheet_obj = self._resolve_sheet(doc, sheet)
+        range_obj = sheet_obj.getCellRangeByName(range)
+        protection = range_obj.CellProtection
+        applied = []
+        for key, attr in self._CELL_PROTECTION_PROPS.items():
+            if key in properties:
+                setattr(protection, attr, bool(properties[key]))
+                applied.append(key)
+        range_obj.CellProtection = protection
+        return applied
+
+    @staticmethod
+    def _parse_locale(locale_str: Optional[str]) -> Any:
+        """"xx"/"xx-YY"/"xx_YY" -> a com.sun.star.lang.Locale (Language/
+        Country) -- None or empty gives the default/unset locale, the
+        same one _resolve_number_format_key already used before this
+        pass added the optional `locale` parameter."""
+        loc = uno.createUnoStruct("com.sun.star.lang.Locale")
+        if locale_str:
+            parts = locale_str.replace("_", "-").split("-")
+            loc.Language = parts[0]
+            if len(parts) > 1:
+                loc.Country = parts[1]
+        return loc
+
+    _NUMBER_FORMAT_CATEGORIES = {
+        "all": NumberFormat.ALL, "date": NumberFormat.DATE, "time": NumberFormat.TIME,
+        "currency": NumberFormat.CURRENCY, "number": NumberFormat.NUMBER,
+        "scientific": NumberFormat.SCIENTIFIC, "fraction": NumberFormat.FRACTION,
+        "percent": NumberFormat.PERCENT, "text": NumberFormat.TEXT,
+        "datetime": NumberFormat.DATETIME, "logical": NumberFormat.LOGICAL,
+    }
+
+    def list_number_formats(self, doc: Any, locale: Optional[str] = None) -> List[Dict[str, Any]]:
+        """No direct "enumerate every format" UNO API exists --
+        XNumberFormats is keyed/query access (getByKey/queryKey), not an
+        indexable collection. Lists the standard format for each of the
+        well-known com.sun.star.util.NumberFormat categories instead,
+        live-verified via getStandardFormat(); a custom/user-defined
+        format not tied to a standard category won't appear here unless
+        separately looked up by create_number_format_live/
+        apply_number_format_live's own format_code path."""
+        self._require_calc(doc, "list_number_formats")
+        formats = doc.getNumberFormats()
+        loc = self._parse_locale(locale)
+        result = []
+        for name, category in self._NUMBER_FORMAT_CATEGORIES.items():
+            try:
+                key = formats.getStandardFormat(category, loc)
+                entry = formats.getByKey(key)
+                result.append({"category": name, "format_key": key, "format_code": entry.FormatString})
+            except Exception:
+                continue
+        return result
+
+    def create_number_format(self, doc: Any, format_code: str, locale: Optional[str] = None) -> Dict[str, Any]:
+        self._require_calc(doc, "create_number_format")
+        key = self._resolve_number_format_key(doc, format_code, self._parse_locale(locale))
+        return {"format_key": key, "format_code": format_code}
+
+    def apply_number_format(self, doc: Any, range: str, sheet: Optional[str] = None,
+                             format_code: Optional[str] = None, format_key: Optional[int] = None) -> Dict[str, Any]:
+        sheet_obj = self._resolve_sheet(doc, sheet)
+        range_obj = sheet_obj.getCellRangeByName(range)
+        if format_key is not None:
+            key = int(format_key)
+        elif format_code is not None:
+            key = self._resolve_number_format_key(doc, format_code)
+        else:
+            raise ValueError("Either format_code or format_key must be given.")
+        range_obj.NumberFormat = key
+        return {"format_key": key}

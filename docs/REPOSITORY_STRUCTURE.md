@@ -39,7 +39,7 @@ mcp-libre/
 │   │       ├── charts.py           # Phase C, 19/20 IMPLEMENTED: chart2-based chart tools (Calc-native only)
 │   │       ├── calc_sheets.py      # Phase C, 42/42 IMPLEMENTED: sheets, cells, ranges, rows/columns, formulas
 │   │       ├── calc_data.py        # Phase C, 39/42 IMPLEMENTED: named ranges, filters, pivots, validation, external data
-│   │       ├── calc_page.py        # Phase C, stub: page layout, print areas, comments, protection
+│   │       ├── calc_page.py        # Phase C, 15/15 IMPLEMENTED: page layout, print areas, comments, protection
 │   │       ├── impress.py          # Phase D, 34/41 IMPLEMENTED: slides, masters, notes, transitions, animations, slideshow
 │   │       └── draw.py             # Phase D, 16/16 IMPLEMENTED: Draw pages, layers, vector operations
 │   ├── Addons.xcu                  # LibreOffice menu configuration
@@ -71,6 +71,7 @@ mcp-libre/
 │   ├── test_charts.py              # charts.py's 19 implemented tools, tested against fakes
 │   ├── test_impress.py             # impress.py's 34 implemented tools, tested against fakes
 │   ├── test_calc_data.py           # calc_data.py's 39 implemented tools, tested against fakes
+│   ├── test_calc_page.py           # calc_page.py's 15 implemented tools, tested against fakes
 │   ├── test_uno_datetime.py        # DateTime-to-ISO conversion unit tests (no live LibreOffice needed)
 │   ├── test_host_trust.py          # Host/Origin trust check unit tests (no live LibreOffice needed)
 │   └── test_mcp_jsonrpc.py         # Real MCP JSON-RPC 2.0 dispatch unit tests (no live LibreOffice needed)
