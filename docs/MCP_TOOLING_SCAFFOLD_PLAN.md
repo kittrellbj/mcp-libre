@@ -16,7 +16,7 @@ up exactly where it left off.
 | Document and session lifecycle | 27 | 5 | 22 | **Implemented** (`tools/document_lifecycle.py`) -- real logic, live-verified |
 | Undo, view, selection, events, orchestration | 14 | 0 | 14 | **12/14 Implemented** (`tools/undo_view_selection.py`) -- real logic, live-verified; document-events (2 tools) still stub, separate pass |
 | Styles and formatting infrastructure | 12 | 0 | 12 | **Implemented** (`tools/styles.py`) -- real logic, live-verified |
-| Writer - text, navigation, editing, search, review | 45 | 27 | 18 | **Scaffolded** (`tools/writer_text.py`) |
+| Writer - text, navigation, editing, search, review | 45 | 27 | 18 | **18/18 new tools Implemented** (`tools/writer_text.py`) -- real logic, live-verified; the 27 "(existing)" tools stay in `mcp_server.py`/`uno_bridge.py` under the original 32, not duplicated here |
 | Writer - page layout, publishing, styles, headers, fields, indexes | 43 | 0 | 43 | **Scaffolded** (`tools/writer_layout.py`) |
 | Writer - tables, sections, notes, content controls, mail merge | 38 | 0 | 38 | **Scaffolded** (`tools/writer_tables.py`) |
 | Common drawing objects, images, shapes, embedded objects | 31 | 0 | 31 | **Scaffolded** (`tools/drawing_objects.py`) |
@@ -478,6 +478,115 @@ families as plain dicts and text ranges as `{start, end}` keys -- real
 UNO service names, property names, and `PropertyState` enum comparisons
 are live-verified instead, not something a fake can usefully assert).
 146/146 passing under `pytest` across the full relevant suite.
+
+## Real implementation pass: writer_text.py (18 new tools)
+
+All 18 new tools in the "Writer - text, navigation, editing, search,
+review" spec section implemented for real in one pass:
+`insert_paragraph_live`, `append_paragraph_live`, `insert_heading_live`,
+`set_paragraph_text_live`, `split_paragraph_live`, `merge_paragraphs_live`,
+`move_paragraphs_live`, `copy_paragraphs_live`, `set_paragraph_format_live`,
+`set_character_format_live`, `get_text_range_format_live`,
+`find_regex_live`, `replace_regex_live`, `find_by_style_live`,
+`replace_style_live`, `update_comment_live`, `delete_comment_live`,
+`resolve_comment_live`. The section's other 27 rows are the pre-existing
+"(existing)" tools already live in `mcp_server.py`/`uno_bridge.py` under
+the original 32 -- intentionally not duplicated here.
+
+**Paragraph indexing is 1-based**, matching the convention the pre-existing
+`get_paragraph_live`/`goto_paragraph_live`/`select_paragraph_live` legacy
+tools already established (`UNOBridge._get_paragraph_object`,
+`_count_paragraphs`) -- `split_paragraph_live`'s `n`, `merge_paragraphs_live`'s
+`first_n`, and `move_paragraphs_live`/`copy_paragraphs_live`'s `start`/`end`/
+`destination` all mean "the Nth paragraph, counting from 1", and
+`find_by_style_live`'s `matches[].paragraph` reports in the same 1-based
+scheme. This is deliberately a *different* convention from
+`set_paragraph_format_live`/`set_character_format_live`'s `target`
+(0-based Writer character offsets, reusing styles.py's `apply_style_live`
+precedent) -- the two schemes address different things (a paragraph
+ordinal vs. a character range) and live-testing this pass confirmed the
+mixed convention is what the pre-existing paragraph tools already expect,
+not something worth "fixing" into false consistency.
+
+**`get_text_range_format_live`** returns every JSON-safe effective
+character/paragraph property on a range (~80 real UNO properties observed
+live), using the same `_is_json_safe()` filter styles.py's pass added.
+
+**Comments got a `comment_id` scheme that didn't exist before this pass.**
+`get_comments_live`/`add_comment_live` (original 32) never needed to
+address a specific comment; `update_comment_live`/`delete_comment_live`/
+`resolve_comment_live` do, so a minimal, additive `comment_id` was invented
+and threaded through the same `com.sun.star.text.TextField.Annotation`
+enumeration those two legacy tools already use. Full lifecycle live-verified
+end to end: selected a text range, added a comment, listed it (real
+`comment_id`), updated its text (confirmed via re-listing that content
+changed), resolved it, deleted it, confirmed the list came back empty --
+each step re-confirmed independently, not just trusting the previous
+call's own success response.
+
+**Two real bugs found and fixed by live-verifying:**
+
+1. `set_paragraph_format_live`/`set_character_format_live`'s `target`
+   parameter was declared as a plain required argument
+   (`target: Any`) instead of `target: Optional[Any] = None` like
+   `styles.py`'s identical `apply_style_live`/`get_direct_formatting_live`
+   precedent. Both tools' own docstrings and JSON Schema describe "omitted
+   `target` means current selection" -- but because the dispatcher calls
+   handlers as `handler(**parameters)` and the JSON body legitimately omits
+   `target` for that case, the missing default meant Python raised
+   `TypeError: set_paragraph_format_live() missing 1 required positional
+   argument: 'target'` *before* the function body's own `try/except` could
+   ever run, so the omitted-target contract was uncatchably broken for both
+   tools. Live-caught: `curl` with a `target`-less body returned a raw
+   Python traceback instead of an envelope, not the current-selection
+   success static analysis and the fakes-based unit tests (which always
+   passed `target` explicitly) never exercised. Fixed by adding the missing
+   `Optional[Any] = None` default to both signatures, matching styles.py's
+   pattern; re-verified live that omitting `target` now correctly formats
+   the current selection.
+2. Not a bug, but worth recording since it looked like one during this
+   pass's live testing: `set_paragraph_format_live`/`set_character_format_live`'s
+   `properties` dict takes real UNO property names (`CharWeight`,
+   `CharColor`, `ParaAdjust`, ...), not friendly aliases (`bold`, `color`).
+   This matches `create_style_live`/`update_style_live`'s existing
+   best-effort "apply what UNO accepts, report what applied, silently skip
+   the rest" contract from the styles.py pass -- not a new pattern, just
+   easy to mistake for a bug when testing with alias-shaped keys first.
+
+**Also newly discovered this pass, not fixed (preserving the original 32
+exactly, same rule as `format_text_live`'s known `isinstance()` bug):**
+the original 32 tools' `get_comments_live` returns a raw
+`com.sun.star.util.Date` struct repr for its `date` field (e.g.
+`"(com.sun.star.util.Date){ Day = (unsigned short)0x0, Month = ...
+}"`) instead of an ISO-8601 string -- the same class of bug
+`get_document_properties_live` had before this repo's `uno_datetime.py`
+module was added, just never applied to this legacy tool. Left untouched
+per the preserve-the-original-32 rule; flagged here as technical debt
+(see Buddy's audit item #42).
+
+**Live-verified end to end on a fresh headless LibreOffice 26.2 instance
+after the two bug fixes landed, independently checking the real document
+state after every call (not trusting each tool's own success response):**
+`split_paragraph_live` on "Body paragraph." at offset 4, independently
+read back as two paragraphs ("Body" / " paragraph."); `merge_paragraphs_live`
+merged them back to the original text; `copy_paragraphs_live` duplicated a
+paragraph to the end, independently confirmed via paragraph enumeration;
+`move_paragraphs_live` moved that duplicate to the front, independently
+confirmed; `set_character_format_live` set real `CharWeight`/`CharColor`
+on an explicit character range, independently read back off the live text
+cursor; `set_paragraph_format_live` with `target` omitted set `ParaAdjust`
+on the current selection's paragraphs, independently read back off both
+touched paragraphs; `find_by_style_live` correctly found both `Heading 1`
+paragraphs by 1-based paragraph number; `replace_style_live` swapped both
+to `Heading 2`, independently confirmed via paragraph enumeration.
+`tools_count: 108` (90 + 18) throughout.
+
+**Testing:** `tests/test_writer_text.py`, 32 new tests (fakes modeling
+paragraphs/text ranges the same way `test_styles.py` does -- real UNO
+paragraph indexing, `PropertyState`, and `TextField.Annotation` behavior
+are live-verified instead, not something a fake can usefully assert).
+178/178 passing under `pytest` across the full relevant suite (146 prior +
+32 new).
 
 ## What was built
 

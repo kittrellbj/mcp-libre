@@ -55,6 +55,8 @@ def _map_exception_to_code(e: Exception) -> str:
         return "PERMISSION_DENIED"
     if isinstance(e, KeyError):
         return "OBJECT_NOT_FOUND"
+    if isinstance(e, IndexError):
+        return "INVALID_RANGE"
     if isinstance(e, NotImplementedError):
         return "UNSUPPORTED_CAPABILITY"
     if isinstance(e, (ValueError, TypeError)):

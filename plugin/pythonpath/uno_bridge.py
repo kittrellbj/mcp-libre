@@ -8,6 +8,7 @@ enabling direct manipulation of LibreOffice documents.
 import uno
 import unohelper
 from com.sun.star.beans import PropertyValue
+from com.sun.star.text.ControlCharacter import PARAGRAPH_BREAK
 from typing import Any, Optional, Dict, List
 import logging
 import os
@@ -1333,6 +1334,11 @@ class UNOBridge:
                     # Check if it's an annotation (comment)
                     if hasattr(field, 'supportsService') and field.supportsService("com.sun.star.text.TextField.Annotation"):
                         comment_data = {
+                            # Added so update_comment_live/delete_comment_live/
+                            # resolve_comment_live (writer_text.py) can address
+                            # this exact comment -- see _comment_id_for()'s
+                            # docstring for what this id is (and isn't).
+                            "id": self._comment_id_for(field, len(comments)),
                             "author": field.Author if hasattr(field, 'Author') else "",
                             "content": field.Content if hasattr(field, 'Content') else "",
                             "date": str(field.Date) if hasattr(field, 'Date') else "",
@@ -2903,3 +2909,525 @@ class UNOBridge:
         except:
             pass
         return False
+
+    # -- Writer paragraph/text editing (tools/writer_text.py's 18 tools) --
+    #
+    # Unlike the block above (this file's original 32-tool surface), every
+    # method here raises on failure rather than returning a
+    # {"success": False, ...} dict -- matching the document_lifecycle.py/
+    # styles.py convention tools/writer_text.py's callers expect
+    # (_error_response() maps the exception type to a spec error code).
+    #
+    # _require_writer() below deliberately uses _get_document_type() (its
+    # supportsService()-first, isinstance()-as-fallback check), NOT a bare
+    # isinstance(doc, XTextDocument) -- see this module's format_text()
+    # for the landmine this avoids repeating: it uses a literal isinstance()
+    # check and fails against a document opened via certain paths (known,
+    # pre-existing, deliberately left unfixed -- see writer_text.py's
+    # module docstring and the styles.py pass's commit message).
+
+    def _require_writer(self, doc: Any, operation: str) -> None:
+        doc_type = self._get_document_type(doc)
+        if doc_type != "writer":
+            raise NotImplementedError(f"{operation} is only implemented for Writer documents, not '{doc_type}'.")
+
+    def _count_paragraphs(self, doc: Any) -> int:
+        text = doc.getText()
+        enum = text.createEnumeration()
+        count = 0
+        while enum.hasMoreElements():
+            para = enum.nextElement()
+            if hasattr(para, "supportsService") and para.supportsService("com.sun.star.text.Paragraph"):
+                count += 1
+        return count
+
+    def _get_paragraph_object(self, doc: Any, n: int) -> Any:
+        """Return the nth (1-indexed) paragraph object via the same text
+        enumeration get_paragraph()/goto_paragraph()/select_paragraph()
+        already use.
+
+        Raises:
+            IndexError: n < 1, or n is past the last paragraph.
+        """
+        if n < 1:
+            raise IndexError(f"Paragraph number must be >= 1, got {n}")
+        text = doc.getText()
+        enum = text.createEnumeration()
+        current = 0
+        while enum.hasMoreElements():
+            para = enum.nextElement()
+            if hasattr(para, "supportsService") and para.supportsService("com.sun.star.text.Paragraph"):
+                current += 1
+                if current == n:
+                    return para
+        raise IndexError(f"Paragraph {n} out of range. Document has {current} paragraph(s).")
+
+    def _current_paragraph_index(self, doc: Any) -> int:
+        """Return the 1-indexed paragraph number containing the view
+        cursor -- the same char-count-then-scan algorithm get_cursor_position()
+        already uses, factored out so insert_paragraph() can resolve "the
+        current paragraph" when at_paragraph is omitted."""
+        controller = self._get_controller(doc)
+        view_cursor = controller.getViewCursor()
+        text = doc.getText()
+        text_cursor = text.createTextCursor()
+        text_cursor.gotoStart(False)
+        text_cursor.gotoRange(view_cursor, True)
+        char_position = len(text_cursor.getString())
+        enum = text.createEnumeration()
+        paragraph_num = 0
+        char_count = 0
+        while enum.hasMoreElements():
+            para = enum.nextElement()
+            if hasattr(para, "supportsService") and para.supportsService("com.sun.star.text.Paragraph"):
+                paragraph_num += 1
+                char_count += len(para.getString()) + 1
+                if char_count >= char_position:
+                    break
+        return paragraph_num or 1
+
+    def insert_paragraph(self, doc: Any, text: str = "", at_paragraph: Optional[int] = None,
+                          position: Optional[str] = None) -> Dict[str, Any]:
+        """Insert a new paragraph before/after the current or a specified
+        paragraph.
+
+        Technique (standard UNO idiom for "type Enter" at a point): place a
+        collapsed cursor at the target paragraph's start (position="before")
+        or end (position="after"), then insertString()+insertControlCharacter()
+        (or the reverse order for "after") so the paragraph break lands on
+        the correct side of the new text.
+        """
+        self._require_writer(doc, "insert_paragraph")
+        position = position or "after"
+        if position not in ("before", "after"):
+            raise ValueError(f"position must be 'before' or 'after', got {position!r}")
+        anchor_n = at_paragraph if at_paragraph is not None else self._current_paragraph_index(doc)
+        anchor_para = self._get_paragraph_object(doc, anchor_n)
+        text_obj = doc.getText()
+        if position == "before":
+            cursor = text_obj.createTextCursorByRange(anchor_para.getStart())
+            text_obj.insertString(cursor, text, False)
+            text_obj.insertControlCharacter(cursor, PARAGRAPH_BREAK, False)
+            new_paragraph_number = anchor_n
+        else:
+            cursor = text_obj.createTextCursorByRange(anchor_para.getEnd())
+            text_obj.insertControlCharacter(cursor, PARAGRAPH_BREAK, False)
+            text_obj.insertString(cursor, text, False)
+            new_paragraph_number = anchor_n + 1
+        return {"inserted_paragraph": new_paragraph_number, "text": text}
+
+    def append_paragraph(self, doc: Any, text: str = "", style_name: Optional[str] = None) -> Dict[str, Any]:
+        """Append a new paragraph to the end of the document. Always adds a
+        new paragraph (never reuses an existing empty trailing one)."""
+        self._require_writer(doc, "append_paragraph")
+        text_obj = doc.getText()
+        cursor = text_obj.createTextCursor()
+        cursor.gotoEnd(False)
+        text_obj.insertControlCharacter(cursor, PARAGRAPH_BREAK, False)
+        text_obj.insertString(cursor, text, False)
+        style_applied = False
+        if style_name:
+            family_container = self._get_style_family(doc, "ParagraphStyles")
+            if not family_container.hasByName(style_name):
+                raise KeyError(f"No such paragraph style '{style_name}'.")
+            cursor.ParaStyleName = style_name
+            style_applied = True
+        return {"appended_paragraph": self._count_paragraphs(doc), "text": text, "style_applied": style_applied}
+
+    def insert_heading(self, doc: Any, text: str, level: int = 1, at_paragraph: Optional[int] = None,
+                        position: Optional[str] = None) -> Dict[str, Any]:
+        self._require_writer(doc, "insert_heading")
+        if level < 1:
+            raise ValueError(f"level must be >= 1, got {level}")
+        style_name = f"Heading {level}"
+        family_container = self._get_style_family(doc, "ParagraphStyles")
+        if not family_container.hasByName(style_name):
+            raise KeyError(f"No such paragraph style '{style_name}' (level {level}).")
+        result = self.insert_paragraph(doc, text=text, at_paragraph=at_paragraph, position=position)
+        para = self._get_paragraph_object(doc, result["inserted_paragraph"])
+        para.ParaStyleName = style_name
+        result["style"] = style_name
+        result["level"] = level
+        return result
+
+    def set_paragraph_text(self, doc: Any, n: int, text: str) -> Dict[str, Any]:
+        """Replace paragraph n's text in place -- setString() on the same
+        paragraph object preserves paragraph identity/style (no split/merge
+        happens), unlike insert_paragraph/split_paragraph/merge_paragraphs."""
+        self._require_writer(doc, "set_paragraph_text")
+        para = self._get_paragraph_object(doc, n)
+        para.setString(text)
+        return {"paragraph": n, "text": text}
+
+    def split_paragraph(self, doc: Any, n: int, offset: int) -> Dict[str, Any]:
+        self._require_writer(doc, "split_paragraph")
+        para = self._get_paragraph_object(doc, n)
+        para_text = para.getString()
+        if offset < 0 or offset > len(para_text):
+            raise IndexError(f"offset {offset} out of range for paragraph {n} (length {len(para_text)})")
+        text_obj = doc.getText()
+        cursor = text_obj.createTextCursorByRange(para.getStart())
+        if offset > 0:
+            cursor.goRight(offset, False)
+        text_obj.insertControlCharacter(cursor, PARAGRAPH_BREAK, False)
+        return {"paragraph": n, "offset": offset, "first_text": para_text[:offset], "second_text": para_text[offset:]}
+
+    def merge_paragraphs(self, doc: Any, first_n: int, count: int = 2, separator: str = " ") -> Dict[str, Any]:
+        self._require_writer(doc, "merge_paragraphs")
+        if count < 2:
+            raise ValueError(f"count must be >= 2 to merge, got {count}")
+        last_n = first_n + count - 1
+        paras = [self._get_paragraph_object(doc, i) for i in range(first_n, last_n + 1)]
+        texts = [p.getString() for p in paras]
+        merged_text = separator.join(texts)
+        text_obj = doc.getText()
+        span = text_obj.createTextCursorByRange(paras[0].getStart())
+        span.gotoRange(paras[-1].getEnd(), True)
+        span.setString(merged_text)
+        return {"merged_into": first_n, "text": merged_text, "paragraphs_removed": count - 1}
+
+    def _delete_paragraph_range(self, doc: Any, start: int, end: int) -> None:
+        """Delete paragraphs [start, end] (1-indexed, inclusive) entirely,
+        consuming exactly one adjacent paragraph break so no stray empty
+        paragraph is left behind -- prefers the trailing break (into the
+        next surviving paragraph) and only falls back to the leading break
+        when deleting the document's own last paragraph(s), since there is
+        no trailing break to take in that case."""
+        total = self._count_paragraphs(doc)
+        text_obj = doc.getText()
+        start_para = self._get_paragraph_object(doc, start)
+        end_para = self._get_paragraph_object(doc, end)
+        if end < total:
+            range_start = start_para.getStart()
+            range_end = self._get_paragraph_object(doc, end + 1).getStart()
+        elif start > 1:
+            range_start = self._get_paragraph_object(doc, start - 1).getEnd()
+            range_end = end_para.getEnd()
+        else:
+            # Deleting every paragraph in the document -- Writer always
+            # keeps at least one paragraph, so this empties it instead.
+            range_start = start_para.getStart()
+            range_end = end_para.getEnd()
+        cursor = text_obj.createTextCursorByRange(range_start)
+        cursor.gotoRange(range_end, True)
+        cursor.setString("")
+
+    def _insert_paragraph_block(self, doc: Any, entries: List[Any], destination: int) -> int:
+        """Insert `entries` (a list of (text, para_style_name) pairs) as
+        new, consecutive paragraphs so the first one lands at 1-indexed
+        paragraph number `destination` in the resulting document.
+        destination beyond the current paragraph count appends at the end
+        instead of raising. Each paragraph's ParaStyleName is reapplied
+        after insertion (best-effort -- an unrecognized/unsettable style
+        name is silently skipped rather than failing the whole block, same
+        "best effort" spirit as _apply_direct_properties). Returns the
+        resolved starting paragraph number the first inserted paragraph
+        actually landed at.
+
+        Live-verified real bug this fixed: an earlier version of
+        move_paragraphs/copy_paragraphs only carried getString() (plain
+        text), silently dropping the source paragraph's style (e.g. moving
+        a "Heading 1" paragraph landed as a plain-styled paragraph with the
+        same text) -- see the commit message.
+        """
+        total = self._count_paragraphs(doc)
+        if destination > total:
+            anchor_n = total
+            insert_position = "after"
+        else:
+            anchor_n = destination
+            insert_position = "before"
+        for offset, (text, para_style_name) in enumerate(entries):
+            para_n = anchor_n + offset
+            self.insert_paragraph(doc, text=text, at_paragraph=para_n, position=insert_position)
+            landed_n = para_n if insert_position == "before" else para_n + 1
+            if para_style_name:
+                try:
+                    self._get_paragraph_object(doc, landed_n).ParaStyleName = para_style_name
+                except Exception:
+                    pass
+        return anchor_n + 1 if insert_position == "after" else anchor_n
+
+    def move_paragraphs(self, doc: Any, start: int, end: int, destination: int) -> Dict[str, Any]:
+        self._require_writer(doc, "move_paragraphs")
+        if end < start:
+            raise ValueError(f"end ({end}) must be >= start ({start})")
+        total = self._count_paragraphs(doc)
+        if start < 1 or end > total:
+            raise IndexError(f"range {start}-{end} out of bounds (document has {total} paragraph(s))")
+        if start <= destination <= end:
+            raise ValueError(f"destination {destination} falls inside the block being moved ({start}-{end})")
+        count = end - start + 1
+        paras = [self._get_paragraph_object(doc, i) for i in range(start, end + 1)]
+        entries = [(p.getString(), p.ParaStyleName) for p in paras]
+        self._delete_paragraph_range(doc, start, end)
+        resolved_destination = destination - count if destination > end else destination
+        resolved_start = self._insert_paragraph_block(doc, entries, resolved_destination)
+        return {"moved_count": count, "destination": resolved_start}
+
+    def copy_paragraphs(self, doc: Any, start: int, end: int, destination: int) -> Dict[str, Any]:
+        self._require_writer(doc, "copy_paragraphs")
+        if end < start:
+            raise ValueError(f"end ({end}) must be >= start ({start})")
+        total = self._count_paragraphs(doc)
+        if start < 1 or end > total:
+            raise IndexError(f"range {start}-{end} out of bounds (document has {total} paragraph(s))")
+        paras = [self._get_paragraph_object(doc, i) for i in range(start, end + 1)]
+        entries = [(p.getString(), p.ParaStyleName) for p in paras]
+        resolved_start = self._insert_paragraph_block(doc, entries, destination)
+        return {"copied_count": len(entries), "destination": resolved_start}
+
+    def _apply_direct_properties(self, text_range: Any, properties: Dict[str, Any]) -> List[str]:
+        """Set each property directly on a Writer text range via
+        setPropertyValue, skipping (not raising on) any name/value UNO
+        rejects -- same "best-effort, report what applied" contract as
+        update_style()/create_style() above. UNO does not distinguish
+        paragraph-format from character-format properties at this level
+        (both live on the same text range), so set_paragraph_format() and
+        set_character_format() both delegate here."""
+        applied = []
+        for key, value in properties.items():
+            try:
+                text_range.setPropertyValue(key, value)
+                applied.append(key)
+            except Exception:
+                continue
+        return applied
+
+    def set_paragraph_format(self, doc: Any, target: Optional[Any], properties: Dict[str, Any]) -> List[str]:
+        self._require_writer(doc, "set_paragraph_format")
+        text_range = self._resolve_text_target(doc, target)
+        return self._apply_direct_properties(text_range, properties)
+
+    def set_character_format(self, doc: Any, target: Optional[Any], properties: Dict[str, Any]) -> List[str]:
+        self._require_writer(doc, "set_character_format")
+        text_range = self._resolve_text_target(doc, target)
+        return self._apply_direct_properties(text_range, properties)
+
+    def get_text_range_format(self, doc: Any, start: int, end: int) -> Dict[str, Any]:
+        """Return every JSON-safe effective character/paragraph property
+        value on a 0-based Writer character range, plus which of those are
+        direct overrides (PropertyState DIRECT_VALUE) rather than inherited
+        from the paragraph/character style -- a superset of
+        get_direct_formatting_live (styles.py), which only reports the
+        DIRECT_VALUE subset."""
+        self._require_writer(doc, "get_text_range_format")
+        if start < 0 or end < start:
+            raise ValueError(f"Invalid range: start={start}, end={end}")
+        text_range = self._resolve_text_target(doc, {"start": start, "end": end})
+        direct_value = uno.Enum("com.sun.star.beans.PropertyState", "DIRECT_VALUE")
+        effective: Dict[str, Any] = {}
+        direct_overrides = []
+        for prop in text_range.getPropertySetInfo().getProperties():
+            try:
+                plain_value = self._uno_value_to_plain(text_range.getPropertyValue(prop.Name))
+                if not self._is_json_safe(plain_value):
+                    continue
+                effective[prop.Name] = plain_value
+                if text_range.getPropertyState(prop.Name) == direct_value:
+                    direct_overrides.append(prop.Name)
+            except Exception:
+                continue
+        return {"effective_formatting": effective, "direct_override_properties": sorted(direct_overrides)}
+
+    def find_regex(self, doc: Any, pattern: str, case_sensitive: bool = False) -> Dict[str, Any]:
+        """Find via XSearchable with SearchRegularExpression=True -- real
+        LibreOffice/ICU regex support, not hand-rolled Python re + manual
+        cursor walking (this gives matches with usable positions directly,
+        same technique find_text() already uses for plain-text search)."""
+        self._require_writer(doc, "find_regex")
+        search = doc.createSearchDescriptor()
+        search.SearchString = pattern
+        search.SearchRegularExpression = True
+        search.SearchCaseSensitive = case_sensitive
+        found = doc.findAll(search)
+        text = doc.getText()
+        matches = []
+        if found:
+            for i in range(found.getCount()):
+                match_range = found.getByIndex(i)
+                text_cursor = text.createTextCursor()
+                text_cursor.gotoStart(False)
+                text_cursor.gotoRange(match_range.getStart(), True)
+                position = len(text_cursor.getString())
+                matched_text = match_range.getString()
+                matches.append({"position": position, "text": matched_text, "length": len(matched_text)})
+        return {"matches": matches, "count": len(matches), "pattern": pattern, "case_sensitive": case_sensitive}
+
+    def replace_regex(self, doc: Any, pattern: str, replacement: str, all: bool = True) -> Dict[str, Any]:
+        """Replace via XReplaceable with SearchRegularExpression=True (native
+        regex, including $1-style backreferences in `replacement`)."""
+        self._require_writer(doc, "replace_regex")
+        if all:
+            replace = doc.createReplaceDescriptor()
+            replace.SearchString = pattern
+            replace.ReplaceString = replacement
+            replace.SearchRegularExpression = True
+            count = doc.replaceAll(replace)
+            return {"count": count, "pattern": pattern, "replacement": replacement, "all": True}
+        search = doc.createSearchDescriptor()
+        search.SearchString = pattern
+        search.SearchRegularExpression = True
+        found = doc.findFirst(search)
+        if not found:
+            return {"replaced": False, "pattern": pattern, "replacement": replacement, "all": False}
+        text = doc.getText()
+        text_cursor = text.createTextCursor()
+        text_cursor.gotoStart(False)
+        text_cursor.gotoRange(found.getStart(), True)
+        position = len(text_cursor.getString())
+        found.setString(replacement)
+        return {"replaced": True, "position": position, "pattern": pattern, "replacement": replacement, "all": False}
+
+    def find_by_style(self, doc: Any, family: str, style_name: str) -> Dict[str, Any]:
+        """Find paragraphs (family="ParagraphStyles") or character-styled
+        runs (family="CharacterStyles") using a named style -- the same
+        _STYLE_FAMILY_APPLY_PROPERTY mapping apply_style()/replace_style()
+        use, so this only recognizes the two families that mapping covers."""
+        self._require_writer(doc, "find_by_style")
+        apply_property = self._STYLE_FAMILY_APPLY_PROPERTY.get(family)
+        if apply_property is None:
+            raise NotImplementedError(f"find_by_style is not implemented for family '{family}'.")
+        family_container = self._get_style_family(doc, family)
+        if not family_container.hasByName(style_name):
+            raise KeyError(f"No such style '{style_name}' in family '{family}'.")
+        text = doc.getText()
+        enum = text.createEnumeration()
+        matches = []
+        paragraph_num = 0
+        while enum.hasMoreElements():
+            para = enum.nextElement()
+            if not (hasattr(para, "supportsService") and para.supportsService("com.sun.star.text.Paragraph")):
+                continue
+            paragraph_num += 1
+            if family == "ParagraphStyles":
+                if para.getPropertyValue(apply_property) == style_name:
+                    matches.append({"paragraph": paragraph_num, "text": para.getString()})
+            else:  # CharacterStyles
+                portion_enum = para.createEnumeration()
+                while portion_enum.hasMoreElements():
+                    portion = portion_enum.nextElement()
+                    if portion.getPropertyValue(apply_property) == style_name:
+                        matches.append({"paragraph": paragraph_num, "text": portion.getString()})
+        return {"family": family, "style_name": style_name, "matches": matches, "count": len(matches)}
+
+    def replace_style(self, doc: Any, family: str, old_style: str, new_style: str) -> Dict[str, Any]:
+        """Replace every paragraph/run using old_style with new_style."""
+        self._require_writer(doc, "replace_style")
+        apply_property = self._STYLE_FAMILY_APPLY_PROPERTY.get(family)
+        if apply_property is None:
+            raise NotImplementedError(f"replace_style is not implemented for family '{family}'.")
+        family_container = self._get_style_family(doc, family)
+        if not family_container.hasByName(old_style):
+            raise KeyError(f"No such style '{old_style}' in family '{family}'.")
+        if not family_container.hasByName(new_style):
+            raise KeyError(f"No such style '{new_style}' in family '{family}'.")
+        text = doc.getText()
+        enum = text.createEnumeration()
+        count = 0
+        while enum.hasMoreElements():
+            para = enum.nextElement()
+            if not (hasattr(para, "supportsService") and para.supportsService("com.sun.star.text.Paragraph")):
+                continue
+            if family == "ParagraphStyles":
+                if para.getPropertyValue(apply_property) == old_style:
+                    para.setPropertyValue(apply_property, new_style)
+                    count += 1
+            else:  # CharacterStyles
+                portion_enum = para.createEnumeration()
+                while portion_enum.hasMoreElements():
+                    portion = portion_enum.nextElement()
+                    if portion.getPropertyValue(apply_property) == old_style:
+                        portion.setPropertyValue(apply_property, new_style)
+                        count += 1
+        return {"family": family, "old_style": old_style, "new_style": new_style, "replaced_count": count}
+
+    # -- Comments (update/delete/resolve) --------------------------------
+    #
+    # get_comments()/add_comment() above already enumerate/create Writer
+    # comments as com.sun.star.text.TextField.Annotation text fields; these
+    # three tools address the SAME fields the same way (via
+    # doc.getTextFields()'s enumeration, filtered to that service), not a
+    # parallel comment model. The only gap they close is identity: neither
+    # get_comments() nor the Annotation field service guarantees a stable
+    # id: _comment_id_for() below prefers a real UNO "Id" property when this
+    # LibreOffice build exposes one on annotation fields (durable), and
+    # falls back to the field's ordinal position in document order
+    # (session-stable only -- shifts if an earlier comment is added or
+    # removed) when it doesn't. Which case this build actually hits is
+    # live-verified, see the commit message for this pass.
+
+    def _enumerate_comments(self, doc: Any) -> List[Any]:
+        """Return annotation TextField objects in document order -- the
+        exact same enumeration get_comments() performs, factored out so
+        update/delete/resolve_comment index into a matching order."""
+        fields = []
+        if hasattr(doc, "getTextFields"):
+            text_fields = doc.getTextFields()
+            enum = text_fields.createEnumeration()
+            while enum.hasMoreElements():
+                field = enum.nextElement()
+                if hasattr(field, "supportsService") and field.supportsService("com.sun.star.text.TextField.Annotation"):
+                    fields.append(field)
+        return fields
+
+    def _comment_id_for(self, field: Any, index: int) -> str:
+        try:
+            if field.getPropertySetInfo().hasPropertyByName("Id"):
+                raw_id = field.getPropertyValue("Id")
+                if raw_id:
+                    return str(raw_id)
+        except Exception:
+            pass
+        return str(index)
+
+    def find_comment_by_id(self, doc: Any, comment_id: str) -> Any:
+        """Raises KeyError if no comment has this id."""
+        for index, field in enumerate(self._enumerate_comments(doc)):
+            if self._comment_id_for(field, index) == comment_id:
+                return field
+        raise KeyError(f"No comment with id '{comment_id}'.")
+
+    def update_comment(self, doc: Any, comment_id: str, text: Optional[str] = None,
+                        author: Optional[str] = None) -> Dict[str, Any]:
+        self._require_writer(doc, "update_comment")
+        field = self.find_comment_by_id(doc, comment_id)
+        applied = []
+        if text is not None:
+            field.Content = text
+            applied.append("text")
+        if author is not None:
+            field.Author = author
+            applied.append("author")
+        return {"comment_id": comment_id, "applied": applied}
+
+    def delete_comment(self, doc: Any, comment_id: str) -> None:
+        self._require_writer(doc, "delete_comment")
+        field = self.find_comment_by_id(doc, comment_id)
+        doc.getText().removeTextContent(field)
+
+    _RESOLVED_MARKER = "[RESOLVED] "
+
+    def resolve_comment(self, doc: Any, comment_id: str, resolved: bool = True) -> Dict[str, Any]:
+        """Mark a comment resolved via a real UNO "Resolved" property when
+        this LibreOffice build's annotation fields expose one; otherwise
+        emulate it with a "[RESOLVED] " Content marker (round-trips through
+        get_comments_live's content field, but is not a native resolved
+        state -- documented, not hidden, per this tool's own spec purpose:
+        "where supported; otherwise emulate with metadata")."""
+        self._require_writer(doc, "resolve_comment")
+        field = self.find_comment_by_id(doc, comment_id)
+        try:
+            info = field.getPropertySetInfo()
+            if info.hasPropertyByName("Resolved"):
+                field.setPropertyValue("Resolved", resolved)
+                return {"comment_id": comment_id, "resolved": resolved, "emulated": False}
+        except Exception:
+            pass
+        content = field.Content or ""
+        has_marker = content.startswith(self._RESOLVED_MARKER)
+        if resolved and not has_marker:
+            field.Content = self._RESOLVED_MARKER + content
+        elif not resolved and has_marker:
+            field.Content = content[len(self._RESOLVED_MARKER):]
+        return {"comment_id": comment_id, "resolved": resolved, "emulated": True}
