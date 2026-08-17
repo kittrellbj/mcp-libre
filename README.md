@@ -6,7 +6,7 @@ This fork focuses on making the LibreOffice extension work cleanly on Windows wh
 
 ## v1.0.0 — Windows Native Extension Baseline
 
-Version 1.0.0 is the first known-working Windows baseline for the native LibreOffice extension.
+Version 1.0.0 establishes a known-working Windows baseline for the native LibreOffice extension, validated end-to-end on Windows.
 
 Validated functionality includes:
 
