@@ -14,7 +14,12 @@ from types import SimpleNamespace
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugin", "pythonpath"))
 
-from uno_datetime import uno_datetime_to_iso  # noqa: E402
+from uno_datetime import (  # noqa: E402
+    uno_datetime_to_iso,
+    uno_date_to_iso,
+    uno_duration_to_iso,
+    uno_temporal_value_to_plain,
+)
 
 
 def _fake_datetime(year=2026, month=8, day=16, hours=23, minutes=56, seconds=32,
