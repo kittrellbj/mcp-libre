@@ -77,9 +77,11 @@ mcp-libre/
 ├── 📁 docs/                        # Documentation
 │   ├── CHATGPT_BROWSER_GUIDE.md    # ChatGPT browser integration guide
 │   ├── COMPLETE_SOLUTION.md        # Comprehensive overview
+│   ├── DOCUMENT_TARGETING_DECISION.md # document_id vs document_url decision (vs. WriterAgent reference)
 │   ├── EXAMPLES.md                 # Usage examples
 │   ├── LICENSE_OPTIONS.md          # License information
 │   ├── LIVE_VIEWING_GUIDE.md       # Live viewing setup guide
+│   ├── MCP_TOOLING_SCAFFOLD_PLAN.md # Full-catalog scaffold/real-implementation progress tracker
 │   ├── PREREQUISITES.md            # System requirements
 │   ├── QUICK_START.md              # Quick start guide
 │   ├── REPOSITORY_STRUCTURE.md     # This file

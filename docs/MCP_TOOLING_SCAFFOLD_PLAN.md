@@ -648,6 +648,26 @@ through to `supportsService()` when it doesn't match. None of the new
 Phase A real-implementation code is exposed to the isinstance fragility
 as a result; only these two original-32 legacy methods are.
 
+## Document targeting decision: `document_id` vs `document_url`
+
+Mandated item #1, blocking further Phase C/D real implementation until
+decided: see `docs/DOCUMENT_TARGETING_DECISION.md` for the full
+comparison against WriterAgent's `document_url`/`X-Document-URL`
+approach. Short version: **`document_id`/`DocumentRegistry` stays the one
+targeting mechanism** -- it already gives O(1), Save-As-stable,
+untitled-document-safe resolution via UNO object-identity keying, the
+same guarantees WriterAgent's URL-or-`RuntimeUID` dual scheme exists to
+provide, without a second parameter shape or a per-call desktop
+enumeration. Which tools take `document_id` at all stays governed by the
+existing "match the spec's own parameter list for that tool exactly"
+rule (`document_lifecycle.py`/`styles.py`/`writer_text.py` precedent),
+unchanged by this decision. One real gap this comparison surfaced,
+independent of the addressing mechanism: mcp-libre has no per-document
+mutation lock, so two concurrent MCP clients could race on the same open
+document -- flagged for the `/mcp` transport work (mandated item #4), not
+solved here since it's a concurrency-control concern layered on top of
+addressing, not an addressing question itself.
+
 ## What was built
 
 **Shared plumbing (`plugin/pythonpath/tools/`):**
