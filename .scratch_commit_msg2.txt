@@ -1,0 +1,54 @@
+PyUNO robustness sweep: fix 11 bare except:, audit isinstance() fragility
+
+Mandated item #3 of Buddy's four-item order blocking further Phase C/D
+real implementation ("eleven remaining bare except: blocks plus known
+interface-isinstance() fragility are cheap to audit at 90 tools and
+expensive at 400+").
+
+All 11 bare except: blocks in uno_bridge.py narrowed to except
+Exception:. All 11 live inside original-32 legacy helper methods as
+best-effort property/range probes, not tool entry points:
+get_track_changes_status (3: RecordChanges/ShowChanges/getRedlines()),
+the tracked-deletion range-comparison/paragraph-filtering helpers (4),
+find_text/find_and_replace_all's duplicated RecordChanges/ShowChanges
+probe (2), and _has_selection (1). Mechanical narrowing, not a
+behavior change for any realistic UNO-raised exception -- except: and
+except Exception: catch identically for anything UNO raises; the only
+difference is except: also silently swallowed
+KeyboardInterrupt/SystemExit/GeneratorExit, which matters in a
+long-running embedded server process.
+
+isinstance()-on-UNO-interface fragility audit: grepped all 9
+_is_instance() call sites. Two are genuinely unguarded (isinstance is
+the only check, no supportsService() fallback):
+
+1. format_text_live (original 32) -- already known/documented from the
+   styles.py pass, confirmed still present, left unfixed to preserve
+   the original 32 exactly.
+2. get_document_info_live (original 32) -- newly discovered this pass.
+   Its Writer/Calc enrichment branch (word_count/character_count,
+   sheet_count/sheet_names) is gated by _is_instance() alone with no
+   supportsService() fallback. Fails silently, not loudly: a spurious
+   isinstance() False still returns success: true with the enrichment
+   fields just missing. Not fixed (same preserve-the-32 rule); flagged
+   as technical debt in docs/MCP_TOOLING_SCAFFOLD_PLAN.md.
+
+The remaining 5 call sites (insert_text, get_text_content,
+_get_document_type x3) all either OR isinstance with supportsService()/
+hasattr(getText) or, for _get_document_type() specifically -- which
+every real-implementation module's _require_writer()/style-family
+helpers route through -- try isinstance first and fall through to
+supportsService() when it doesn't match. None of the new Phase A
+real-implementation code is exposed to the fragility as a result.
+
+Live-verified the bare-except narrowing is behaviorally inert on the
+normal path: rebuilt the extension, live-called
+get_track_changes_status_live/find_text_live/find_and_replace_all_live
+against a real document with real matches, independently confirmed
+find_and_replace_all_live's replacement landed via
+get_text_content_live. Full suite still 178/178 after the change (no
+test changes needed -- this is an internal exception-scope narrowing,
+not an observable-behavior change).
+
+Co-authored-by: Brian Kittrell <kittrellbj@gmail.com>
+Signed-off-by: Brian Kittrell <kittrellbj@gmail.com>

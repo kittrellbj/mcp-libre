@@ -1417,11 +1417,11 @@ class UNOBridge:
             if hasattr(doc, 'getPropertyValue'):
                 try:
                     recording = doc.getPropertyValue("RecordChanges")
-                except:
+                except Exception:
                     pass
                 try:
                     showing = doc.getPropertyValue("ShowChanges")
-                except:
+                except Exception:
                     pass
 
             # Count pending redlines using XRedlinesSupplier
@@ -1430,7 +1430,7 @@ class UNOBridge:
                     redlines = doc.getRedlines()
                     if redlines:
                         pending_count = redlines.getCount()
-                except:
+                except Exception:
                     pass
 
             logger.info(f"Track Changes status: recording={recording}, showing={showing}, pending={pending_count}")
@@ -1832,9 +1832,9 @@ class UNOBridge:
                                     # end_compare <= 0 means text_range ends at or before redline end
                                     if start_compare >= 0 and end_compare <= 0:
                                         return True
-                                except:
+                                except Exception:
                                     pass
-                except:
+                except Exception:
                     continue
 
             return False
@@ -2053,9 +2053,9 @@ class UNOBridge:
                                     # Use compareRegionStarts/Ends to check overlap
                                     # If deletion is within paragraph, add to list
                                     deletion_ranges.append(redline_range)
-                                except:
+                                except Exception:
                                     pass
-                except:
+                except Exception:
                     continue
 
             # If no deletions, return original text
@@ -2077,7 +2077,7 @@ class UNOBridge:
                             if self._is_in_tracked_deletion(portion, doc):
                                 is_deleted = True
                                 break
-                        except:
+                        except Exception:
                             pass
 
                     # Add portion text if not deleted
@@ -2662,7 +2662,7 @@ class UNOBridge:
                     recording = doc.getPropertyValue("RecordChanges")
                     showing = doc.getPropertyValue("ShowChanges")
                     track_changes_active = recording or showing
-                except:
+                except Exception:
                     pass
 
             # Create search descriptor
@@ -2817,7 +2817,7 @@ class UNOBridge:
             if hasattr(doc, 'getPropertyValue'):
                 try:
                     track_changes_active = doc.getPropertyValue("RecordChanges")
-                except:
+                except Exception:
                     pass
 
             # If Track Changes is disabled, use native replaceAll for performance
@@ -2906,7 +2906,7 @@ class UNOBridge:
                 if hasattr(controller, 'getSelection'):
                     selection = controller.getSelection()
                     return selection.getCount() > 0
-        except:
+        except Exception:
             pass
         return False
 

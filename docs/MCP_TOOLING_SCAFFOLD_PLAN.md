@@ -588,6 +588,66 @@ are live-verified instead, not something a fake can usefully assert).
 178/178 passing under `pytest` across the full relevant suite (146 prior +
 32 new).
 
+## PyUNO robustness sweep
+
+Mandated by Brian/Buddy before further Phase C/D real implementation
+("cheap to audit at 90 tools and expensive at 400+"): a sweep of
+`uno_bridge.py` for two known dangerous patterns.
+
+**11 bare `except:` blocks, all fixed** (narrowed to `except Exception:`).
+All 11 live inside original-32 legacy helper methods -- best-effort
+property/range probes, not tool entry points:
+`get_track_changes_status` (3, reading `RecordChanges`/`ShowChanges`/
+`getRedlines()` -- any one may not exist on a given document type),
+`_is_text_range_in_tracked_deletion`/its paragraph-filtering counterpart
+(4, comparing/collecting redline ranges), `find_text`/`find_and_replace_all`
+(2, the same `RecordChanges`/`ShowChanges` probe duplicated), and
+`_has_selection` (1). This is a mechanical narrowing, not a behavior
+change for any realistic UNO-raised exception -- a bare `except:` and
+`except Exception:` catch exactly the same things a UNO call can raise;
+the only difference is a bare `except:` also silently swallows
+`KeyboardInterrupt`/`SystemExit`/`GeneratorExit`, which matters in a
+long-running embedded server process. Live-verified behaviorally
+unchanged on the normal path: rebuilt the extension, live-called
+`get_track_changes_status_live`, `find_text_live`, and
+`find_and_replace_all_live` against a real document with real matches,
+independently confirmed `find_and_replace_all_live`'s replacement
+genuinely landed via `get_text_content_live`. Full suite still 178/178
+after the change.
+
+**`isinstance()`-on-UNO-interface fragility audit.** Grepped every
+`_is_instance(doc, ...)` call site (9 total, the helper itself excluded).
+Two are genuinely unguarded (isinstance is the *only* check, no
+`supportsService()` fallback if it spuriously returns the wrong answer
+for a given UNO document proxy):
+
+1. `format_text_live` (original 32) -- **already known and documented**
+   (styles.py pass), confirmed still present, still deliberately left
+   unfixed to preserve the original 32 exactly.
+2. `get_document_info_live` (original 32) -- **newly discovered this
+   pass**. `get_document_info()`'s Writer/Calc enrichment branch
+   (`word_count`/`character_count` for Writer, `sheet_count`/
+   `sheet_names` for Calc) is gated by `_is_instance(doc, XTextDocument)`/
+   `_is_instance(doc, XSpreadsheetDocument)` alone, with no
+   `supportsService()` fallback. Unlike `format_text_live`'s failure mode
+   (an outright error), this one fails *silently*: if isinstance
+   spuriously returns `False` for a genuinely-Writer or genuinely-Calc
+   document, `get_document_info_live` still returns `success: true` with
+   the base fields, just missing the type-specific enrichment -- easy to
+   miss since nothing signals the omission. Not fixed here (preserving
+   the original 32 exactly, same rule as `format_text_live`); flagged as
+   technical debt.
+
+The remaining 5 `_is_instance()` call sites (`insert_text`,
+`get_text_content`, `_get_document_type` x3) all either `or` the
+isinstance check together with a `supportsService()` check and/or a
+`hasattr(doc, 'getText')` fallback, or -- in `_get_document_type()`'s
+case, which every real-implementation module's `_require_writer()`/
+style-family/etc. helpers route through -- try isinstance first and fall
+through to `supportsService()` when it doesn't match. None of the new
+Phase A real-implementation code is exposed to the isinstance fragility
+as a result; only these two original-32 legacy methods are.
+
 ## What was built
 
 **Shared plumbing (`plugin/pythonpath/tools/`):**
