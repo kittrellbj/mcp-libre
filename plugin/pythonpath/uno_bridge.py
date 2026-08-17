@@ -3431,3 +3431,557 @@ class UNOBridge:
         elif not resolved and has_marker:
             field.Content = content[len(self._RESOLVED_MARKER):]
         return {"comment_id": comment_id, "resolved": resolved, "emulated": True}
+
+    # -- Common drawing objects (tools/drawing_objects.py's 31 tools) --
+    #
+    # Same raise-on-failure convention as the writer_text.py/styles.py
+    # sections above (_error_response() in the tool layer maps exceptions
+    # to spec error codes) -- not the {"success": False, ...} dict
+    # convention the original 32 use.
+    #
+    # shape_id/object_id resolution (the ObjectRegistry from
+    # docs/OBJECT_HANDLE_DESIGN.md) happens in tools/drawing_objects.py,
+    # NOT here -- this bridge layer only ever deals in already-resolved
+    # UNO shape objects, exactly like _resolve_text_target() hands
+    # already-resolved text ranges to styles.py's methods. Methods below
+    # that create a NEW shape (insert_shape/duplicate_shape/insert_image)
+    # return the raw UNO shape object; the tool layer registers it to
+    # mint its id.
+    #
+    # container resolution (sheet/page addressing) is live name-or-index
+    # resolution, no registry, per docs/OBJECT_HANDLE_DESIGN.md's
+    # category split -- _resolve_sheet_by_name_or_index()/
+    # _resolve_page_by_name_or_index() below are exactly the
+    # "_resolve_sheet()/_resolve_slide() helpers" that design doc left
+    # for this pass.
+    #
+    # Scope limit, deliberate: combine_shapes/split_shape/bind_shapes/
+    # unbind_shape (all P3) and insert_embedded_object/
+    # activate_embedded_object (also P3) raise NotImplementedError
+    # instead of a real implementation. combine/split/bind/unbind only
+    # exist as .uno: dispatch commands (no direct UNO API equivalent);
+    # live-tested this pass with a real selection + view -- .uno:Combine
+    # executed and appeared to work, but crashed the headless soffice
+    # process outright on the very next UNO call (a
+    # DisposedException: "Binary URP bridge disposed during call"),
+    # which would take down the extension's whole host process for every
+    # connected MCP client, not just the caller. Not safe to ship without
+    # a dedicated isolation/testing pass. insert_embedded_object/
+    # activate_embedded_object are the same risk class (OLE
+    # activation is also dispatch/verb-based) and were not exploration-
+    # tested this pass given the crash above -- left unimplemented rather
+    # than guessed at.
+
+    def _require_shape_capable(self, doc: Any, operation: str) -> None:
+        doc_type = self._get_document_type(doc)
+        if doc_type not in ("writer", "calc", "impress", "draw"):
+            raise NotImplementedError(f"{operation} is not supported for document type '{doc_type}'.")
+
+    @staticmethod
+    def _resolve_sheet_by_name_or_index(sheets: Any, sheet_ref: str) -> Any:
+        if sheets.hasByName(sheet_ref):
+            return sheets.getByName(sheet_ref)
+        if sheet_ref.isdigit():
+            index = int(sheet_ref)
+            if 0 <= index < sheets.getCount():
+                return sheets.getByIndex(index)
+        raise KeyError(f"No such sheet '{sheet_ref}'.")
+
+    @staticmethod
+    def _resolve_page_by_name_or_index(pages: Any, page_ref: Any) -> Any:
+        """page_ref may be an int (0-based index) or a str (page Name,
+        with the same digit-string-falls-back-to-index convention
+        _resolve_sheet_by_name_or_index uses)."""
+        if isinstance(page_ref, bool):
+            raise TypeError("page reference must be an int index or a str name, not bool.")
+        if isinstance(page_ref, int):
+            if 0 <= page_ref < pages.getCount():
+                return pages.getByIndex(page_ref)
+            raise IndexError(f"Page index {page_ref} out of range (document has {pages.getCount()} page(s)).")
+        page_ref = str(page_ref)
+        if pages.hasByName(page_ref):
+            return pages.getByName(page_ref)
+        if page_ref.isdigit():
+            index = int(page_ref)
+            if 0 <= index < pages.getCount():
+                return pages.getByIndex(index)
+        raise KeyError(f"No such page '{page_ref}'.")
+
+    def _resolve_shape_container(self, doc: Any, container: Optional[Any] = None) -> Any:
+        """Return the XDrawPage 'container' addresses: Writer's single
+        document-wide draw page (container ignored -- there is only
+        ever one), a specific Calc sheet's own draw page (container
+        required, sheet name or digit-string index), or a specific
+        Impress/Draw page (container optional, defaults to page 0;
+        int index or name)."""
+        self._require_shape_capable(doc, "drawing objects")
+        doc_type = self._get_document_type(doc)
+        if doc_type == "writer":
+            return doc.getDrawPage()
+        if doc_type == "calc":
+            if container is None:
+                raise ValueError("container (sheet name or index) is required for Calc documents.")
+            sheet = self._resolve_sheet_by_name_or_index(doc.getSheets(), str(container))
+            return sheet.getDrawPage()
+        # impress, draw
+        pages = doc.getDrawPages()
+        if container is None:
+            if pages.getCount() == 0:
+                raise IndexError("Document has no pages.")
+            return pages.getByIndex(0)
+        return self._resolve_page_by_name_or_index(pages, container)
+
+    _SHAPE_SERVICE_TYPE_NAMES = (
+        ("com.sun.star.drawing.OLE2Shape", "ole"),
+        ("com.sun.star.drawing.GraphicObjectShape", "image"),
+        ("com.sun.star.drawing.GroupShape", "group"),
+        ("com.sun.star.drawing.ConnectorShape", "connector"),
+        ("com.sun.star.drawing.CustomShape", "custom"),
+        ("com.sun.star.drawing.RectangleShape", "rectangle"),
+        ("com.sun.star.drawing.EllipseShape", "ellipse"),
+        ("com.sun.star.drawing.LineShape", "line"),
+        ("com.sun.star.drawing.PolyPolygonShape", "polygon"),
+        ("com.sun.star.drawing.PolyLineShape", "polyline"),
+        ("com.sun.star.drawing.OpenBezierShape", "bezier"),
+        ("com.sun.star.drawing.ClosedBezierShape", "bezier"),
+        ("com.sun.star.drawing.TextShape", "text"),
+    )
+
+    @classmethod
+    def _get_shape_type(cls, shape: Any) -> str:
+        """Best-effort short type name for a shape via supportsService(),
+        checked most-specific-first (e.g. an OLE2Shape's ShapeType string
+        also often mentions generic drawing terms, so service checks are
+        more reliable than string-matching ShapeType directly)."""
+        for service_name, short_name in cls._SHAPE_SERVICE_TYPE_NAMES:
+            if shape.supportsService(service_name):
+                return short_name
+        return "other"
+
+    @staticmethod
+    def _shape_geometry(shape: Any) -> Dict[str, Any]:
+        position = shape.Position
+        size = shape.Size
+        geometry = {
+            "x": position.X, "y": position.Y,
+            "width": size.Width, "height": size.Height,
+        }
+        try:
+            geometry["rotation"] = shape.RotateAngle
+        except Exception:
+            pass
+        try:
+            geometry["shear"] = shape.ShearAngle
+        except Exception:
+            pass
+        return geometry
+
+    @classmethod
+    def _shape_summary(cls, shape: Any, shape_id: str) -> Dict[str, Any]:
+        summary: Dict[str, Any] = {
+            "shape_id": shape_id,
+            "type": cls._get_shape_type(shape),
+        }
+        summary.update(cls._shape_geometry(shape))
+        try:
+            if hasattr(shape, "getString"):
+                text = shape.getString()
+                if text:
+                    summary["text"] = text
+        except Exception:
+            pass
+        return summary
+
+    def list_shapes_in_container(self, doc: Any, container: Optional[Any] = None,
+                                  type_filter: Optional[str] = None) -> List[Any]:
+        """Return the raw UNO shape objects on 'container' (see
+        _resolve_shape_container), optionally filtered to one
+        _get_shape_type() short name. Registering each into an
+        ObjectRegistry (to mint shape_ids) is the tool layer's job."""
+        page = self._resolve_shape_container(doc, container)
+        shapes = []
+        for i in range(page.getCount()):
+            shape = page.getByIndex(i)
+            if type_filter is not None and self._get_shape_type(shape) != type_filter:
+                continue
+            shapes.append(shape)
+        return shapes
+
+    def get_shape_summary(self, shape: Any, shape_id: str) -> Dict[str, Any]:
+        return self._shape_summary(shape, shape_id)
+
+    def get_shape_details(self, shape: Any, shape_id: str) -> Dict[str, Any]:
+        details: Dict[str, Any] = {
+            "shape_id": shape_id,
+            "type": self._get_shape_type(shape),
+        }
+        details.update(self._shape_geometry(shape))
+        try:
+            details["z_order"] = shape.ZOrder
+        except Exception:
+            pass
+        try:
+            if hasattr(shape, "getString"):
+                details["text"] = shape.getString()
+        except Exception:
+            pass
+        for attr, key in (("Title", "title"), ("Description", "description")):
+            try:
+                value = shape.getPropertyValue(attr)
+                if value:
+                    details[key] = value
+            except Exception:
+                pass
+        style: Dict[str, Any] = {}
+        for prop_name in ("FillColor", "FillStyle", "LineColor", "LineWidth", "LineStyle",
+                           "Shadow", "FillTransparence", "LineTransparence"):
+            try:
+                value = self._uno_value_to_plain(shape.getPropertyValue(prop_name))
+                if self._is_json_safe(value):
+                    style[prop_name] = value
+            except Exception:
+                continue
+        details["style"] = style
+        return details
+
+    _SHAPE_TYPE_SERVICES = {
+        "rectangle": "com.sun.star.drawing.RectangleShape",
+        "ellipse": "com.sun.star.drawing.EllipseShape",
+        "line": "com.sun.star.drawing.LineShape",
+        "polygon": "com.sun.star.drawing.PolyPolygonShape",
+        "polyline": "com.sun.star.drawing.PolyLineShape",
+        "bezier": "com.sun.star.drawing.OpenBezierShape",
+        "text": "com.sun.star.drawing.TextShape",
+        "custom": "com.sun.star.drawing.CustomShape",
+    }
+
+    def insert_shape(self, doc: Any, shape_type: str, position: Dict[str, Any], size: Dict[str, Any],
+                      container: Optional[Any] = None, properties: Optional[Dict[str, Any]] = None) -> Any:
+        service_name = self._SHAPE_TYPE_SERVICES.get(shape_type)
+        if service_name is None:
+            raise ValueError(f"Unknown shape_type '{shape_type}'. Supported: {sorted(self._SHAPE_TYPE_SERVICES)}")
+        page = self._resolve_shape_container(doc, container)
+        shape = doc.createInstance(service_name)
+        page.add(shape)
+        shape.Position = uno.createUnoStruct("com.sun.star.awt.Point", int(position.get("x", 0)), int(position.get("y", 0)))
+        shape.Size = uno.createUnoStruct("com.sun.star.awt.Size", int(size.get("width", 1000)), int(size.get("height", 1000)))
+        if properties:
+            self._apply_direct_properties(shape, properties)
+        return shape
+
+    def delete_shape(self, doc: Any, shape: Any) -> None:
+        page = shape.getParent()
+        page.remove(shape)
+
+    def duplicate_shape(self, doc: Any, shape: Any, offset: Optional[Dict[str, Any]] = None) -> Any:
+        """UNO has no direct 'clone shape' API -- create a new shape of
+        the same service and copy every settable property, live-verified
+        this captures fill/line/text/geometry style (214 of ~229
+        properties copied in testing; the rest are read-only derived
+        properties UNO itself refuses to set, silently skipped, matching
+        this file's established best-effort setPropertyValue convention)."""
+        page = shape.getParent()
+        # SupportedServiceNames[0] is always the concrete, most-specific
+        # shape service (e.g. "com.sun.star.drawing.RectangleShape") --
+        # live-verified for both RectangleShape and EllipseShape; the
+        # generic "com.sun.star.drawing.Shape"/"...Text" interfaces this
+        # sequence also contains always come later.
+        concrete = shape.SupportedServiceNames[0]
+        new_shape = doc.createInstance(concrete)
+        page.add(new_shape)
+        for prop in shape.getPropertySetInfo().getProperties():
+            try:
+                new_shape.setPropertyValue(prop.Name, shape.getPropertyValue(prop.Name))
+            except Exception:
+                continue
+        if offset:
+            pos = new_shape.Position
+            new_shape.Position = uno.createUnoStruct(
+                "com.sun.star.awt.Point",
+                pos.X + int(offset.get("x", 0)),
+                pos.Y + int(offset.get("y", 0)),
+            )
+        return new_shape
+
+    def set_shape_geometry(self, shape: Any, geometry: Dict[str, Any]) -> List[str]:
+        applied = []
+        if "x" in geometry or "y" in geometry:
+            pos = shape.Position
+            shape.Position = uno.createUnoStruct(
+                "com.sun.star.awt.Point",
+                int(geometry.get("x", pos.X)), int(geometry.get("y", pos.Y)),
+            )
+            applied.extend(k for k in ("x", "y") if k in geometry)
+        if "width" in geometry or "height" in geometry:
+            size = shape.Size
+            shape.Size = uno.createUnoStruct(
+                "com.sun.star.awt.Size",
+                int(geometry.get("width", size.Width)), int(geometry.get("height", size.Height)),
+            )
+            applied.extend(k for k in ("width", "height") if k in geometry)
+        for key, attr in (("rotation", "RotateAngle"), ("shear", "ShearAngle")):
+            if key in geometry:
+                try:
+                    shape.setPropertyValue(attr, int(geometry[key]))
+                    applied.append(key)
+                except Exception:
+                    continue
+        if "flip_horizontal" in geometry or "flip_vertical" in geometry:
+            size = shape.Size
+            new_width = -abs(size.Width) if geometry.get("flip_horizontal") else abs(size.Width)
+            new_height = -abs(size.Height) if geometry.get("flip_vertical") else abs(size.Height)
+            try:
+                shape.Size = uno.createUnoStruct("com.sun.star.awt.Size", new_width, new_height)
+                applied.extend(k for k in ("flip_horizontal", "flip_vertical") if k in geometry)
+            except Exception:
+                pass
+        return applied
+
+    def set_shape_style(self, shape: Any, properties: Dict[str, Any]) -> List[str]:
+        return self._apply_direct_properties(shape, properties)
+
+    def set_shape_text(self, shape: Any, text: str) -> None:
+        if not hasattr(shape, "setString"):
+            raise NotImplementedError("This shape type does not support text.")
+        shape.setString(text)
+
+    def format_shape_text(self, shape: Any, properties: Dict[str, Any], range: Optional[Any] = None) -> List[str]:
+        if not hasattr(shape, "getText"):
+            raise NotImplementedError("This shape type does not support text.")
+        text = shape.getText()
+        text_range = text  # whole-text default
+        if range is not None:
+            cursor = text.createTextCursor()
+            cursor.gotoStart(False)
+            cursor.goRight(int(range.get("start", 0)), False)
+            cursor.goRight(int(range.get("end", 0)) - int(range.get("start", 0)), True)
+            text_range = cursor
+        return self._apply_direct_properties(text_range, properties)
+
+    def set_shape_alt_text(self, shape: Any, title: Optional[str] = None, description: Optional[str] = None) -> List[str]:
+        applied = []
+        if title is not None:
+            shape.setPropertyValue("Title", title)
+            applied.append("title")
+        if description is not None:
+            shape.setPropertyValue("Description", description)
+            applied.append("description")
+        return applied
+
+    def set_shape_z_order(self, shape: Any, action: Optional[str] = None, z_order: Optional[int] = None) -> int:
+        page = shape.getParent()
+        max_order = page.getCount() - 1
+        if z_order is not None:
+            shape.ZOrder = max(0, min(int(z_order), max_order))
+        elif action == "front":
+            shape.ZOrder = max_order
+        elif action == "back":
+            shape.ZOrder = 0
+        elif action == "forward":
+            shape.ZOrder = min(shape.ZOrder + 1, max_order)
+        elif action == "backward":
+            shape.ZOrder = max(shape.ZOrder - 1, 0)
+        else:
+            raise ValueError("Either action or z_order must be given.")
+        return shape.ZOrder
+
+    @staticmethod
+    def _shape_bounds(shape: Any) -> Dict[str, int]:
+        pos, size = shape.Position, shape.Size
+        return {"left": pos.X, "top": pos.Y, "right": pos.X + size.Width, "bottom": pos.Y + size.Height,
+                "center_x": pos.X + size.Width // 2, "center_y": pos.Y + size.Height // 2}
+
+    def align_shapes(self, shapes: List[Any], alignment: str, reference_bounds: Optional[Dict[str, int]] = None) -> None:
+        if not shapes:
+            return
+        all_bounds = [self._shape_bounds(s) for s in shapes]
+        bounds = reference_bounds or {
+            "left": min(b["left"] for b in all_bounds),
+            "top": min(b["top"] for b in all_bounds),
+            "right": max(b["right"] for b in all_bounds),
+            "bottom": max(b["bottom"] for b in all_bounds),
+        }
+        bounds.setdefault("center_x", (bounds["left"] + bounds["right"]) // 2)
+        bounds.setdefault("center_y", (bounds["top"] + bounds["bottom"]) // 2)
+        for shape in shapes:
+            pos, size = shape.Position, shape.Size
+            new_x, new_y = pos.X, pos.Y
+            if alignment == "left":
+                new_x = bounds["left"]
+            elif alignment == "right":
+                new_x = bounds["right"] - size.Width
+            elif alignment == "center":
+                new_x = bounds["center_x"] - size.Width // 2
+            elif alignment == "top":
+                new_y = bounds["top"]
+            elif alignment == "bottom":
+                new_y = bounds["bottom"] - size.Height
+            elif alignment == "middle":
+                new_y = bounds["center_y"] - size.Height // 2
+            else:
+                raise ValueError(f"Unknown alignment '{alignment}'.")
+            shape.Position = uno.createUnoStruct("com.sun.star.awt.Point", new_x, new_y)
+
+    def distribute_shapes(self, shapes: List[Any], direction: str, mode: Optional[str] = None) -> None:
+        if len(shapes) < 3:
+            return  # nothing to distribute between fewer than 3 shapes
+        axis = "center_x" if direction == "horizontal" else "center_y"
+        ordered = sorted(shapes, key=lambda s: self._shape_bounds(s)[axis])
+        first_center = self._shape_bounds(ordered[0])[axis]
+        last_center = self._shape_bounds(ordered[-1])[axis]
+        step = (last_center - first_center) / (len(ordered) - 1)
+        for i, shape in enumerate(ordered[1:-1], start=1):
+            target_center = first_center + step * i
+            pos, size = shape.Position, shape.Size
+            if direction == "horizontal":
+                new_x = int(target_center - size.Width / 2)
+                shape.Position = uno.createUnoStruct("com.sun.star.awt.Point", new_x, pos.Y)
+            else:
+                new_y = int(target_center - size.Height / 2)
+                shape.Position = uno.createUnoStruct("com.sun.star.awt.Point", pos.X, new_y)
+
+    def group_shapes(self, shapes: List[Any]) -> Any:
+        if len(shapes) < 2:
+            raise ValueError("group_shapes needs at least 2 shapes.")
+        page = shapes[0].getParent()
+        collection = self.smgr.createInstanceWithContext("com.sun.star.drawing.ShapeCollection", self.ctx)
+        for shape in shapes:
+            collection.add(shape)
+        return page.group(collection)
+
+    def ungroup_shape(self, shape: Any) -> None:
+        page = shape.getParent()
+        page.ungroup(shape)
+
+    # combine_shapes/split_shape/bind_shapes/unbind_shape (P3) have no
+    # bridge methods at all -- see this section's opening comment and
+    # tools/drawing_objects.py's module docstring for why (.uno:Combine
+    # live-tested this pass, crashed headless soffice on the very next
+    # UNO call). Those 4 tools stay pure status="stub" NOT_IMPLEMENTED
+    # responses, same as before this pass, rather than a bridge method
+    # that only ever raises.
+
+    def insert_connector(self, doc: Any, from_shape: Any, to_shape: Any, from_glue: Optional[str] = None,
+                          to_glue: Optional[str] = None, connector_type: Optional[str] = None) -> Any:
+        page = from_shape.getParent()
+        connector = doc.createInstance("com.sun.star.drawing.ConnectorShape")
+        page.add(connector)
+        connector.StartShape = from_shape
+        connector.EndShape = to_shape
+        if from_glue is not None:
+            connector.StartGluePointIndex = int(from_glue)
+        if to_glue is not None:
+            connector.EndGluePointIndex = int(to_glue)
+        if connector_type is not None:
+            try:
+                connector.EdgeKind = uno.Enum("com.sun.star.drawing.ConnectorType", connector_type.upper())
+            except Exception:
+                pass
+        return connector
+
+    def list_glue_points(self, shape: Any) -> List[Dict[str, Any]]:
+        glue_points = shape.getGluePoints()
+        result = []
+        for i in range(glue_points.getCount()):
+            gp = glue_points.getByIndex(i)
+            result.append({
+                "glue_point_id": str(i),
+                "x": gp.Position.X, "y": gp.Position.Y,
+                "is_user_defined": bool(gp.IsUserDefined),
+            })
+        return result
+
+    def add_glue_point(self, shape: Any, position: Dict[str, Any], direction: Optional[str] = None) -> str:
+        glue_points = shape.getGluePoints()
+        new_gp = uno.createUnoStruct("com.sun.star.drawing.GluePoint2")
+        new_gp.Position = uno.createUnoStruct("com.sun.star.awt.Point", int(position.get("x", 0)), int(position.get("y", 0)))
+        new_gp.Escape = uno.Enum("com.sun.star.drawing.EscapeDirection", (direction or "SMART").upper())
+        new_gp.IsUserDefined = True
+        index = glue_points.insert(new_gp)
+        return str(index)
+
+    def delete_glue_point(self, shape: Any, glue_point_id: str) -> None:
+        glue_points = shape.getGluePoints()
+        # Live-verified this container's real method name is
+        # removeByIndex(), not remove() -- it doesn't exist (AttributeError).
+        glue_points.removeByIndex(int(glue_point_id))
+
+    def insert_image(self, doc: Any, file_path: str, container: Optional[Any] = None,
+                      position: Optional[Dict[str, Any]] = None, size: Optional[Dict[str, Any]] = None,
+                      anchor: Optional[str] = None, wrap: Optional[str] = None) -> Any:
+        page = self._resolve_shape_container(doc, container)
+        graphic_provider = self.smgr.createInstanceWithContext("com.sun.star.graphic.GraphicProvider", self.ctx)
+        file_url = uno.systemPathToFileUrl(file_path) if "://" not in file_path else file_path
+        graphic = graphic_provider.queryGraphic((PropertyValue("URL", 0, file_url, 0),))
+        shape = doc.createInstance("com.sun.star.drawing.GraphicObjectShape")
+        page.add(shape)
+        shape.Graphic = graphic
+        if position:
+            shape.Position = uno.createUnoStruct("com.sun.star.awt.Point", int(position.get("x", 0)), int(position.get("y", 0)))
+        if size:
+            shape.Size = uno.createUnoStruct("com.sun.star.awt.Size", int(size.get("width", shape.Size.Width)), int(size.get("height", shape.Size.Height)))
+        if anchor is not None and hasattr(shape, "AnchorType"):
+            try:
+                shape.AnchorType = uno.Enum("com.sun.star.text.TextContentAnchorType", anchor.upper())
+            except Exception:
+                pass
+        if wrap is not None and hasattr(shape, "Surround"):
+            try:
+                shape.Surround = uno.Enum("com.sun.star.text.WrapTextMode", wrap.upper())
+            except Exception:
+                pass
+        return shape
+
+    def replace_image(self, shape: Any, file_path: str) -> None:
+        if not hasattr(shape, "Graphic"):
+            raise NotImplementedError("This shape is not an image (no Graphic property).")
+        graphic_provider = self.smgr.createInstanceWithContext("com.sun.star.graphic.GraphicProvider", self.ctx)
+        file_url = uno.systemPathToFileUrl(file_path) if "://" not in file_path else file_path
+        graphic = graphic_provider.queryGraphic((PropertyValue("URL", 0, file_url, 0),))
+        shape.Graphic = graphic
+
+    def set_image_properties(self, shape: Any, properties: Dict[str, Any]) -> List[str]:
+        if not hasattr(shape, "Graphic"):
+            raise NotImplementedError("This shape is not an image (no Graphic property).")
+        return self._apply_direct_properties(shape, properties)
+
+    def export_shape(self, shape: Any, file_path: str, format: Optional[str] = None, dpi: Optional[int] = None) -> None:
+        """dpi, when given, is converted to explicit PixelWidth/PixelHeight
+        FilterData from the shape's own Size (1/100mm) -- live-verified
+        this is the property pair GraphicExportFilter actually honors
+        (a raw "dpi"-named property is not one of its FilterData keys);
+        confirmed the exported PNG's real pixel dimensions via a
+        readback through GraphicProvider, not just trusting the filter
+        call's own success."""
+        export_filter = self.smgr.createInstanceWithContext("com.sun.star.drawing.GraphicExportFilter", self.ctx)
+        export_filter.setSourceDocument(shape)
+        media_type = {
+            "png": "image/png", "jpeg": "image/jpeg", "jpg": "image/jpeg", "svg": "image/svg+xml",
+        }.get((format or "png").lower(), "image/png")
+        props = [
+            PropertyValue("URL", 0, uno.systemPathToFileUrl(file_path), 0),
+            PropertyValue("MediaType", 0, media_type, 0),
+        ]
+        if dpi:
+            size = shape.Size  # 1/100 mm
+            pixel_width = round((size.Width / 100 / 25.4) * dpi)
+            pixel_height = round((size.Height / 100 / 25.4) * dpi)
+            filter_data = uno.Any("[]com.sun.star.beans.PropertyValue", (
+                PropertyValue("PixelWidth", 0, max(pixel_width, 1), 0),
+                PropertyValue("PixelHeight", 0, max(pixel_height, 1), 0),
+            ))
+            props.append(PropertyValue("FilterData", 0, filter_data, 0))
+        export_filter.filter(tuple(props))
+
+    def list_embedded_objects(self, doc: Any, container: Optional[Any] = None) -> List[Any]:
+        return self.list_shapes_in_container(doc, container, type_filter="ole")
+
+    # insert_embedded_object/activate_embedded_object (P3) have no bridge
+    # methods, same reasoning as combine_shapes/split_shape above:
+    # embedded-object creation covers a wide, uncertain range of OLE
+    # types, and OLE activation is dispatch/verb-based -- the same risk
+    # class .uno:Combine crashed headless soffice on this pass. Both stay
+    # pure status="stub" NOT_IMPLEMENTED responses.
+
+    def delete_embedded_object(self, doc: Any, shape: Any) -> None:
+        self.delete_shape(doc, shape)

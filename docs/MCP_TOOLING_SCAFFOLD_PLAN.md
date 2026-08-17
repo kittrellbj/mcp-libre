@@ -19,7 +19,7 @@ up exactly where it left off.
 | Writer - text, navigation, editing, search, review | 45 | 27 | 18 | **18/18 new tools Implemented** (`tools/writer_text.py`) -- real logic, live-verified; the 27 "(existing)" tools stay in `mcp_server.py`/`uno_bridge.py` under the original 32, not duplicated here |
 | Writer - page layout, publishing, styles, headers, fields, indexes | 43 | 0 | 43 | **Scaffolded** (`tools/writer_layout.py`) |
 | Writer - tables, sections, notes, content controls, mail merge | 38 | 0 | 38 | **Scaffolded** (`tools/writer_tables.py`) |
-| Common drawing objects, images, shapes, embedded objects | 31 | 0 | 31 | **Scaffolded** (`tools/drawing_objects.py`) |
+| Common drawing objects, images, shapes, embedded objects | 31 | 0 | 31 | **25/31 Implemented** (`tools/drawing_objects.py`) -- real logic, live-verified; combine/split/bind/unbind + insert/activate_embedded_object (all P3) still stub, dispatch-crash risk |
 | Charts and data visualizations | 20 | 0 | 20 | **Scaffolded** (`tools/charts.py`) |
 | Calc - sheets, cells, ranges, formulas, layout | 42 | 0 | 42 | **Scaffolded** (`tools/calc_sheets.py`) |
 | Calc - data management, analysis, pivots, validation, external data | 42 | 0 | 42 | **Scaffolded** (`tools/calc_data.py`) |
@@ -791,6 +791,112 @@ high-confidence findings). Widest deltas: WriterAgent's MCP transport is
 production-hardened where `mcp-libre`'s is a correct first pass (no
 concurrency control yet); `mcp-libre`'s undo-context transactions are a
 real capability WriterAgent's simple shared-stack undo doesn't have.
+
+## Real implementation pass: drawing_objects.py (25 of 31 tools)
+
+Built first among the remaining Phase C/D modules per audit #41
+(dependency order, not catalog order): charts/impress/draw all sit on
+top of this shared shape primitive. Consumes `ObjectRegistry`
+(mandated item #2) for the first time -- `shape_id`/`object_id` resolve
+through `DocumentRegistry.get_object_registry(document_id)`, exactly the
+mechanism `docs/OBJECT_HANDLE_DESIGN.md` designed for this pass.
+
+**Category split confirmed, not just designed this time:** `container`
+(sheet/page addressing) resolves live against UNO's own named/indexed
+containers -- `UNOBridge._resolve_shape_container()` handles Writer's
+single document-wide draw page, a Calc sheet's own draw page (sheet
+name or digit-string index), and a specific Impress/Draw page (int
+index or name, `getDrawPages().hasByName()`/`getByName()` confirmed to
+exist live this pass, closing the one previously-unverified claim in
+the design doc).
+
+**Two real bugs found and fixed by live-verifying:**
+
+1. `delete_glue_point_live` called `glue_points.remove(index)` --
+   `remove()` doesn't exist on the glue-points container at all
+   (`AttributeError`); the real method is `removeByIndex()`. Live-
+   caught (the fakes-based unit test couldn't have caught this --
+   it doesn't model the real UNO method name), fixed, rebuilt, and
+   re-verified live that a custom glue point genuinely round-trips
+   (add -> list count 5 -> delete -> list count 4 -> independently
+   confirmed via a raw UNO script).
+2. `_map_exception_to_code()` (shared by every real-implementation
+   module via `document_lifecycle.py`) didn't know about
+   `object_registry.ObjectNotFoundError` -- an unresolvable `shape_id`
+   fell through to the generic `UNO_EXCEPTION` code instead of
+   `OBJECT_NOT_FOUND`, the same code `DocumentNotFoundError` already
+   maps to. Caught by the new unit tests (4 of 26 failed on this before
+   the fix), not live-testing -- a reminder this project has made
+   before that the two verification methods catch different mistakes.
+   Fixed by adding one `isinstance` check; this also silently benefits
+   every future module that reuses `ObjectRegistry`.
+
+**Not a bug, but live-testing corrected a wrong assumption baked into
+the initial unit tests:** grouping shapes does NOT dispose the member
+shapes in real UNO -- `page.group()` reparents them into the new group,
+but the original PyUNO proxy stays fully valid and UNO-equal to the
+group's own child references (confirmed live: `child0 == s1` is `True`
+even though `child0 is s1` is `False`, the same proxy-re-minting
+behavior `DocumentRegistry` was built around). So a member shape's
+`shape_id` deliberately keeps resolving after `group_shapes_live` --
+only `ungroup_shape_live`'s *group* id goes stale (confirmed live: the
+group object becomes an empty, zero-child shell after ungrouping, and
+its `shape_id` is explicitly unregistered). The initial test asserted
+the opposite for the group case; fixed to match live-verified reality
+before this pass was called done, not left un-reconciled.
+
+**Scope limit, deliberate (see this section's opening paragraph and
+both `uno_bridge.py`'s and `drawing_objects.py`'s own docstrings for the
+full reasoning):** `combine_shapes_live`, `split_shape_live`,
+`bind_shapes_live`, `unbind_shape_live`, `insert_embedded_object_live`,
+`activate_embedded_object_live` (all P3) stay `status="stub"`.
+Live-testing `.uno:Combine` this pass -- the only UNO-level way to
+implement combine/split/bind/unbind, since there is no direct API --
+executed successfully but then **crashed the headless soffice process
+outright on the very next UNO call** (`DisposedException: "Binary URP
+bridge disposed during call"`), which would take down the extension's
+whole host process for every connected MCP client, not just the caller
+issuing the risky call. Not safe to ship without a dedicated isolation/
+testing pass. The two embedded-object tools are the same OLE-activation/
+dispatch risk class and weren't exploration-tested given the crash.
+
+**Live-verified end to end on a fresh headless LibreOffice 26.2
+instance, independently checking real document state after every call**
+(not trusting each tool's own success response): inserted a rectangle
+and ellipse, confirmed real position/size/z-order via a raw UNO script;
+moved/rotated a shape and confirmed the resulting UNO `Position` shift
+after rotation matches expected bounding-box-after-rotation geometry
+(not a bug -- standard UNO rotation semantics); set fill color, z-order
+swap (`action: "back"`), duplicated a shape (confirmed the clone's
+`RotateAngle` was genuinely copied, 214-ish of ~229 properties copied
+per the method's own docstring); inserted a connector and confirmed
+`StartShape`/`EndShape` were genuinely wired via a raw UNO script;
+aligned two shapes left and confirmed their real `x` values matched;
+added/listed/deleted a glue point (post-fix) and independently confirmed
+the count via a raw UNO script; grouped two shapes (confirmed
+`page.getCount()` dropped as expected) and ungrouped them (confirmed the
+group's `shape_id` genuinely stops resolving); inserted a real PNG image
+via `GraphicProvider`, set 50% transparency (confirmed via raw UNO
+`Transparency` read), exported it to PNG at a specific DPI and
+independently confirmed the exported file's real pixel dimensions
+(177x177, matching the hand-computed expected value from the shape's
+1500/100mm size at 300dpi exactly) via a `GraphicProvider` readback of
+the exported file, not just trusting the export call's own success;
+replaced the image source; set/formatted/alt-texted a text shape and
+confirmed all three landed via `get_shape_live`; distributed three
+shapes horizontally and confirmed the middle one's position via a raw
+UNO script; deleted a shape and confirmed `page.getCount()` dropped.
+`tools_count: 133` (108 + 25) throughout.
+
+**Testing:** `tests/test_drawing_objects.py`, 26 new tests (a
+`FakeShape`/`FakeUnoBridge` pair modeling shapes as plain Python objects
+in a flat list -- `DocumentRegistry`/`ObjectRegistry` are the real
+implementations under test, not faked; real UNO geometry math, ZOrder
+clamping, `XShapeGrouper`, `GluePoint2` construction, and
+`GraphicProvider`-based image loading are live-verified instead, not
+something a fake can usefully assert). 239/239 passing under `pytest`
+across the full relevant suite (212 prior + 1 new contract test + 26
+new).
 
 ## What was built
 

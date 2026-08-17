@@ -29,6 +29,7 @@ from typing import Any, Dict, List, Optional
 from . import context
 from . import documents
 from . import envelope
+from . import object_registry
 from .registry import register_tool, schema
 
 
@@ -46,6 +47,8 @@ def _map_exception_to_code(e: Exception) -> str:
     if isinstance(e, documents.NoActiveDocumentError):
         return "NO_ACTIVE_DOCUMENT"
     if isinstance(e, documents.DocumentNotFoundError):
+        return "OBJECT_NOT_FOUND"
+    if isinstance(e, object_registry.ObjectNotFoundError):
         return "OBJECT_NOT_FOUND"
     if isinstance(e, FileNotFoundError):
         return "OBJECT_NOT_FOUND"

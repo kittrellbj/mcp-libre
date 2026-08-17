@@ -287,6 +287,24 @@ IMPLEMENTED_TOOL_NAMES = {
     "lock_document_updates_live", "unlock_document_updates_live",
 }
 
+# drawing_objects.py is also a mixed module: 25 of its 31 tools are real.
+# The remaining 6 (combine_shapes_live/split_shape_live/bind_shapes_live/
+# unbind_shape_live/insert_embedded_object_live/activate_embedded_object_live,
+# all P3) stay status="stub" -- live-testing found .uno:Combine (the only
+# UNO-level way to implement combine/split/bind/unbind) crashes headless
+# soffice on the next UNO call; the two embedded-object tools are the same
+# dispatch/OLE-verb risk class and weren't exploration-tested. See
+# docs/MCP_TOOLING_SCAFFOLD_PLAN.md's drawing_objects.py pass for detail.
+IMPLEMENTED_DRAWING_OBJECT_TOOL_NAMES = {
+    "list_shapes_live", "get_shape_live", "insert_shape_live", "delete_shape_live",
+    "duplicate_shape_live", "set_shape_geometry_live", "set_shape_style_live", "set_shape_text_live",
+    "format_shape_text_live", "set_shape_alt_text_live", "set_shape_z_order_live", "align_shapes_live",
+    "distribute_shapes_live", "group_shapes_live", "ungroup_shape_live", "insert_connector_live",
+    "list_glue_points_live", "add_glue_point_live", "delete_glue_point_live", "insert_image_live",
+    "replace_image_live", "set_image_properties_live", "export_shape_live", "list_embedded_objects_live",
+    "delete_embedded_object_live",
+}
+
 
 def test_implemented_modules_tools_are_marked_implemented():
     """Every tool in an IMPLEMENTED_MODULES module carries real logic now --
@@ -308,6 +326,18 @@ def test_implemented_undo_tools_are_marked_implemented():
     still_stub = EXPECTED_BY_MODULE["undo_view_selection"] - IMPLEMENTED_TOOL_NAMES
     for name in still_stub:
         assert registry[name]["status"] == "stub", f"{name} should still be status='stub' (separate follow-up pass)"
+
+
+def test_implemented_drawing_object_tools_are_marked_implemented():
+    """Same guard as test_implemented_modules_tools_are_marked_implemented,
+    for the 25 individually-implemented tools in the mixed
+    drawing_objects.py module (see IMPLEMENTED_DRAWING_OBJECT_TOOL_NAMES)."""
+    registry = get_registry()
+    for name in IMPLEMENTED_DRAWING_OBJECT_TOOL_NAMES:
+        assert registry[name]["status"] == "implemented", f"{name} should be status='implemented'"
+    still_stub = EXPECTED_BY_MODULE["drawing_objects"] - IMPLEMENTED_DRAWING_OBJECT_TOOL_NAMES
+    for name in still_stub:
+        assert registry[name]["status"] == "stub", f"{name} should still be status='stub' (dispatch-crash risk, see module docstring)"
 
 
 def test_stub_shape_contract():
