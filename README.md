@@ -1,397 +1,836 @@
-# LibreOffice MCP Server
+# LibreOffice MCP
 
-A comprehensive Model Context Protocol (MCP) server that provides tools and resources for interacting with LibreOffice documents. This server enables AI assistants and other MCP clients to create, read, convert, and manipulate LibreOffice documents programmatically.
+Native Model Context Protocol integration for LibreOffice, with live access to Writer, Calc, Impress, and Draw through the UNO API.
 
-[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
-[![LibreOffice](https://img.shields.io/badge/LibreOffice-24.2+-green.svg)](https://www.libreoffice.org/)
-[![MCP Protocol](https://img.shields.io/badge/MCP-2024--11--05-orange.svg)](https://spec.modelcontextprotocol.io/)
+This fork focuses on making the LibreOffice extension work cleanly on Windows while preserving the original external MCP server and cross-platform project structure.
 
-## 📂 Repository Structure
+## v1.0.0 — Windows Native Extension Baseline
 
-This repository is organized into logical directories:
+Version 1.0.0 is the first known-working Windows baseline for the native LibreOffice extension.
 
-- **`src/`** - Core MCP server implementation
-- **`tests/`** - Test suite and validation scripts  
-- **`examples/`** - Demo scripts and usage examples
-- **`config/`** - Configuration templates for integrations
-- **`scripts/`** - Utility scripts for setup and management
-- **`docs/`** - Comprehensive documentation
+Validated functionality includes:
 
-For detailed information, see [`docs/REPOSITORY_STRUCTURE.md`](docs/REPOSITORY_STRUCTURE.md).
+- Native `.oxt` extension installation on Windows
+- LibreOffice Tools menu integration
+- Custom `mcp:` protocol dispatch
+- Embedded HTTP server on `localhost:8765`
+- Direct UNO access to active LibreOffice documents
+- 32 registered MCP tools
+- Live Writer text insertion and editing
+- Text selection and formatting
+- Comments and annotations
+- Search and replace
+- Track Changes support
+- Document metadata and outline access
+- Save and export operations
+- Local HTTP health and tool discovery endpoints
 
-## 🚀 Features
-
-### LibreOffice Extension (Plugin) - NEW! 🎉
-- **Native Integration**: Embedded MCP server directly in LibreOffice
-- **Real-time Editing**: Live document manipulation with instant visual feedback
-- **Performance**: 10x faster than external server (direct UNO API access)
-- **Multi-document**: Work with all open LibreOffice documents
-- **Auto-start**: Automatically available when LibreOffice starts
-- **HTTP API**: External AI assistant access via localhost:8765
-
-### Document Operations
-- **Create Documents**: New Writer, Calc, Impress, and Draw documents
-- **Read Content**: Extract text from any LibreOffice document
-- **Convert Formats**: Convert between 50+ formats (PDF, DOCX, HTML, etc.)
-- **Edit Documents**: Insert, append, or replace text in Writer documents
-- **Document Info**: Get detailed metadata about documents
-
-### Spreadsheet Operations
-- **Read Spreadsheets**: Extract data from Calc spreadsheets and Excel files
-- **Structured Data**: Get data as 2D arrays with row/column information
-
-### Advanced Tools
-- **Document Search**: Find documents containing specific text
-- **Batch Convert**: Convert multiple documents simultaneously
-- **Merge Documents**: Combine multiple documents into one
-- **Document Analysis**: Get detailed statistics (word count, sentences, etc.)
-
-### Live Viewing & Real-time Editing
-- **GUI Integration**: Open documents in LibreOffice for live viewing
-- **Real-time Updates**: See changes as AI assistants modify documents
-- **Change Monitoring**: Watch documents for modifications in real-time
-- **Interactive Sessions**: Create live editing sessions with automatic refresh
-
-### MCP Resources
-- **Document Discovery**: List all LibreOffice documents (`documents://`)
-- **Content Access**: Access specific document content (`document://{path}`)
-
-## 📋 Requirements
-
-- **LibreOffice**: 24.2+ (must be accessible via command line)
-- **Python**: 3.12+
-- **UV Package Manager**: For dependency management
-
-For detailed installation instructions for all platforms, run:
-```bash
-./mcp-helper.sh requirements
-```
-
-## 🛠 Installation
-
-1. **Clone the repository**:
-   ```bash
-   git clone https://github.com/patrup/mcp-libre/
-   cd mcp-libre
-   ```
-
-2. **Check prerequisites**:
-   ```bash
-   ./mcp-helper.sh requirements  # Show detailed requirements
-   ./mcp-helper.sh check         # Verify your system
-   ```
-
-3. **Install dependencies**:
-   ```bash
-   uv sync
-   ```
-
-4. **Make helper script executable**:
-   ```bash
-   chmod +x mcp-helper.sh
-   ```
-
-## 🎯 Quick Start
-
-### Test the Server
-```bash
-# Run functionality tests
-./mcp-helper.sh test
-
-# Run interactive demo
-./mcp-helper.sh demo
-```
-
-### Start MCP Server
-```bash
-# Standard MCP mode (stdio)
-python src/main.py
-
-# Or using UV
-uv run python src/main.py
-
-# Show help and options
-python src/main.py --help
-
-# Run tests
-python src/main.py --test
-```
-
-### Integration with Super Assistant
-```bash
-# Start the MCP proxy
-./mcp-helper.sh proxy
-
-# Then configure Super Assistant extension:
-# Server URL: http://localhost:3006
-```
-
-## 🔧 Available Tools
-
-| Tool | Description |
-|------|-------------|
-| `create_document` | Create new LibreOffice documents |
-| `read_document_text` | Extract text from documents |
-| `convert_document` | Convert between formats |
-| `get_document_info` | Get document metadata |
-| `read_spreadsheet_data` | Read spreadsheet data |
-| `insert_text_at_position` | Edit document text |
-| `search_documents` | Search documents by content |
-| `batch_convert_documents` | Batch format conversion |
-| `merge_text_documents` | Merge multiple documents |
-| `get_document_statistics` | Document analysis |
-| `open_document_in_libreoffice` | Open document in GUI for live viewing |
-| `create_live_editing_session` | Start live editing with real-time preview |
-| `watch_document_changes` | Monitor document changes in real-time |
-| `refresh_document_in_libreoffice` | Force document refresh in GUI |
-
-## 📚 Documentation
-
-- **[Prerequisites](docs/PREREQUISITES.md)**: Quick reference for system requirements
-- **[Plugin Migration Guide](docs/PLUGIN_MIGRATION_GUIDE.md)**: Migrate from external server to plugin
-- **[Examples](docs/EXAMPLES.md)**: Code examples and usage patterns
-- **[Live Viewing Guide](docs/LIVE_VIEWING_GUIDE.md)**: See changes live in LibreOffice GUI
-- **[Super Assistant Setup](docs/SUPER_ASSISTANT_SETUP.md)**: Chrome extension integration
-- **[ChatGPT Browser Guide](docs/CHATGPT_BROWSER_GUIDE.md)**: Using with ChatGPT and alternatives
-- **[Troubleshooting](docs/TROUBLESHOOTING.md)**: Common issues and solutions
-- **[Quick Start](docs/QUICK_START.md)**: Quick reference guide
-- **[Complete Solution](docs/COMPLETE_SOLUTION.md)**: Comprehensive overview
-
-## 🔗 Integration Options
-
-### 1. LibreOffice Extension (NEW - Recommended!) 🎉
-
-**The most powerful and efficient way to use the MCP server:**
-
-```bash
-# Build and install the LibreOffice extension
-cd plugin/
-./install.sh install
-
-# Test the extension
-./install.sh test
-```
-
-**Benefits of the Extension:**
-- **10x Performance**: Direct UNO API access (no subprocess overhead)
-- **Real-time Editing**: Live document manipulation in open LibreOffice windows
-- **Native Integration**: Appears in LibreOffice Tools menu
-- **Multi-document Support**: Work with all open documents simultaneously
-- **Auto-start**: Automatically starts with LibreOffice
-- **Advanced Features**: Full access to LibreOffice formatting and capabilities
-
-**Usage:**
-- The extension provides an HTTP API on `http://localhost:8765`
-- Configure your AI assistant to use this endpoint
-- Access controls via **Tools > MCP Server** in LibreOffice
-- Real-time document editing with instant visual feedback
-
-For detailed plugin information, see [`plugin/README.md`](plugin/README.md).
-
-### 2. Claude Desktop
-
-Generate configuration automatically:
-```bash
-./generate-config.sh claude
-# Creates ~/.config/claude/claude_desktop_config.json
-```
-
-Then restart Claude Desktop and start using LibreOffice commands:
-- *"Create a new Writer document and save it as project-report.odt"*
-- *"Convert my document to PDF format"*
-
-### 3. Super Assistant Chrome Extension
-
-Generate configuration and start proxy:
-```bash
-./generate-config.sh mcp
-npx @srbhptl39/mcp-superassistant-proxy@latest --config ~/Documents/mcp/mcp.config.json
-# Server URL: http://localhost:3006
-```
-
-### 4. Direct MCP Client
-```python
-from mcp.shared.memory import create_connected_server_and_client_session
-from libremcp import mcp
-
-async with client_session(mcp._mcp_server) as client:
-    result = await client.call_tool("create_document", {
-        "path": "/tmp/test.odt",
-        "doc_type": "writer",
-        "content": "Hello, World!"
-    })
-```
-
-## 🎨 Usage Examples
-
-### Natural Language (via Super Assistant)
-- *"Create a new Writer document with a project report"*
-- *"Convert my ODT file to PDF format"*
-- *"Search for documents containing 'budget' in my Documents folder"*
-- *"Get statistics for my essay - how many words?"*
-
-### Programmatic Usage
-```python
-from libremcp import create_document, read_document_text, convert_document
-
-# Create a document
-doc = create_document("/tmp/report.odt", "writer", "Project Report")
-
-# Read content
-content = read_document_text("/tmp/report.odt")
-print(f"Words: {content.word_count}")
-
-# Convert to PDF
-result = convert_document("/tmp/report.odt", "/tmp/report.pdf", "pdf")
-```
-
-## 📁 Supported File Formats
-
-### Input (Reading)
-- **LibreOffice**: `.odt`, `.ods`, `.odp`, `.odg`
-- **Microsoft Office**: `.doc`, `.docx`, `.xls`, `.xlsx`, `.ppt`, `.pptx`
-- **Text**: `.txt`, `.rtf`
-
-### Output (Conversion)
-- **PDF**: `.pdf`
-- **Microsoft Office**: `.docx`, `.xlsx`, `.pptx`
-- **Web**: `.html`, `.htm`
-- **Text**: `.txt`
-- **LibreOffice**: `.odt`, `.ods`, `.odp`, `.odg`
-- **Many others**: 50+ formats supported by LibreOffice
-
-## 🧪 Testing
-
-### LibreOffice Extension Testing
-```bash
-# Install and test the plugin
-cd plugin/
-./install.sh install    # Build and install extension
-./install.sh test       # Test functionality
-./install.sh status     # Check status
-./install.sh interactive # Interactive testing mode
-```
-
-### External Server Testing
-```bash
-# Show system requirements and installation guides
-./mcp-helper.sh requirements
-
-# Check dependencies and verify setup
-./mcp-helper.sh check
-
-# Run built-in functionality tests
-./mcp-helper.sh test
-
-# Interactive demo of all capabilities
-./mcp-helper.sh demo
-
-# Test specific functionality directly
-uv run python libremcp.py --test
-```
-
-## 🔧 Configuration
-
-### MCP Configuration for Integrations
-
-Generate personalized configuration files for Claude Desktop and/or Super Assistant:
-
-```bash
-# Generate both Claude Desktop and Super Assistant configs
-./generate-config.sh
-
-# Generate only Claude Desktop config
-./generate-config.sh claude
-
-# Generate only Super Assistant config  
-./generate-config.sh mcp
-
-# Generate Super Assistant config in custom location
-./generate-config.sh mcp /path/to/custom/directory
-```
-
-This automatically creates configurations with your actual project paths:
-- **Claude Desktop**: `~/.config/claude/claude_desktop_config.json`
-- **Super Assistant**: `~/Documents/mcp/mcp.config.json` (or custom location)
-
-### Environment Variables
-```bash
-export PYTHONPATH="/path/to/mcp-libre"
-export LIBREOFFICE_PATH="/usr/bin/libreoffice"  # Optional
-```
-
-### Custom Search Paths
-Edit `libremcp.py` to modify document discovery locations:
-```python
-search_paths = [
-    Path.home() / "Documents",
-    Path.home() / "Desktop",
-    Path("/custom/path"),
-    Path.cwd()
-]
-```
-
-## 🛡 Security
-
-- **Local Execution**: All operations run locally
-- **File Permissions**: Limited to user's file access
-- **No Network**: No external network dependencies
-- **Temporary Files**: Automatically cleaned up
-
-## 🚨 Troubleshooting
-
-### LibreOffice Issues
-```bash
-# Check LibreOffice installation
-libreoffice --version
-libreoffice --headless --help
-
-# Test conversion manually
-libreoffice --headless --convert-to pdf document.odt
-```
-
-### Java Warnings
-- Java warnings are usually non-fatal
-- Core functionality works without Java
-- Install Java for full LibreOffice features
-
-### Permission Errors
-- Check file and directory permissions
-- Ensure LibreOffice can access document paths
-- Verify write permissions for output directories
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-The MIT License is a permissive license that allows:
-- ✅ Commercial use
-- ✅ Modification
-- ✅ Distribution
-- ✅ Private use
-
-For other license options, see [LICENSE_OPTIONS.md](LICENSE_OPTIONS.md).
-
-## 🔗 Links
-
-- **MCP Specification**: https://spec.modelcontextprotocol.io/
-- **LibreOffice**: https://www.libreoffice.org/
-- **FastMCP Framework**: https://github.com/modelcontextprotocol/python-sdk
-
-## 📞 Support
-
-- **Issues**: Use GitHub issues for bug reports
-- **Documentation**: See the `docs/` folder for detailed guides
-- **Examples**: Check `EXAMPLES.md` for usage patterns
+The v1.0.0 tag is intended to remain a stable compatibility baseline while broader LibreOffice tooling is developed on later branches.
 
 ---
 
-*LibreOffice MCP Server v0.1.0 - Bridging AI and Document Processing*
+## Features
+
+### Native LibreOffice Extension
+
+The extension runs inside LibreOffice and exposes live document operations through a local HTTP interface.
+
+Benefits:
+
+- Direct access to the currently open document
+- Immediate visual feedback in LibreOffice
+- No document reload cycle for edits
+- Direct UNO API access
+- Support for multiple open LibreOffice documents
+- Local-only HTTP interface
+- Tools menu controls for starting, stopping, restarting, and checking the MCP server
+
+The native extension listens on:
+
+```text
+http://localhost:8765
+```
+
+Controls are available from:
+
+```text
+Tools → MCP Server
+```
+
+### External MCP Server
+
+The original external server remains available for file-oriented workflows and traditional MCP/stdio integrations.
+
+Use it when you want to:
+
+- Automate LibreOffice outside the GUI
+- Create or convert files without an active editing session
+- Integrate through stdio-based MCP clients
+- Run scripted or batch workflows
+
+---
+
+## Repository Structure
+
+```text
+mcp-libre/
+├── plugin/                 Native LibreOffice extension
+│   ├── META-INF/
+│   ├── pythonpath/
+│   ├── Addons.xcu
+│   ├── ProtocolHandler.xcu
+│   └── description.xml
+├── src/                    External MCP server
+├── tests/                  Tests and validation
+├── examples/               Usage examples
+├── config/                 Integration configuration
+├── scripts/                Helper and utility scripts
+├── docs/                   Documentation
+└── build-oxt-windows.py    Windows OXT builder
+```
+
+See `docs/REPOSITORY_STRUCTURE.md` for additional project layout details where available.
+
+---
+
+## Requirements
+
+### Native Extension — Windows
+
+Required:
+
+- LibreOffice 24.2 or newer
+- Windows 10 or Windows 11
+- Python available to run `build-oxt-windows.py`
+
+The extension itself runs using the Python runtime bundled with LibreOffice.
+
+The working Windows implementation has been tested with LibreOffice's bundled Python 3.12 runtime.
+
+### External MCP Server
+
+Required:
+
+- LibreOffice 24.2+
+- Python 3.12+
+- `uv`
+
+---
+
+# Windows Native Extension Installation
+
+## 1. Clone the repository
+
+Clone this fork:
+
+```bash
+git clone https://github.com/YOUR_GITHUB_USERNAME/mcp-libre.git
+cd mcp-libre
+```
+
+If you are working from the Windows baseline branch:
+
+```bash
+git checkout windows-oxt
+```
+
+## 2. Build the OXT
+
+From PowerShell or Git Bash:
+
+```bash
+python build-oxt-windows.py
+```
+
+The extension package is created at:
+
+```text
+build/libreoffice-mcp-extension-1.0.0.oxt
+```
+
+The Windows builder creates a LibreOffice-compatible ZIP/OXT structure with normalized archive paths.
+
+## 3. Install the extension
+
+Adjust the LibreOffice path if your installation is located elsewhere.
+
+PowerShell example:
+
+```powershell
+& "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension
+& "E:\LibreOffice\program\unopkg.com" add "E:\Tools\mcp-libre\build\libreoffice-mcp-extension-1.0.0.oxt"
+```
+
+Removing an extension that is not already installed may report that no matching extension exists. That is harmless.
+
+You can verify installation with:
+
+```powershell
+& "E:\LibreOffice\program\unopkg.com" list
+```
+
+## 4. Start LibreOffice
+
+Open Writer, Calc, Impress, or Draw.
+
+Then select:
+
+```text
+Tools → MCP Server → Start MCP Server
+```
+
+The server should start on:
+
+```text
+http://localhost:8765
+```
+
+## 5. Verify the server
+
+Health check:
+
+```bash
+curl http://127.0.0.1:8765/health
+```
+
+Tool discovery:
+
+```bash
+curl http://127.0.0.1:8765/tools
+```
+
+A healthy server should return JSON from both endpoints.
+
+---
+
+# Windows Development Workflow
+
+A convenient rebuild/reinstall command in PowerShell is:
+
+```powershell
+python "E:\Tools\mcp-libre\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "E:\Tools\mcp-libre\build\libreoffice-mcp-extension-1.0.0.oxt"
+```
+
+Then reopen LibreOffice and start the MCP server from the Tools menu.
+
+For console logging:
+
+```powershell
+& "E:\LibreOffice\program\soffice.com" --writer 2>&1 |
+    Tee-Object -FilePath "E:\Tools\mcp-libre\libreoffice-mcp.log"
+```
+
+---
+
+# HTTP API
+
+The native extension currently exposes a small local HTTP API.
+
+## Health
+
+```http
+GET /health
+```
+
+Example:
+
+```bash
+curl http://127.0.0.1:8765/health
+```
+
+## Server information
+
+```http
+GET /
+```
+
+## List tools
+
+```http
+GET /tools
+```
+
+Example:
+
+```bash
+curl http://127.0.0.1:8765/tools
+```
+
+## Execute a tool
+
+```http
+POST /execute
+Content-Type: application/json
+```
+
+Body:
+
+```json
+{
+  "tool": "get_document_info_live",
+  "parameters": {}
+}
+```
+
+PowerShell example:
+
+```powershell
+$body = @{
+    tool = "get_document_info_live"
+    parameters = @{}
+} | ConvertTo-Json -Compress
+
+Invoke-RestMethod `
+    -Uri "http://127.0.0.1:8765/execute" `
+    -Method Post `
+    -ContentType "application/json" `
+    -Body $body
+```
+
+Tools can also be called through:
+
+```http
+POST /tools/{tool_name}
+```
+
+---
+
+# Native Tooling — v1.0.0
+
+The Windows v1.0.0 baseline registers 32 live tools.
+
+They cover the following areas.
+
+## Document lifecycle
+
+- `create_document_live`
+- `get_document_info_live`
+- `list_open_documents`
+- `save_document_live`
+- `export_document_live`
+
+## Text and content
+
+- `insert_text_live`
+- `get_text_content_live`
+- `format_text_live`
+
+## Document structure
+
+- `get_paragraph_count_live`
+- `get_document_outline_live`
+- `get_paragraph_live`
+- `get_paragraphs_range_live`
+
+## Cursor navigation
+
+- `goto_paragraph_live`
+- `goto_position_live`
+- `get_cursor_position_live`
+- `get_context_around_cursor_live`
+
+## Selection and editing
+
+- `select_paragraph_live`
+- `select_text_range_live`
+- `delete_selection_live`
+- `replace_selection_live`
+
+## Search and replace
+
+- `find_text_live`
+- `find_and_replace_live`
+- `find_and_replace_all_live`
+
+## Comments
+
+- `get_comments_live`
+- `add_comment_live`
+
+## Track Changes
+
+- `get_track_changes_status_live`
+- `set_track_changes_live`
+- `get_tracked_changes_live`
+- `accept_tracked_change_live`
+- `reject_tracked_change_live`
+- `accept_all_changes_live`
+- `reject_all_changes_live`
+
+The v1.0.0 tool names are intended to remain backward-compatible as the interface expands.
+
+---
+
+# Example: Live Writer Editing
+
+With Writer open and the MCP server started:
+
+```powershell
+$body = @{
+    tool = "insert_text_live"
+    parameters = @{
+        text = "Hello from LibreOffice MCP on Windows."
+    }
+} | ConvertTo-Json -Compress
+
+Invoke-RestMethod `
+    -Uri "http://127.0.0.1:8765/execute" `
+    -Method Post `
+    -ContentType "application/json" `
+    -Body $body
+```
+
+The text should appear immediately in the active Writer document.
+
+---
+
+# Current Architecture
+
+The Windows native extension uses the following flow:
+
+```text
+AI / MCP Client
+      │
+      │ HTTP localhost:8765
+      ▼
+LibreOffice MCP HTTP Interface
+      │
+      ▼
+Embedded MCP Tool Server
+      │
+      ▼
+UNO Bridge
+      │
+      ▼
+Writer / Calc / Impress / Draw
+```
+
+LibreOffice menu commands use a dedicated protocol:
+
+```text
+mcp:
+```
+
+Examples:
+
+```text
+mcp:start_mcp_server
+mcp:stop_mcp_server
+mcp:restart_mcp_server
+mcp:get_status
+```
+
+This protocol is registered through `ProtocolHandler.xcu` and dispatched by the Python extension component.
+
+---
+
+# Windows Fixes Included in v1.0.0
+
+The Windows baseline incorporates several fixes required for reliable native extension operation.
+
+## OXT packaging
+
+The Windows build process:
+
+- Uses normalized `/` archive paths
+- Avoids invalid ZIP entry names
+- Produces the required LibreOffice extension layout
+
+## Manifest cleanup
+
+The extension manifest no longer references unavailable package entries such as `types.rdb`.
+
+## Python import compatibility
+
+LibreOffice's Python extension environment requires explicit handling of its module path.
+
+The Windows implementation:
+
+- Adds the extension `pythonpath` directory to `sys.path`
+- Uses absolute imports between extension modules
+- Guards optional UNO interface imports with `try/except ImportError`
+
+## Protocol dispatch
+
+The extension uses a dedicated `mcp:` protocol instead of attempting to use `service:` URLs as protocol-handler commands.
+
+This allows LibreOffice to correctly call:
+
+```text
+initialize()
+queryDispatch()
+dispatch()
+```
+
+for MCP menu actions.
+
+## HTTP server lifetime
+
+The HTTP server instance remains alive after startup rather than being destroyed when a context manager exits.
+
+## HTTP request handling
+
+The Windows implementation uses:
+
+- Threaded request handling
+- Explicit response lengths
+- Explicit connection close behavior
+- Safer client-disconnect handling
+
+These changes prevent a slow or abandoned client request from blocking the entire local API.
+
+---
+
+# Tooling Roadmap
+
+The 32 tools in v1.0.0 are only the compatibility baseline.
+
+The long-term goal is comprehensive semantic coverage of LibreOffice rather than only basic Writer manipulation.
+
+Planned areas include:
+
+## Writer
+
+- Page styles and page layout
+- Custom page sizes and book trim presets
+- Margins and mirrored margins
+- Headers and footers
+- Sections
+- Columns
+- Paragraph styles
+- Character styles
+- Lists and numbering
+- Tables
+- Frames
+- Images
+- Fields
+- Footnotes and endnotes
+- Bookmarks
+- Cross-references
+- Indexes and tables of contents
+- Mail merge
+- Advanced typography
+- Page numbering
+- Document properties
+- Print settings
+
+## Calc
+
+- Sheet creation and deletion
+- Cell and range access
+- Formatting
+- Formulas
+- Named ranges
+- Sorting and filtering
+- Conditional formatting
+- Validation
+- Pivot tables
+- Charts
+- Images and shapes
+- Freeze panes
+- Print areas
+- Page styles
+- Data import and export
+
+## Impress
+
+- Slides
+- Layouts
+- Master slides
+- Text boxes
+- Images
+- Shapes
+- Charts
+- Tables
+- Notes
+- Transitions
+- Animations
+- Slide ordering
+- Presentation settings
+- Export
+
+## Draw
+
+- Pages
+- Shapes
+- Connectors
+- Grouping
+- Alignment
+- Distribution
+- Layers
+- Text
+- Images
+- Geometry
+- Export
+
+## Shared LibreOffice services
+
+- Styles
+- Charts
+- Drawing objects
+- Forms
+- Metadata
+- Accessibility
+- Printing
+- PDF options
+- Undo/redo
+- Clipboard operations
+- Document events
+- Diagnostics
+- Capability discovery
+- Batch operations
+- Object handles
+
+The intended design is a semantic MCP layer with a guarded advanced UNO escape hatch for capabilities that do not justify dedicated first-class tools.
+
+---
+
+# External MCP Server
+
+The original external MCP server remains available.
+
+## Install dependencies
+
+```bash
+uv sync
+```
+
+## Start the server
+
+```bash
+python src/main.py
+```
+
+or:
+
+```bash
+uv run python src/main.py
+```
+
+Help:
+
+```bash
+python src/main.py --help
+```
+
+Tests:
+
+```bash
+python src/main.py --test
+```
+
+The external server remains useful for automation scenarios that do not require live access to an already-open LibreOffice GUI session.
+
+---
+
+# Supported File Formats
+
+LibreOffice supports a broad range of document formats.
+
+Common inputs include:
+
+- `.odt`
+- `.ods`
+- `.odp`
+- `.odg`
+- `.doc`
+- `.docx`
+- `.xls`
+- `.xlsx`
+- `.ppt`
+- `.pptx`
+- `.txt`
+- `.rtf`
+
+Common outputs include:
+
+- PDF
+- DOCX
+- XLSX
+- PPTX
+- HTML
+- TXT
+- ODT
+- ODS
+- ODP
+- ODG
+
+Actual import/export capabilities depend on the installed LibreOffice version and available filters.
+
+---
+
+# Security
+
+The native extension is designed for local use.
+
+Current security characteristics:
+
+- HTTP interface binds to `localhost`
+- No public network listener is required
+- Operations execute with the permissions of the current user
+- File access is limited by the operating system permissions of the LibreOffice process
+- No external cloud service is required
+- AI clients should be treated as trusted local software because MCP tools can modify documents and write files
+
+Do not expose port `8765` directly to untrusted networks.
+
+Future tooling should continue to separate safe read-only operations from destructive or privileged operations.
+
+---
+
+# Troubleshooting
+
+## Confirm the extension is installed
+
+Windows:
+
+```powershell
+& "E:\LibreOffice\program\unopkg.com" list
+```
+
+## Confirm the server is listening
+
+```powershell
+Get-NetTCPConnection -LocalPort 8765 -ErrorAction SilentlyContinue
+```
+
+or:
+
+```bash
+curl http://127.0.0.1:8765/health
+```
+
+## Start LibreOffice with extension logging
+
+```powershell
+& "E:\LibreOffice\program\soffice.com" --writer 2>&1 |
+    Tee-Object -FilePath "libreoffice-mcp.log"
+```
+
+Expected startup messages include:
+
+```text
+MCPProtocolHandler initialized with frame
+queryDispatch: mcp:start_mcp_server
+dispatch called: mcp:start_mcp_server
+Starting MCP server...
+MCP HTTP server started successfully
+UNO Bridge initialized successfully
+Registered 32 MCP tools
+```
+
+## Tools menu appears but commands do nothing
+
+Verify that:
+
+- `ProtocolHandler.xcu` registers `mcp:*`
+- `Addons.xcu` uses `mcp:` command URLs
+- `registration.py` handles the `mcp:` protocol
+
+## UNO import errors on Windows
+
+Some UNO interfaces are not available as direct Python imports in every LibreOffice configuration.
+
+Optional imports should be guarded:
+
+```python
+try:
+    from com.sun.star.presentation import XPresentationDocument
+except ImportError:
+    XPresentationDocument = None
+```
+
+Feature detection should be preferred over assuming every UNO interface is importable.
+
+---
+
+# Development
+
+Contributions are welcome.
+
+Recommended workflow:
+
+1. Fork the repository
+2. Create a feature branch
+3. Make focused changes
+4. Add or update tests
+5. Validate the native extension and/or external server
+6. Submit a pull request
+
+For Windows native extension changes, verify at minimum:
+
+```text
+[ ] OXT builds
+[ ] OXT installs
+[ ] MCP Server menu appears
+[ ] Start command dispatches
+[ ] /health responds
+[ ] /tools responds
+[ ] Writer text insertion works
+[ ] Document readback works
+[ ] Save works
+[ ] PDF export works
+```
+
+---
+
+# Versioning
+
+## v1.0.0
+
+First working Windows native extension baseline.
+
+Includes:
+
+- Windows-compatible OXT packaging
+- Native LibreOffice protocol handler
+- Local HTTP server
+- UNO bridge
+- 32 live MCP tools
+- Live Writer manipulation
+- Save and export
+- Comments
+- Search and replace
+- Track Changes
+- HTTP request handling fixes
+
+The `v1.0.0` tag is intended to remain a stable baseline while the broader MCP tooling surface is implemented.
+
+---
+
+# License
+
+This project is licensed under the MIT License.
+
+See:
+
+```text
+LICENSE
+```
+
+The MIT License permits commercial use, modification, distribution, and private use subject to its terms.
+
+---
+
+# Upstream
+
+This project is based on:
+
+```text
+patrup/mcp-libre
+```
+
+This fork extends the original project with a working Windows native-extension implementation and continued development toward comprehensive LibreOffice MCP coverage.
+
+---
+
+# Links
+
+- LibreOffice: https://www.libreoffice.org/
+- Model Context Protocol: https://modelcontextprotocol.io/
+- MCP Python SDK: https://github.com/modelcontextprotocol/python-sdk
+- Upstream project: https://github.com/patrup/mcp-libre
+
+---
+
+**LibreOffice MCP v1.0.0 — Native AI-driven document control inside LibreOffice.**
