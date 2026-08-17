@@ -20,7 +20,7 @@ up exactly where it left off.
 | Writer - page layout, publishing, styles, headers, fields, indexes | 43 | 0 | 43 | **Scaffolded** (`tools/writer_layout.py`) |
 | Writer - tables, sections, notes, content controls, mail merge | 38 | 0 | 38 | **Scaffolded** (`tools/writer_tables.py`) |
 | Common drawing objects, images, shapes, embedded objects | 31 | 0 | 31 | **29/31 Implemented** (`tools/drawing_objects.py`) -- real logic, live-verified; only insert/activate_embedded_object (P3) still stub (uncertain OLE scope, not dispatch risk -- combine/split/bind/unbind re-enabled once the dispatch-safety finding was corrected) |
-| Charts and data visualizations | 20 | 0 | 20 | **Scaffolded** (`tools/charts.py`) |
+| Charts and data visualizations | 20 | 0 | 20 | **19/20 Implemented** (`tools/charts.py`) -- real logic, live-verified, Calc-native charts only; `add_chart_series_live` (P2) still stub (no XDataProvider construction from raw values this pass) |
 | Calc - sheets, cells, ranges, formulas, layout | 42 | 0 | 42 | **42/42 Implemented** (`tools/calc_sheets.py`) -- real logic, live-verified |
 | Calc - data management, analysis, pivots, validation, external data | 42 | 0 | 42 | **Scaffolded** (`tools/calc_data.py`) |
 | Calc - page setup, print ranges, annotations, protection | 15 | 0 | 15 | **Scaffolded** (`tools/calc_page.py`) |
@@ -1202,6 +1202,155 @@ behavior itself is exactly the class of defect only live-testing could
 catch, and is documented above, not asserted in the fake). 293/293
 passing under `pytest` across the full relevant suite (289 prior + 4
 new).
+
+## Real implementation pass: charts.py (19 of 20 tools)
+
+Second of `charts.py`/`impress.py`/`draw.py`, per Buddy's go-ahead --
+draw.py done, this pass, impress.py next. 19 of 20 tools real;
+`add_chart_series_live` stays `status="stub"` (see scope below).
+
+**Scope, deliberate: Calc-native embedded charts only this pass.**
+`chart_id` resolves via `sheet.getCharts()` (`XTablesSupplier`'s native
+named chart collection) -- the UNO-guaranteed-unique-`Name` container
+`docs/OBJECT_HANDLE_DESIGN.md` already designed this exact resolution
+for, no `ObjectRegistry` needed, same category as sheets/Writer tables.
+Every tool raises a documented `NotImplementedError` (mapped to
+`UNSUPPORTED_CAPABILITY`) against a non-Calc document; Writer/Impress/
+Draw embedded charts (a generic `OLE2Shape` wrapping a chart document,
+no dedicated named container) are left for a follow-up.
+`series_id` is a plain string index into `XChartType.getDataSeries()`
+(0-based) -- chart2 data series have no persistent name/identity of
+their own, only positional order, mirroring `writer_text.py`'s
+1-based-paragraph-ordinal precedent for "no natural identity, use
+position." A chart's real geometry/export both go through its backing
+`OLE2Shape` on the sheet's draw page, found by matching
+`PersistName == chart_id` -- live-verified this is the actual UNO
+linkage; the shape's own `.Name` is empty and `TableChart` itself
+exposes no `Position`/`Size`. `create_chart_live`/`set_chart_data_live`
+both keep `status="implemented"` since their `source`/`source_range`
+path is real; only their `data`-array branch raises `NotImplementedError`
+(building a chart2 data sequence from raw in-memory values needs
+`XDataProvider` construction not exploration-tested this pass).
+`add_chart_series_live` has no real code path at all -- same precedent
+as `drawing_objects.py`'s `insert_embedded_object_live`/
+`activate_embedded_object_live` -- so it stays a pure `status="stub"`
+`NOT_IMPLEMENTED` response rather than a function that always raises
+through the bridge.
+
+**Two chart2 creation-context gotchas, opposite of each other, mapped
+during exploration:** chart2 sub-objects (`Title`, `FormattedString`,
+a new `XChartType`, `ErrorBar`, a regression-curve service) must be
+created via the global `smgr.createInstanceWithContext(...)` --
+`chart_doc.createInstance(...)` silently returns `None` for all of
+them. This is the *opposite* of `draw.py`'s `Background` finding
+(`doc.createInstance(...)` required there, global `smgr` returns
+`None`) -- both now documented in `uno_bridge.py` next to the code they
+apply to so a future pass doesn't have to rediscover either by trial
+and error. Also mapped: `XDiagram` has no `getAxisByDimension` (an
+earlier exploration script's crashed partial output was misread as
+confirming it did; re-verified carefully via `CoreReflection`
+introspection of `XDiagram`'s actual method list) -- the real location
+is `coordinateSystem.getAxisByDimension(dimension, index)`; and
+`com.sun.star.chart.ChartDocument`'s legacy `Title = "string"` shortcut
+doesn't exist on chart2 -- its `Title` property is `XTitle`-typed, set
+via a real `Title`/`FormattedString` object, not a plain string.
+
+**Two real bugs found live-verifying, both fixed and re-verified
+post-fix:**
+
+1. `set_chart_legend_live`'s `position` mapping used `"top"`/`"bottom"`
+   → `"TOP"`/`"BOTTOM"`, which don't exist:
+   `com.sun.star.chart2.LegendPosition` (confirmed via `CoreReflection`
+   and by exhaustively trying every plausible enum literal against a
+   real legend) only has `LINE_START`/`LINE_END`/`PAGE_START`/
+   `PAGE_END`/`CUSTOM` -- calling with `position="bottom"` raised a raw
+   `UNO_EXCEPTION` ("value BOTTOMis unknown in enum ..."), not a clean
+   tool response. Fixed to alias `"top"`→`PAGE_START`, `"bottom"`→
+   `PAGE_END` (spatially above/below the diagram, matching the enum's
+   actual semantics), `"left"`/`"right"`→`LINE_START`/`LINE_END`.
+   Re-verified live: both `"top"` and `"bottom"` now land the
+   documented enum value, confirmed by an independent raw UNO read of
+   `legend.AnchorPosition`.
+2. `set_chart_data_labels_live` silently dropped every property it was
+   given (`ShowNumber`, `ShowCategoryName`, etc.) -- reported `applied:
+   []` with a warning listing them all as "unknown/unsettable." These
+   aren't direct settable properties on `XDataSeries` at all; they're
+   fields of its `Label` property, a `com.sun.star.chart2.
+   DataPointLabel` struct (confirmed via `getPropertySetInfo()`/reading
+   the live struct). Fixed with a read-modify-write on the whole struct
+   for the 6 known `DataPointLabel` field names, falling through to the
+   existing direct-property path for everything else (e.g.
+   `LabelPlacement`, which *is* a real direct property). Re-verified
+   live: `ShowNumber`/`ShowCategoryName` genuinely land on the series'
+   `Label` struct, confirmed by an independent raw UNO read.
+
+**Headless-mode gotcha hit and fixed during this pass's own live
+verification (not a code bug, an environment/procedure one) --
+recorded here since it will hit `impress.py` too:** a freshly-launched
+headless `soffice.exe`'s `desktop.getCurrentComponent()` returns `None`
+even immediately after loading a document, with no window manager to
+give any frame focus. Every tool call that resolves the active document
+(the common no-`document_id` path) failed with `NO_ACTIVE_DOCUMENT`
+until the loaded document's frame was explicitly activated:
+`doc.getCurrentController().getFrame().activate()`. Confirmed via a
+before/after raw UNO check (`getCurrentComponent()` genuinely `None`
+before, genuinely resolves to the right document after). Also hit and
+fixed separately: `unopkg add`/`unopkg remove` must target the *same*
+LibreOffice user profile the test `soffice.exe` instance launches
+against -- an isolated `-env:UserInstallation=...` override on the
+`soffice.exe` launch (this pass's own first attempt, to keep the
+default profile clean) silently loaded zero extensions, since
+`unopkg`'s install went to the default profile instead; the protocol
+handler wasn't even instantiable (`createInstanceWithContext` on its
+own service name returned `None`) until both commands targeted the
+same profile.
+
+**Live-verified end to end on a fresh headless LibreOffice 26.2
+instance, independently checking real document state after every
+call** (not trusting each tool's own success response, and re-verifying
+both bug fixes post-fix on a fresh rebuild): seeded a real range,
+`create_chart_live` (confirmed via independent raw UNO read: real
+`BarChartType`, correct series count from the source range);
+`list_charts_live`/`get_chart_live`; `set_chart_type_live` (confirmed
+type genuinely changed to `LineChartType`); `set_chart_data_live`;
+`set_chart_title_live` with `subtitle` (confirmed both lines landed on
+the real `Title`/`FormattedString` object); `set_chart_legend_live`
+post-fix; `get_chart_series_live`/`set_chart_series_live` (confirmed
+`Color` genuinely changed on the real series); `set_chart_axis_live`
+(confirmed `Minimum`/`Maximum` landed on the real Y-axis `ScaleData`);
+`set_chart_data_labels_live` post-fix; `set_chart_gridlines_live`;
+`add_chart_trendline_live`/`remove_chart_trendline_live` (confirmed a
+real regression curve was added then removed via
+`series.getRegressionCurves()`); `set_chart_error_bars_live`;
+`set_chart_geometry_live` (confirmed real `Position`/`Size` on the
+backing shape); `export_chart_live` (confirmed a real 454x340 PNG file
+on disk); `remove_chart_series_live`/`delete_chart_live` (confirmed via
+`list_charts_live` returning to empty). `add_chart_series_live`
+confirmed absent from the REST bridge's execution surface, consistent
+with `drawing_objects.py`'s two established stubs. `tools_count: 214`
+throughout (both before and after the rebuild that carried the two
+fixes -- `create_chart_live` etc. were already counted in the pre-fix
+`214`, since `status="implemented"` was set from the start; the fixes
+were within already-implemented tool bodies).
+
+**Testing:** `tests/test_charts.py`, 22 new tests (a `FakeUnoBridge`
+modeling charts as a dict keyed by `chart_id`, mirroring the real
+`UNOBridge` chart2 methods' public signatures -- tool-layer plumbing
+only, not real chart2 mechanics, which are live-verified instead).
+`tests/test_tool_scaffold_contract.py` gained
+`IMPLEMENTED_CHART_TOOL_NAMES` and
+`test_implemented_chart_tools_are_marked_implemented`, following the
+`drawing_objects.py` mixed-module precedent; also added the
+pre-existing `test_implemented_drawing_object_tools_are_marked_implemented`
+to this file's own `__main__` list, which had never been added when
+that test was written (a `pytest`-only gap -- `pytest` auto-discovers
+it regardless, so it was never actually skipped by the suite, just
+absent from direct `python tests/test_tool_scaffold_contract.py`
+runs). 318/318 passing under `pytest` across the full relevant suite
+(293 prior + 22 charts.py + 1 contract + 2 carried over from
+`tests/test_document_registry.py`'s identity-dedup coverage, committed
+alongside this pass -- see the preceding commit's message for that
+unrelated leftover fix from the earlier PyUNO robustness sweep).
 
 ## What was built
 

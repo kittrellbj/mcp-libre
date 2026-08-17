@@ -4897,3 +4897,464 @@ class UNOBridge:
             props.append(PropertyValue("FilterData", 0, filter_data, 0))
         export_filter.filter(tuple(props))
 
+
+    # -- Charts and data visualizations (tools/charts.py's 20 tools) --
+    #
+    # Same raise-on-failure convention as drawing_objects.py/calc_sheets.py
+    # above. Scope, deliberate: Calc-native embedded charts only this
+    # pass (chart_id resolves via XTablesSupplier.getCharts(), the
+    # UNO-guaranteed-unique-Name container docs/OBJECT_HANDLE_DESIGN.md
+    # already designed this exact resolution for -- no registry needed,
+    # same category as sheets/Writer tables). Writer/Impress/Draw
+    # embedded charts (generic OLE2Shape wrapping a chart document, not
+    # addressable through a dedicated named container) are NOT
+    # implemented this pass -- see docs/OBJECT_HANDLE_DESIGN.md's own
+    # note that chart_id resolution is "genuinely mixed by host document
+    # type"; extending list_charts_live/create_chart_live to the
+    # ObjectRegistry-backed path for non-Calc hosts is left for a
+    # follow-up, matching the project's established pattern of an
+    # honest, documented per-doctype scope limit (e.g. styles.py's
+    # apply_style_live being Writer-only its first pass).
+    #
+    # series_id is a plain string index into
+    # XChartType.getDataSeries() (0-based) -- chart2's own data series
+    # have no persistent name/identity of their own to key by, only
+    # positional order within their chart type, so index is the natural
+    # (and spec-compatible, since series_id is just an opaque string)
+    # choice, mirroring writer_text.py's 1-based paragraph-ordinal
+    # precedent for "no natural identity, use position."
+    #
+    # A chart's real geometry/export both go through its backing OLE2Shape
+    # on the sheet's draw page, found by matching PersistName == chart_id
+    # (live-verified this is the actual UNO linkage -- the shape's own
+    # .Name is empty; TableChart itself exposes no Position/Size).
+
+    def _require_chart_capable(self, doc: Any, operation: str) -> None:
+        doc_type = self._get_document_type(doc)
+        if doc_type != "calc":
+            raise NotImplementedError(
+                f"{operation} is only implemented for Calc-native embedded charts this pass, not '{doc_type}' documents."
+            )
+
+    def _find_chart_by_name(self, doc: Any, chart_id: str) -> "tuple[Any, Any, Any]":
+        """Search every sheet's native chart collection for chart_id (the
+        chart's own unique Name). Returns (sheet, charts_collection,
+        chart_table_object)."""
+        self._require_chart_capable(doc, "chart resolution")
+        sheets = doc.getSheets()
+        for i in range(sheets.getCount()):
+            sheet = sheets.getByIndex(i)
+            charts = sheet.getCharts()
+            if charts.hasByName(chart_id):
+                return sheet, charts, charts.getByName(chart_id)
+        raise KeyError(f"No such chart '{chart_id}'.")
+
+    def _find_chart_shape(self, sheet: Any, chart_id: str) -> Any:
+        page = sheet.getDrawPage()
+        for i in range(page.getCount()):
+            shape = page.getByIndex(i)
+            try:
+                if shape.getPropertyValue("PersistName") == chart_id:
+                    return shape
+            except Exception:
+                continue
+        raise KeyError(f"No shape found backing chart '{chart_id}'.")
+
+    @staticmethod
+    def _get_chart_document(chart_table: Any) -> Any:
+        return chart_table.getEmbeddedObject()
+
+    @staticmethod
+    def _get_first_chart_type(chart_doc: Any) -> "tuple[Any, Any]":
+        """Returns (coordinate_system, chart_type) for the first/only
+        coordinate system and chart type -- every chart this module
+        creates has exactly one of each; multi-coordinate-system combo
+        charts are out of scope."""
+        diagram = chart_doc.getFirstDiagram()
+        cs = diagram.getCoordinateSystems()[0]
+        return cs, cs.getChartTypes()[0]
+
+    _CHART_TYPE_SERVICES = {
+        "bar": "com.sun.star.chart2.BarChartType",
+        "column": "com.sun.star.chart2.ColumnChartType",
+        "line": "com.sun.star.chart2.LineChartType",
+        "pie": "com.sun.star.chart2.PieChartType",
+        "area": "com.sun.star.chart2.AreaChartType",
+        "scatter": "com.sun.star.chart2.ScatterChartType",
+        "xy": "com.sun.star.chart2.ScatterChartType",
+        "bubble": "com.sun.star.chart2.BubbleChartType",
+        "net": "com.sun.star.chart2.NetChartType",
+        "radar": "com.sun.star.chart2.NetChartType",
+        "stock": "com.sun.star.chart2.CandleStickChartType",
+        "candlestick": "com.sun.star.chart2.CandleStickChartType",
+        "filled_net": "com.sun.star.chart2.FilledNetChartType",
+    }
+
+    def list_charts(self, doc: Any, container: Optional[str] = None) -> List[Dict[str, Any]]:
+        self._require_chart_capable(doc, "list_charts")
+        sheets = doc.getSheets()
+        targets = [self._resolve_sheet_by_name_or_index(sheets, container)] if container is not None else \
+            [sheets.getByIndex(i) for i in range(sheets.getCount())]
+        result = []
+        for sheet in targets:
+            charts = sheet.getCharts()
+            for name in charts.getElementNames():
+                chart_table = charts.getByName(name)
+                result.append({
+                    "chart_id": name, "sheet": sheet.Name,
+                    "ranges": [self._range_address_to_a1(doc, r) for r in chart_table.Ranges],
+                })
+        return result
+
+    def create_chart(self, doc: Any, chart_type: str, source: Optional[str] = None,
+                      data: Optional[List[List[Any]]] = None, container: Optional[str] = None,
+                      position: Optional[Dict[str, Any]] = None, size: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        self._require_chart_capable(doc, "create_chart")
+        service_name = self._CHART_TYPE_SERVICES.get(chart_type.lower())
+        if service_name is None:
+            raise ValueError(f"Unknown chart_type '{chart_type}'. Supported: {sorted(self._CHART_TYPE_SERVICES)}")
+        sheet = self._resolve_sheet(doc, container)
+        if source is not None:
+            ranges = (sheet.getCellRangeByName(source).RangeAddress,)
+        elif data is not None:
+            raise NotImplementedError(
+                "create_chart_live with explicit 'data' (no 'source') is not implemented this pass -- "
+                "write the values to a range first (e.g. via set_range_live) and pass that as 'source'."
+            )
+        else:
+            raise ValueError("Either source or data must be given.")
+        pos = position or {}
+        sz = size or {}
+        rect = uno.createUnoStruct("com.sun.star.awt.Rectangle")
+        rect.X, rect.Y = int(pos.get("x", 0)), int(pos.get("y", 0))
+        rect.Width, rect.Height = int(sz.get("width", 10000)), int(sz.get("height", 8000))
+        charts = sheet.getCharts()
+        index = 1
+        while charts.hasByName(f"Chart {index}"):
+            index += 1
+        name = f"Chart {index}"
+        charts.addNewByName(name, rect, ranges, True, True)
+        chart_doc = self._get_chart_document(charts.getByName(name))
+        cs, default_ct = self._get_first_chart_type(chart_doc)
+        if not default_ct.supportsService(service_name):
+            new_ct = self.smgr.createInstanceWithContext(service_name, self.ctx)
+            new_ct.setDataSeries(default_ct.getDataSeries())
+            cs.setChartTypes((new_ct,))
+        return {"chart_id": name, "sheet": sheet.Name}
+
+    def get_chart(self, doc: Any, chart_id: str) -> Dict[str, Any]:
+        sheet, charts, chart_table = self._find_chart_by_name(doc, chart_id)
+        chart_doc = self._get_chart_document(chart_table)
+        cs, ct = self._get_first_chart_type(chart_doc)
+        title_obj = chart_doc.getTitleObject()
+        title_text = " ".join(s.getString() for s in title_obj.getText()) if title_obj is not None else None
+        return {
+            "chart_id": chart_id, "sheet": sheet.Name,
+            "chart_type": ct.SupportedServiceNames[0] if hasattr(ct, "SupportedServiceNames") else ct.getSupportedServiceNames()[0],
+            "title": title_text, "has_legend": bool(chart_doc.HasLegend),
+            "series_count": len(ct.getDataSeries()),
+            "ranges": [self._range_address_to_a1(doc, r) for r in chart_table.Ranges],
+        }
+
+    def delete_chart(self, doc: Any, chart_id: str) -> None:
+        sheet, charts, chart_table = self._find_chart_by_name(doc, chart_id)
+        charts.removeByName(chart_id)
+
+    def set_chart_type(self, doc: Any, chart_id: str, chart_type: str, subtype: Optional[str] = None) -> None:
+        service_name = self._CHART_TYPE_SERVICES.get(chart_type.lower())
+        if service_name is None:
+            raise ValueError(f"Unknown chart_type '{chart_type}'. Supported: {sorted(self._CHART_TYPE_SERVICES)}")
+        _, _, chart_table = self._find_chart_by_name(doc, chart_id)
+        chart_doc = self._get_chart_document(chart_table)
+        cs, old_ct = self._get_first_chart_type(chart_doc)
+        new_ct = self.smgr.createInstanceWithContext(service_name, self.ctx)
+        new_ct.setDataSeries(old_ct.getDataSeries())
+        cs.setChartTypes((new_ct,))
+
+    def set_chart_data(self, doc: Any, chart_id: str, source_range: Optional[str] = None,
+                        data: Optional[List[List[Any]]] = None, categories: Optional[List[str]] = None) -> None:
+        sheet, charts, chart_table = self._find_chart_by_name(doc, chart_id)
+        if source_range is not None:
+            range_addr = sheet.getCellRangeByName(source_range).RangeAddress
+            chart_table.setRanges((range_addr,))
+        elif data is not None:
+            raise NotImplementedError(
+                "set_chart_data_live with explicit 'data' (no 'source_range') is not implemented this pass -- "
+                "write the values to a range first and pass that as 'source_range'."
+            )
+        else:
+            raise ValueError("Either source_range or data must be given.")
+
+    def set_chart_title(self, doc: Any, chart_id: str, title: Optional[str] = None,
+                         subtitle: Optional[str] = None, properties: Optional[Dict[str, Any]] = None) -> List[str]:
+        """subtitle isn't a distinct concept in chart2's XTitled (one main
+        title object) -- appended as a second line of the same title,
+        the closest real-UNO equivalent, documented rather than silently
+        dropped."""
+        _, _, chart_table = self._find_chart_by_name(doc, chart_id)
+        chart_doc = self._get_chart_document(chart_table)
+        applied = []
+        if title is not None:
+            title_obj = self.smgr.createInstanceWithContext("com.sun.star.chart2.Title", self.ctx)
+            texts = []
+            main_fs = self.smgr.createInstanceWithContext("com.sun.star.chart2.FormattedString", self.ctx)
+            main_fs.setString(title)
+            texts.append(main_fs)
+            if subtitle is not None:
+                sub_fs = self.smgr.createInstanceWithContext("com.sun.star.chart2.FormattedString", self.ctx)
+                sub_fs.setString(subtitle)
+                texts.append(sub_fs)
+            title_obj.setText(tuple(texts))
+            chart_doc.setTitleObject(title_obj)
+            applied.append("title")
+            if subtitle is not None:
+                applied.append("subtitle")
+        if properties:
+            title_obj = chart_doc.getTitleObject()
+            if title_obj is not None:
+                applied.extend(self._apply_direct_properties(title_obj, properties))
+        return applied
+
+    # Live-verified via CoreReflection: com.sun.star.chart2.LegendPosition
+    # has NO TOP/BOTTOM/LEFT/RIGHT members (a legend.AnchorPosition = TOP
+    # attempt raises "value TOPis unknown in enum ..."-- caught testing
+    # this pass) -- only LINE_START/LINE_END/PAGE_START/PAGE_END/CUSTOM.
+    # "top"/"bottom"/"left"/"right" are convenience aliases onto the real
+    # enum values (PAGE_START/PAGE_END sit above/below the diagram,
+    # LINE_START/LINE_END sit to its start/end side in reading order).
+    _LEGEND_POSITIONS = {
+        "top": "PAGE_START", "bottom": "PAGE_END", "left": "LINE_START", "right": "LINE_END",
+        "line_start": "LINE_START", "line_end": "LINE_END", "page_start": "PAGE_START", "page_end": "PAGE_END",
+        "custom": "CUSTOM",
+    }
+
+    def set_chart_legend(self, doc: Any, chart_id: str, visible: Optional[bool] = None,
+                          position: Optional[str] = None, properties: Optional[Dict[str, Any]] = None) -> List[str]:
+        _, _, chart_table = self._find_chart_by_name(doc, chart_id)
+        chart_doc = self._get_chart_document(chart_table)
+        applied = []
+        if visible is not None:
+            chart_doc.HasLegend = visible
+            applied.append("visible")
+        legend = chart_doc.getFirstDiagram().getLegend()
+        if legend is not None:
+            if position is not None:
+                pos_name = self._LEGEND_POSITIONS.get(position.lower())
+                if pos_name is not None:
+                    legend.AnchorPosition = uno.Enum("com.sun.star.chart2.LegendPosition", pos_name)
+                    applied.append("position")
+            if properties:
+                applied.extend(self._apply_direct_properties(legend, properties))
+        return applied
+
+    def get_chart_series(self, doc: Any, chart_id: str) -> List[Dict[str, Any]]:
+        _, _, chart_table = self._find_chart_by_name(doc, chart_id)
+        chart_doc = self._get_chart_document(chart_table)
+        _, ct = self._get_first_chart_type(chart_doc)
+        series_list = ct.getDataSeries()
+        result = []
+        for i, series in enumerate(series_list):
+            entry = {"series_id": str(i)}
+            try:
+                entry["color"] = series.Color
+            except Exception:
+                pass
+            result.append(entry)
+        return result
+
+    def set_chart_series(self, doc: Any, chart_id: str, series_id: str, properties: Dict[str, Any]) -> List[str]:
+        _, _, chart_table = self._find_chart_by_name(doc, chart_id)
+        chart_doc = self._get_chart_document(chart_table)
+        _, ct = self._get_first_chart_type(chart_doc)
+        series_list = ct.getDataSeries()
+        index = int(series_id)
+        if not (0 <= index < len(series_list)):
+            raise IndexError(f"series_id {series_id} out of range (chart has {len(series_list)} series).")
+        return self._apply_direct_properties(series_list[index], properties)
+
+    def add_chart_series(self, doc: Any, chart_id: str, values: List[float], label: Optional[str] = None,
+                          categories: Optional[List[str]] = None) -> Dict[str, Any]:
+        raise NotImplementedError(
+            "add_chart_series_live is not implemented this pass: building a new XDataSeries from raw "
+            "in-memory values (not a sheet range) requires manually constructing chart2 data sequences "
+            "via XDataProvider, which was not exploration-tested this pass -- write the values to a "
+            "range and use set_chart_data_live's source_range to include them instead."
+        )
+
+    def remove_chart_series(self, doc: Any, chart_id: str, series_id: str) -> None:
+        _, _, chart_table = self._find_chart_by_name(doc, chart_id)
+        chart_doc = self._get_chart_document(chart_table)
+        _, ct = self._get_first_chart_type(chart_doc)
+        series_list = list(ct.getDataSeries())
+        index = int(series_id)
+        if not (0 <= index < len(series_list)):
+            raise IndexError(f"series_id {series_id} out of range (chart has {len(series_list)} series).")
+        del series_list[index]
+        ct.setDataSeries(tuple(series_list))
+
+    _AXIS_DIMENSIONS = {"x": 0, "y": 1, "z": 2}
+
+    def _resolve_axis(self, chart_doc: Any, axis: str) -> Any:
+        cs, _ = self._get_first_chart_type(chart_doc)
+        dimension = self._AXIS_DIMENSIONS.get(axis.lower())
+        if dimension is None:
+            raise ValueError(f"axis must be one of {sorted(self._AXIS_DIMENSIONS)}, got '{axis}'")
+        return cs.getAxisByDimension(dimension, 0)
+
+    def set_chart_axis(self, doc: Any, chart_id: str, axis: str, properties: Dict[str, Any]) -> List[str]:
+        _, _, chart_table = self._find_chart_by_name(doc, chart_id)
+        chart_doc = self._get_chart_document(chart_table)
+        axis_obj = self._resolve_axis(chart_doc, axis)
+        applied = []
+        scale = axis_obj.getScaleData()
+        scale_changed = False
+        for key in ("min", "minimum"):
+            if key in properties:
+                scale.Minimum = float(properties[key])
+                applied.append(key)
+                scale_changed = True
+        for key in ("max", "maximum"):
+            if key in properties:
+                scale.Maximum = float(properties[key])
+                applied.append(key)
+                scale_changed = True
+        if scale_changed:
+            axis_obj.setScaleData(scale)
+        remaining = {k: v for k, v in properties.items() if k not in ("min", "minimum", "max", "maximum")}
+        applied.extend(self._apply_direct_properties(axis_obj, remaining))
+        return applied
+
+    # The visibility toggles (ShowNumber/ShowCategoryName/etc.) live-verified
+    # to NOT be direct settable properties on XDataSeries -- they're fields
+    # of its "Label" property, a com.sun.star.chart2.DataPointLabel struct
+    # (setPropertyValue("ShowNumber", ...) directly is a silent no-op via
+    # _apply_direct_properties's own unsettable-property skip, caught
+    # testing this pass). Handled here by read-modify-write on the whole
+    # struct; every other DataPointLabel field name is passed straight
+    # through the same way.
+    _DATA_LABEL_STRUCT_FIELDS = {
+        "ShowNumber", "ShowNumberInPercent", "ShowCategoryName",
+        "ShowLegendSymbol", "ShowCustomLabel", "ShowSeriesName",
+    }
+
+    def set_chart_data_labels(self, doc: Any, chart_id: str, properties: Dict[str, Any],
+                               series_id: Optional[str] = None) -> List[str]:
+        _, _, chart_table = self._find_chart_by_name(doc, chart_id)
+        chart_doc = self._get_chart_document(chart_table)
+        _, ct = self._get_first_chart_type(chart_doc)
+        series_list = ct.getDataSeries()
+        targets = [series_list[int(series_id)]] if series_id is not None else list(series_list)
+
+        struct_updates = {k: v for k, v in properties.items() if k in self._DATA_LABEL_STRUCT_FIELDS}
+        remaining = {k: v for k, v in properties.items() if k not in self._DATA_LABEL_STRUCT_FIELDS}
+
+        applied_sets = []
+        for target in targets:
+            applied = []
+            if struct_updates:
+                label = target.getPropertyValue("Label")
+                for key, value in struct_updates.items():
+                    setattr(label, key, value)
+                    applied.append(key)
+                target.setPropertyValue("Label", label)
+            applied.extend(self._apply_direct_properties(target, remaining))
+            applied_sets.append(applied)
+        return applied_sets[0] if applied_sets else []
+
+    def set_chart_gridlines(self, doc: Any, chart_id: str, axis: str, major: Optional[bool] = None,
+                             minor: Optional[bool] = None, properties: Optional[Dict[str, Any]] = None) -> List[str]:
+        _, _, chart_table = self._find_chart_by_name(doc, chart_id)
+        chart_doc = self._get_chart_document(chart_table)
+        axis_obj = self._resolve_axis(chart_doc, axis)
+        applied = []
+        if major is not None:
+            axis_obj.getGridProperties().Show = major
+            applied.append("major")
+        if minor is not None:
+            axis_obj.getSubGridProperties()[0].Show = minor
+            applied.append("minor")
+        if properties:
+            applied.extend(self._apply_direct_properties(axis_obj.getGridProperties(), properties))
+        return applied
+
+    _TRENDLINE_SERVICES = {
+        "linear": "com.sun.star.chart2.LinearRegressionCurve",
+        "exponential": "com.sun.star.chart2.ExponentialRegressionCurve",
+        "logarithmic": "com.sun.star.chart2.LogarithmicRegressionCurve",
+        "power": "com.sun.star.chart2.PotentialRegressionCurve",
+        "polynomial": "com.sun.star.chart2.PolynomialRegressionCurve",
+        "moving_average": "com.sun.star.chart2.MovingAverageRegressionCurve",
+    }
+
+    def add_chart_trendline(self, doc: Any, chart_id: str, series_id: str, type: str,
+                             properties: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        service_name = self._TRENDLINE_SERVICES.get(type.lower())
+        if service_name is None:
+            raise ValueError(f"Unknown trendline type '{type}'. Supported: {sorted(self._TRENDLINE_SERVICES)}")
+        _, _, chart_table = self._find_chart_by_name(doc, chart_id)
+        chart_doc = self._get_chart_document(chart_table)
+        _, ct = self._get_first_chart_type(chart_doc)
+        series_list = ct.getDataSeries()
+        index = int(series_id)
+        if not (0 <= index < len(series_list)):
+            raise IndexError(f"series_id {series_id} out of range (chart has {len(series_list)} series).")
+        series = series_list[index]
+        curve = self.smgr.createInstanceWithContext(service_name, self.ctx)
+        if properties:
+            self._apply_direct_properties(curve, properties)
+        series.addRegressionCurve(curve)
+        return {"series_id": series_id, "type": type, "trendline_id": str(len(series.getRegressionCurves()) - 1)}
+
+    def remove_chart_trendline(self, doc: Any, chart_id: str, series_id: str, trendline_id: Optional[str] = None) -> None:
+        _, _, chart_table = self._find_chart_by_name(doc, chart_id)
+        chart_doc = self._get_chart_document(chart_table)
+        _, ct = self._get_first_chart_type(chart_doc)
+        series_list = ct.getDataSeries()
+        index = int(series_id)
+        if not (0 <= index < len(series_list)):
+            raise IndexError(f"series_id {series_id} out of range (chart has {len(series_list)} series).")
+        series = series_list[index]
+        curves = series.getRegressionCurves()
+        curve_index = int(trendline_id) if trendline_id is not None else 0
+        if not (0 <= curve_index < len(curves)):
+            raise IndexError(f"trendline_id {trendline_id} out of range (series has {len(curves)} trendline(s)).")
+        series.removeRegressionCurve(curves[curve_index])
+
+    def set_chart_error_bars(self, doc: Any, chart_id: str, series_id: str, properties: Dict[str, Any]) -> List[str]:
+        _, _, chart_table = self._find_chart_by_name(doc, chart_id)
+        chart_doc = self._get_chart_document(chart_table)
+        _, ct = self._get_first_chart_type(chart_doc)
+        series_list = ct.getDataSeries()
+        index = int(series_id)
+        if not (0 <= index < len(series_list)):
+            raise IndexError(f"series_id {series_id} out of range (chart has {len(series_list)} series).")
+        series = series_list[index]
+        error_bar = self.smgr.createInstanceWithContext("com.sun.star.chart2.ErrorBar", self.ctx)
+        applied = self._apply_direct_properties(error_bar, properties)
+        series.setPropertyValue("ErrorBarY", error_bar)
+        return applied
+
+    def set_chart_geometry(self, doc: Any, chart_id: str, position: Optional[Dict[str, Any]] = None,
+                            size: Optional[Dict[str, Any]] = None) -> List[str]:
+        sheet, charts, chart_table = self._find_chart_by_name(doc, chart_id)
+        shape = self._find_chart_shape(sheet, chart_id)
+        applied = []
+        if position:
+            pos = shape.Position
+            shape.Position = uno.createUnoStruct(
+                "com.sun.star.awt.Point", int(position.get("x", pos.X)), int(position.get("y", pos.Y)),
+            )
+            applied.extend(k for k in ("x", "y") if k in position)
+        if size:
+            sz = shape.Size
+            shape.Size = uno.createUnoStruct(
+                "com.sun.star.awt.Size", int(size.get("width", sz.Width)), int(size.get("height", sz.Height)),
+            )
+            applied.extend(k for k in ("width", "height") if k in size)
+        return applied
+
+    def export_chart(self, doc: Any, chart_id: str, file_path: str, format: str = "png",
+                      dpi: Optional[int] = None) -> None:
+        sheet, charts, chart_table = self._find_chart_by_name(doc, chart_id)
+        shape = self._find_chart_shape(sheet, chart_id)
+        self.export_shape(shape, file_path, format, dpi)

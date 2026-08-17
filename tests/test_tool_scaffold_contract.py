@@ -342,6 +342,35 @@ def test_implemented_drawing_object_tools_are_marked_implemented():
         assert registry[name]["status"] == "stub", f"{name} should still be status='stub' (dispatch-crash risk, see module docstring)"
 
 
+# charts.py is also a mixed module: 19 of its 20 tools are real. The
+# remaining 1 (add_chart_series_live) stays status="stub" -- building a new
+# XDataSeries from raw in-memory values needs XDataProvider data-sequence
+# construction that was not exploration-tested this pass (see charts.py's
+# module docstring); it has no real code path to reach at all, unlike
+# create_chart_live/set_chart_data_live whose 'data'-array branch is the
+# only unimplemented part of an otherwise-real function.
+IMPLEMENTED_CHART_TOOL_NAMES = {
+    "list_charts_live", "create_chart_live", "get_chart_live", "delete_chart_live",
+    "set_chart_type_live", "set_chart_data_live", "set_chart_title_live", "set_chart_legend_live",
+    "get_chart_series_live", "set_chart_series_live", "remove_chart_series_live",
+    "set_chart_axis_live", "set_chart_data_labels_live", "set_chart_gridlines_live",
+    "add_chart_trendline_live", "remove_chart_trendline_live", "set_chart_error_bars_live",
+    "set_chart_geometry_live", "export_chart_live",
+}
+
+
+def test_implemented_chart_tools_are_marked_implemented():
+    """Same guard as test_implemented_modules_tools_are_marked_implemented,
+    for the 19 individually-implemented tools in the mixed charts.py module
+    (see IMPLEMENTED_CHART_TOOL_NAMES)."""
+    registry = get_registry()
+    for name in IMPLEMENTED_CHART_TOOL_NAMES:
+        assert registry[name]["status"] == "implemented", f"{name} should be status='implemented'"
+    still_stub = EXPECTED_BY_MODULE["charts"] - IMPLEMENTED_CHART_TOOL_NAMES
+    for name in still_stub:
+        assert registry[name]["status"] == "stub", f"{name} should still be status='stub' (no real code path this pass, see module docstring)"
+
+
 def test_stub_shape_contract():
     """Every remaining stub, called with placeholder args, returns the
     spec's NOT_IMPLEMENTED error envelope. Tools with status="implemented"
@@ -401,6 +430,8 @@ if __name__ == "__main__":
         test_every_tool_has_a_valid_status,
         test_implemented_modules_tools_are_marked_implemented,
         test_implemented_undo_tools_are_marked_implemented,
+        test_implemented_drawing_object_tools_are_marked_implemented,
+        test_implemented_chart_tools_are_marked_implemented,
         test_stub_shape_contract,
         test_merge_into_does_not_overwrite_existing_tools_by_default,
         test_error_envelope_rejects_unknown_codes,

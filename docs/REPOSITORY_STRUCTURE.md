@@ -35,8 +35,8 @@ mcp-libre/
 │   │       ├── writer_text.py      # Phase B, 18/18 IMPLEMENTED: paragraph/character editing, regex find/replace, comments
 │   │       ├── writer_layout.py    # Phase B, stub: page layout, headers/footers, fields, bookmarks, indexes
 │   │       ├── writer_tables.py    # Phase B, stub: tables, sections, footnotes/endnotes, content controls, mail merge
-│   │       ├── drawing_objects.py  # Phase C, 25/31 IMPLEMENTED: shapes, glue points, images, embedded objects
-│   │       ├── charts.py           # Phase C, stub: chart2-based chart tools
+│   │       ├── drawing_objects.py  # Phase C, 29/31 IMPLEMENTED: shapes, glue points, images, embedded objects
+│   │       ├── charts.py           # Phase C, 19/20 IMPLEMENTED: chart2-based chart tools (Calc-native only)
 │   │       ├── calc_sheets.py      # Phase C, 42/42 IMPLEMENTED: sheets, cells, ranges, rows/columns, formulas
 │   │       ├── calc_data.py        # Phase C, stub: named ranges, filters, pivots, validation, external data
 │   │       ├── calc_page.py        # Phase C, stub: page layout, print areas, comments, protection
@@ -68,6 +68,7 @@ mcp-libre/
 │   ├── test_drawing_objects.py     # drawing_objects.py's 25 implemented tools, tested against fakes
 │   ├── test_calc_sheets.py         # calc_sheets.py's 42 implemented tools, tested against fakes
 │   ├── test_draw.py                # draw.py's 16 implemented tools, tested against fakes
+│   ├── test_charts.py              # charts.py's 19 implemented tools, tested against fakes
 │   ├── test_uno_datetime.py        # DateTime-to-ISO conversion unit tests (no live LibreOffice needed)
 │   ├── test_host_trust.py          # Host/Origin trust check unit tests (no live LibreOffice needed)
 │   └── test_mcp_jsonrpc.py         # Real MCP JSON-RPC 2.0 dispatch unit tests (no live LibreOffice needed)
