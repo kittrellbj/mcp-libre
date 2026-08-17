@@ -15,6 +15,9 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugin", "pythonpath"))
 
 from tools import context  # noqa: E402
+from tools import document_lifecycle  # noqa: E402
+from tools import documents  # noqa: E402
+from tools import object_registry  # noqa: E402
 from tools.documents import DocumentRegistry  # noqa: E402
 from tools.registry import get_registry  # noqa: E402
 from tools.runtime_state import RuntimeState  # noqa: E402
@@ -395,6 +398,37 @@ def test_get_and_set_print_settings_live():
     assert result["result"]["CopyCount"] == 3
 
 
+def test_map_exception_to_code_covers_every_branch():
+    """Direct unit test of _map_exception_to_code(), the single function
+    every real tool in the catalog (~90 tools across 14 modules) routes
+    its error responses through via _error_response(). Hardening-pass
+    regression guard (#31 error-code audit): WrongDocumentTypeError used
+    to be missing entirely -- _require_writer()/_require_calc()/
+    _require_draw()/_require_impress() (and apply_style/get_direct_
+    formatting/clear_direct_formatting/copy_formatting/_require_chart_
+    capable) all raised plain NotImplementedError instead, which
+    collapsed onto UNSUPPORTED_CAPABILITY and left the spec's own
+    WRONG_DOCUMENT_TYPE code dead -- never reachable from any real tool
+    despite being the single most common error path in the whole
+    catalog. Covers every isinstance() branch so drift (a new exception
+    type added without a matching branch, or a branch reordered behind a
+    broader one) fails loudly here instead of surfacing as a wrong error
+    code live."""
+    assert document_lifecycle._map_exception_to_code(documents.NoActiveDocumentError()) == "NO_ACTIVE_DOCUMENT"
+    assert document_lifecycle._map_exception_to_code(documents.DocumentNotFoundError("id")) == "OBJECT_NOT_FOUND"
+    assert document_lifecycle._map_exception_to_code(documents.WrongDocumentTypeError("msg")) == "WRONG_DOCUMENT_TYPE"
+    assert document_lifecycle._map_exception_to_code(object_registry.ObjectNotFoundError("id")) == "OBJECT_NOT_FOUND"
+    assert document_lifecycle._map_exception_to_code(FileNotFoundError()) == "OBJECT_NOT_FOUND"
+    assert document_lifecycle._map_exception_to_code(FileExistsError()) == "FILE_EXISTS"
+    assert document_lifecycle._map_exception_to_code(PermissionError()) == "PERMISSION_DENIED"
+    assert document_lifecycle._map_exception_to_code(KeyError("k")) == "OBJECT_NOT_FOUND"
+    assert document_lifecycle._map_exception_to_code(IndexError()) == "INVALID_RANGE"
+    assert document_lifecycle._map_exception_to_code(NotImplementedError()) == "UNSUPPORTED_CAPABILITY"
+    assert document_lifecycle._map_exception_to_code(ValueError()) == "INVALID_PARAMETER"
+    assert document_lifecycle._map_exception_to_code(TypeError()) == "INVALID_PARAMETER"
+    assert document_lifecycle._map_exception_to_code(RuntimeError()) == "UNO_EXCEPTION"
+
+
 if __name__ == "__main__":
     tests = [
         test_get_active_document_live_auto_registers,
@@ -416,6 +450,7 @@ if __name__ == "__main__":
         test_reload_document_live_refuses_unsaved_changes_without_discard,
         test_print_document_live,
         test_get_and_set_print_settings_live,
+        test_map_exception_to_code_covers_every_branch,
     ]
     for test in tests:
         test()

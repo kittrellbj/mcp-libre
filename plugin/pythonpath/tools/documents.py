@@ -59,6 +59,39 @@ class NoActiveDocumentError(LookupError):
     """document_id was omitted and no document is currently active."""
 
 
+class WrongDocumentTypeError(Exception):
+    """A document resolved fine, but its type doesn't match what the tool
+    requires (e.g. a Writer-only tool called against a Calc document).
+
+    Not raised from this module -- raised by uno_bridge.UNOBridge's
+    _require_writer()/_require_calc()/_require_draw()/_require_impress()
+    (and a few narrower gates, e.g. charts.py's Calc-native-chart check).
+    Defined here rather than in uno_bridge.py itself so that document_
+    lifecycle.py's _map_exception_to_code() (and any other tools/*.py
+    module) can isinstance()-check it without importing uno_bridge.py,
+    which pulls in the real `uno`/`unohelper` PyUNO modules that are only
+    available inside a running LibreOffice process -- importing it from
+    a tools/*.py module would break the entire fakes-based test suite,
+    which runs in plain CPython outside LibreOffice (confirmed live: a
+    module-level `import uno_bridge` from document_lifecycle.py raised
+    `ModuleNotFoundError: No module named 'uno'` under the test venv).
+
+    Hardening-pass finding (#31 error-code audit): every one of those
+    document-type gates previously raised plain NotImplementedError,
+    which _map_exception_to_code() maps to UNSUPPORTED_CAPABILITY -- the
+    same code a genuinely-not-implemented stub option returns (e.g.
+    insert_cross_reference's unknown reference_type). That conflated two
+    different situations under one code and left ERROR_CODES' own
+    WRONG_DOCUMENT_TYPE entry dead code, never reachable from any of the
+    ~90 real tools despite being the single most common error path
+    across the whole catalog -- confirmed by grep, and even documented as
+    a known, deliberate shortcut in this project's own docs/
+    MCP_TOOLING_SCAFFOLD_PLAN.md (the styles.py pass called it out
+    explicitly as "WRONG_DOCUMENT_TYPE"-shaped UNSUPPORTED_CAPABILITY").
+    This dedicated type lets _map_exception_to_code() tell the two
+    situations apart."""
+
+
 class DocumentRegistry:
     """Resolves MCP document_id values to live UNO document components."""
 

@@ -18,6 +18,7 @@ import re
 import traceback
 
 from uno_datetime import uno_datetime_to_iso
+from tools.documents import WrongDocumentTypeError
 
 # Optional imports - these may not be available in all configurations
 try:
@@ -1051,7 +1052,7 @@ class UNOBridge:
     def apply_style(self, doc: Any, family: str, style_name: str, target: Optional[Any] = None) -> None:
         doc_type = self._get_document_type(doc)
         if doc_type != "writer":
-            raise NotImplementedError(f"apply_style is only implemented for Writer documents this pass, not '{doc_type}'.")
+            raise WrongDocumentTypeError(f"apply_style is only implemented for Writer documents this pass, not '{doc_type}'.")
         family_container = self._get_style_family(doc, family)
         if not family_container.hasByName(style_name):
             raise KeyError(f"No such style '{style_name}' in family '{family}'.")
@@ -1076,7 +1077,7 @@ class UNOBridge:
         """
         doc_type = self._get_document_type(doc)
         if doc_type != "writer":
-            raise NotImplementedError(f"get_direct_formatting is only implemented for Writer documents this pass, not '{doc_type}'.")
+            raise WrongDocumentTypeError(f"get_direct_formatting is only implemented for Writer documents this pass, not '{doc_type}'.")
         text_range = self._resolve_text_target(doc, target)
         direct_value = uno.Enum("com.sun.star.beans.PropertyState", "DIRECT_VALUE")
         overrides = {}
@@ -1094,7 +1095,7 @@ class UNOBridge:
     def clear_direct_formatting(self, doc: Any, target: Optional[Any] = None) -> None:
         doc_type = self._get_document_type(doc)
         if doc_type != "writer":
-            raise NotImplementedError(f"clear_direct_formatting is only implemented for Writer documents this pass, not '{doc_type}'.")
+            raise WrongDocumentTypeError(f"clear_direct_formatting is only implemented for Writer documents this pass, not '{doc_type}'.")
         text_range = self._resolve_text_target(doc, target)
         if not hasattr(text_range, "setAllPropertiesToDefault"):
             raise NotImplementedError("This target does not support clearing direct formatting (XMultiPropertyStates).")
@@ -1105,7 +1106,7 @@ class UNOBridge:
         target. Returns the list of property names actually copied."""
         doc_type = self._get_document_type(doc)
         if doc_type != "writer":
-            raise NotImplementedError(f"copy_formatting is only implemented for Writer documents this pass, not '{doc_type}'.")
+            raise WrongDocumentTypeError(f"copy_formatting is only implemented for Writer documents this pass, not '{doc_type}'.")
         source_range = self._resolve_text_target(doc, source)
         target_range = self._resolve_text_target(doc, target)
         direct_value = uno.Enum("com.sun.star.beans.PropertyState", "DIRECT_VALUE")
@@ -2996,7 +2997,7 @@ class UNOBridge:
     def _require_writer(self, doc: Any, operation: str) -> None:
         doc_type = self._get_document_type(doc)
         if doc_type != "writer":
-            raise NotImplementedError(f"{operation} is only implemented for Writer documents, not '{doc_type}'.")
+            raise WrongDocumentTypeError(f"{operation} is only implemented for Writer documents, not '{doc_type}'.")
 
     def _count_paragraphs(self, doc: Any) -> int:
         text = doc.getText()
@@ -4159,7 +4160,7 @@ class UNOBridge:
     def _require_calc(self, doc: Any, operation: str) -> None:
         doc_type = self._get_document_type(doc)
         if doc_type != "calc":
-            raise NotImplementedError(f"{operation} is only implemented for Calc documents, not '{doc_type}'.")
+            raise WrongDocumentTypeError(f"{operation} is only implemented for Calc documents, not '{doc_type}'.")
 
     def _resolve_sheet(self, doc: Any, sheet: Optional[str] = None) -> Any:
         self._require_calc(doc, "sheet resolution")
@@ -4691,7 +4692,7 @@ class UNOBridge:
     def _require_draw(self, doc: Any, operation: str) -> None:
         doc_type = self._get_document_type(doc)
         if doc_type != "draw":
-            raise NotImplementedError(f"{operation} is only implemented for Draw documents, not '{doc_type}'.")
+            raise WrongDocumentTypeError(f"{operation} is only implemented for Draw documents, not '{doc_type}'.")
 
     def _resolve_draw_page(self, doc: Any, page: Optional[Any] = None) -> Any:
         self._require_draw(doc, "draw page resolution")
@@ -4947,7 +4948,7 @@ class UNOBridge:
     def _require_chart_capable(self, doc: Any, operation: str) -> None:
         doc_type = self._get_document_type(doc)
         if doc_type != "calc":
-            raise NotImplementedError(
+            raise WrongDocumentTypeError(
                 f"{operation} is only implemented for Calc-native embedded charts this pass, not '{doc_type}' documents."
             )
 
@@ -5427,7 +5428,7 @@ class UNOBridge:
     def _require_impress(self, doc: Any, operation: str) -> None:
         doc_type = self._get_document_type(doc)
         if doc_type != "impress":
-            raise NotImplementedError(f"{operation} is only implemented for Impress documents, not '{doc_type}'.")
+            raise WrongDocumentTypeError(f"{operation} is only implemented for Impress documents, not '{doc_type}'.")
 
     def _resolve_slide(self, doc: Any, slide: Optional[Any] = None) -> Any:
         self._require_impress(doc, "slide resolution")

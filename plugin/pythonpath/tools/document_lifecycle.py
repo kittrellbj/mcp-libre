@@ -48,6 +48,8 @@ def _map_exception_to_code(e: Exception) -> str:
         return "NO_ACTIVE_DOCUMENT"
     if isinstance(e, documents.DocumentNotFoundError):
         return "OBJECT_NOT_FOUND"
+    if isinstance(e, documents.WrongDocumentTypeError):
+        return "WRONG_DOCUMENT_TYPE"
     if isinstance(e, object_registry.ObjectNotFoundError):
         return "OBJECT_NOT_FOUND"
     if isinstance(e, FileNotFoundError):
