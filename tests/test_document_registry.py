@@ -179,6 +179,68 @@ def test_replace_document_unknown_id_raises():
         pass
 
 
+def test_get_object_registry_creates_one_lazily_per_document_id():
+    registry = DocumentRegistry(FakeUnoBridge())
+    document_id = registry.register_document(FakeDocument("Doc"))
+    object_registry = registry.get_object_registry(document_id)
+    assert object_registry is not None
+    assert len(object_registry) == 0
+
+
+def test_get_object_registry_returns_the_same_instance_for_the_same_document_id():
+    registry = DocumentRegistry(FakeUnoBridge())
+    document_id = registry.register_document(FakeDocument("Doc"))
+    first = registry.get_object_registry(document_id)
+    second = registry.get_object_registry(document_id)
+    assert first is second
+
+
+def test_get_object_registry_gives_different_documents_independent_registries():
+    registry = DocumentRegistry(FakeUnoBridge())
+    doc_a = registry.register_document(FakeDocument("A"))
+    doc_b = registry.register_document(FakeDocument("B"))
+    registry_a = registry.get_object_registry(doc_a)
+    registry_b = registry.get_object_registry(doc_b)
+    assert registry_a is not registry_b
+
+    class FakeShape:
+        pass
+
+    handle = registry_a.register_object(FakeShape())
+    assert len(registry_a) == 1
+    assert len(registry_b) == 0
+    try:
+        registry_b.resolve_object(handle)
+        assert False, "a shape handle from doc A must not resolve against doc B's registry"
+    except Exception:
+        pass
+
+
+def test_unregister_document_drops_its_object_registry():
+    """A handle minted for a document must not survive that document
+    closing -- outliving its document is never meaningful (see
+    get_object_registry()'s docstring)."""
+    registry = DocumentRegistry(FakeUnoBridge())
+    document_id = registry.register_document(FakeDocument("Doc"))
+    object_registry = registry.get_object_registry(document_id)
+
+    class FakeShape:
+        pass
+
+    handle = object_registry.register_object(FakeShape())
+    assert object_registry.resolve_object(handle) is not None
+
+    registry.unregister_document(document_id)
+
+    # A fresh get_object_registry() call for the same (now-unregistered)
+    # id must not resurrect the old registry's contents -- it's a new,
+    # empty instance, proving the old one was actually dropped rather
+    # than merely orphaned-but-still-referenced.
+    fresh_object_registry = registry.get_object_registry(document_id)
+    assert fresh_object_registry is not object_registry
+    assert len(fresh_object_registry) == 0
+
+
 if __name__ == "__main__":
     tests = [
         test_register_then_resolve_returns_the_same_object,
@@ -193,6 +255,10 @@ if __name__ == "__main__":
         test_list_documents_survives_a_document_that_raises_on_introspection,
         test_replace_document_keeps_the_same_id_pointing_at_a_new_object,
         test_replace_document_unknown_id_raises,
+        test_get_object_registry_creates_one_lazily_per_document_id,
+        test_get_object_registry_returns_the_same_instance_for_the_same_document_id,
+        test_get_object_registry_gives_different_documents_independent_registries,
+        test_unregister_document_drops_its_object_registry,
     ]
     for test in tests:
         test()

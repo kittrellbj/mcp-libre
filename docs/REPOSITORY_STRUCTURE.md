@@ -23,7 +23,8 @@ mcp-libre/
 │   │   └── 📁 tools/               # Full-catalog tool scaffold (see docs/MCP_TOOLING_SCAFFOLD_PLAN.md)
 │   │       ├── registry.py         # @register_tool decorator (status=stub|implemented), merge_into()
 │   │       ├── envelope.py         # {success, result, error, document_id, elapsed_ms} builders
-│   │       ├── documents.py        # DocumentRegistry (real): stable document_id handles
+│   │       ├── documents.py        # DocumentRegistry (real): stable document_id handles + per-doc get_object_registry()
+│   │       ├── object_registry.py  # ObjectRegistry (real): stable shape_id/chart_id/table_id handles, see docs/OBJECT_HANDLE_DESIGN.md
 │   │       ├── runtime_state.py    # RuntimeState (real): session id, profile, bounded error history
 │   │       ├── context.py          # RuntimeContext install()/get_context() -- shared server state for handlers
 │   │       ├── core_runtime.py     # Phase A, IMPLEMENTED: discovery/capability/profile/diagnostics tools
@@ -55,6 +56,7 @@ mcp-libre/
 │   ├── test_insert_fix.py          # Specific function tests
 │   ├── test_tool_scaffold_contract.py # Tool scaffold registry contract tests (no live LibreOffice needed)
 │   ├── test_document_registry.py   # DocumentRegistry unit tests (no live LibreOffice needed)
+│   ├── test_object_registry.py     # ObjectRegistry unit tests (no live LibreOffice needed)
 │   ├── test_runtime_state.py       # RuntimeState unit tests (no live LibreOffice needed)
 │   ├── test_context.py             # tools.context unit tests (no live LibreOffice needed)
 │   ├── test_core_runtime.py        # core_runtime.py's 12 implemented tools, tested against fakes
@@ -82,6 +84,7 @@ mcp-libre/
 │   ├── LICENSE_OPTIONS.md          # License information
 │   ├── LIVE_VIEWING_GUIDE.md       # Live viewing setup guide
 │   ├── MCP_TOOLING_SCAFFOLD_PLAN.md # Full-catalog scaffold/real-implementation progress tracker
+│   ├── OBJECT_HANDLE_DESIGN.md     # shape_id/chart_id/table_id/sheet/slide handle design
 │   ├── PREREQUISITES.md            # System requirements
 │   ├── QUICK_START.md              # Quick start guide
 │   ├── REPOSITORY_STRUCTURE.md     # This file

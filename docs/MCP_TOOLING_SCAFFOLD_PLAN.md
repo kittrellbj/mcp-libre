@@ -668,6 +668,35 @@ document -- flagged for the `/mcp` transport work (mandated item #4), not
 solved here since it's a concurrency-control concern layered on top of
 addressing, not an addressing question itself.
 
+## Object handle design: sheets, slides, shapes, tables, charts
+
+Mandated item #2, blocking further Phase C/D real implementation until
+decided: see `docs/OBJECT_HANDLE_DESIGN.md` for the full design. Short
+version: **not every category gets the same mechanism**, following the
+spec's own already-scaffolded parameter shapes. Sheets (`sheet: string`)
+and slides (`slide`, documented as "index or name") resolve live against
+UNO's own named/indexed containers every call, no registry -- UNO already
+guarantees both are uniquely named, and the spec's own polymorphic
+`slide` parameter already solves the "index shifts under reordering"
+identity trap. Writer tables and Calc's own chart collection
+(`table_id`/`chart_id`) also resolve directly against a UNO-guaranteed
+unique `Name`, no registry -- confirmed live this pass (a newly-inserted
+Writer table auto-gets `Name: "Table1"`; a Calc sheet's `getCharts()` is
+a name-accessible container). Shapes, and charts embedded outside Calc's
+dedicated chart collection, get a real registry -- UNO gives them no
+persistent unique identity at all (confirmed live: two distinct new Draw
+shapes both default to `Name: ''`, and a draw page's shape container has
+no `getByName()`). Built this pass: `plugin/pythonpath/tools/
+object_registry.py`'s `ObjectRegistry` (the same object-identity-keyed
+mechanism `DocumentRegistry` already uses for `document_id`, generalized)
+plus `DocumentRegistry.get_object_registry(document_id)`, which lazily
+creates one `ObjectRegistry` per document and drops it in
+`unregister_document()` so a shape/chart handle's lifetime is bounded by
+its owning document's. Unit-tested (`tests/test_object_registry.py`, 8
+tests; 4 new cases in `tests/test_document_registry.py`), not yet wired
+into any Phase C/D tool -- that's for whichever pass makes Calc-sheets/
+Impress/Draw/drawing-objects/charts real.
+
 ## What was built
 
 **Shared plumbing (`plugin/pythonpath/tools/`):**

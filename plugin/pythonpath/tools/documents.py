@@ -27,19 +27,28 @@ LibreOffice/UNO context this scaffolding pass can't run:
      listener per registered document, and call unregister_document() from
      it. register_document() takes an optional on_dispose hook for this
      purpose but nothing currently populates it.
-  2. Per-object handles below the document level (shape_id, chart_id,
-     table_id, comment_id, etc.) -- those likely want their own
-     per-document registries rather than reusing this class directly;
-     this module only covers the top-level document_id.
-  3. Wiring this into mcp_server.py's existing 32 tools. It is currently
+  2. Wiring this into mcp_server.py's existing 32 tools. It is currently
      only consumed by the Phase A+ stub tools in this package; the
      original tools keep resolving "the active document" directly via
      uno_bridge, unchanged, per spec section 6 (compatibility).
+
+Per-object handles below the document level (shape_id, chart_id,
+table_id, etc.) are get_object_registry() below, backed by
+object_registry.ObjectRegistry -- see docs/OBJECT_HANDLE_DESIGN.md for
+the full design (mandated item #2) and object_registry.py's own
+docstring for the mechanism. Each document_id gets its own ObjectRegistry
+instance, created lazily on first use and dropped in
+unregister_document(), so an object handle's lifetime is naturally
+bounded by its owning document's -- without needing a per-shape UNO
+dispose listener on top of the still-open document-level gap in item 1
+above.
 """
 
 import threading
 import uuid
 from typing import Any, Callable, Dict, List, Optional
+
+from . import object_registry
 
 
 class DocumentNotFoundError(LookupError):
@@ -71,6 +80,9 @@ class DocumentRegistry:
         # default __eq__/__hash__ is identity-based already, so this is a
         # no-op change for those).
         self._ids_by_identity: Dict[Any, str] = {}
+        # One ObjectRegistry per document_id, created lazily -- see
+        # get_object_registry() and this module's docstring.
+        self._object_registries: Dict[str, object_registry.ObjectRegistry] = {}
 
     def register_document(self, uno_document: Any, on_dispose: Optional[Callable[[str], None]] = None) -> str:
         """Assign and return a stable document_id for a UNO document object.
@@ -127,11 +139,38 @@ class DocumentRegistry:
         Called from close_document_live today; will also be the target of
         the dispose-listener eviction described in this module's docstring
         once that's implemented. Unknown ids are ignored (idempotent).
+        Also drops document_id's ObjectRegistry (if one was ever created
+        via get_object_registry()), so every shape_id/chart_id/table_id
+        handle minted for this document becomes unresolvable at the same
+        moment the document itself does -- deliberate: a handle that
+        outlives its document is never meaningful.
         """
         with self._lock:
             document = self._documents.pop(document_id, None)
             if document is not None:
                 self._ids_by_identity.pop(document, None)
+            self._object_registries.pop(document_id, None)
+
+    def get_object_registry(self, document_id: str) -> object_registry.ObjectRegistry:
+        """Return the ObjectRegistry scoped to document_id, creating it on first use.
+
+        See object_registry.py and docs/OBJECT_HANDLE_DESIGN.md for what
+        this is for (mandated item #2: shape_id/chart_id/table_id handle
+        semantics). Does not validate that document_id is currently
+        registered -- callers resolve the document itself first (via
+        resolve_document()) for that check; this just needs a
+        document_id string to key the nested registry by, and creating an
+        ObjectRegistry for a document_id that later turns out to be
+        invalid is harmless (nothing will ever look it up without first
+        resolving the document, and it gets garbage collected with this
+        DocumentRegistry regardless).
+        """
+        with self._lock:
+            registry = self._object_registries.get(document_id)
+            if registry is None:
+                registry = object_registry.ObjectRegistry()
+                self._object_registries[document_id] = registry
+            return registry
 
     def replace_document(self, document_id: str, new_document: Any) -> None:
         """Re-point an existing document_id at a new UNO object.
