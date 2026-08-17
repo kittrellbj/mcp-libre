@@ -54,6 +54,22 @@ class FakeShape:
         self.deleted = False
 
 
+class FakeSelection:
+    """Stand-in for the multi-shape selection UNOBridge.split_shape()/
+    unbind_shape() return (real UNO returns the controller's current
+    XSelectionSupplier-shaped selection, which exposes getCount()/
+    getByIndex())."""
+
+    def __init__(self, shapes):
+        self._shapes = shapes
+
+    def getCount(self):
+        return len(self._shapes)
+
+    def getByIndex(self, i):
+        return self._shapes[i]
+
+
 class FakeUnoBridge:
     """Stand-in for uno_bridge.UNOBridge's drawing_objects.py-facing methods."""
 
@@ -212,6 +228,36 @@ class FakeUnoBridge:
 
     def ungroup_shape(self, shape):
         self.shapes.remove(shape)
+
+    def combine_shapes(self, doc, shapes):
+        if len(shapes) < 2:
+            raise ValueError("combine_shapes needs at least 2 shapes.")
+        combined = FakeShape("combined")
+        for s in shapes:
+            self.shapes.remove(s)
+        self.shapes.append(combined)
+        return combined
+
+    def split_shape(self, doc, shape):
+        self.shapes.remove(shape)
+        parts = [FakeShape("rectangle"), FakeShape("rectangle")]
+        self.shapes.extend(parts)
+        return FakeSelection(parts)
+
+    def bind_shapes(self, doc, shapes):
+        if len(shapes) < 2:
+            raise ValueError("bind_shapes needs at least 2 shapes.")
+        bound = FakeShape("bound")
+        for s in shapes:
+            self.shapes.remove(s)
+        self.shapes.append(bound)
+        return bound
+
+    def unbind_shape(self, doc, shape):
+        self.shapes.remove(shape)
+        parts = [FakeShape("rectangle"), FakeShape("ellipse")]
+        self.shapes.extend(parts)
+        return FakeSelection(parts)
 
     def insert_connector(self, doc, from_shape, to_shape, from_glue=None, to_glue=None, connector_type=None):
         connector = FakeShape("connector")
@@ -489,18 +535,59 @@ def test_ungroup_shape_live_unregisters_the_group():
 
 # -- combine/split/bind/unbind: still status="stub" (see module docstring) --
 
-def test_combine_split_bind_unbind_are_still_not_implemented():
+def test_combine_shapes_live_unregisters_members_and_registers_result():
     context.reset()
-    _install(active_document=FakeDocument())
-    for name, kwargs in (
-        ("combine_shapes_live", {"shape_ids": ["a", "b"]}),
-        ("split_shape_live", {"shape_id": "a"}),
-        ("bind_shapes_live", {"shape_ids": ["a", "b"]}),
-        ("unbind_shape_live", {"shape_id": "a"}),
-    ):
-        result = _handler(name)(**kwargs)
-        assert result["success"] is False
-        assert result["error"]["code"] == "NOT_IMPLEMENTED"
+    uno_bridge, _, _ = _install(active_document=FakeDocument(), shapes=[FakeShape("rectangle"), FakeShape("ellipse")])
+    ids = [s["shape_id"] for s in _handler("list_shapes_live")()["result"]["shapes"]]
+    result = _handler("combine_shapes_live")(shape_ids=ids)
+    assert result["success"] is True
+    assert result["result"]["type"] == "combined"
+    assert len(uno_bridge.shapes) == 1
+    for member_id in ids:
+        assert _handler("get_shape_live")(shape_id=member_id)["error"]["code"] == "OBJECT_NOT_FOUND"
+
+
+def test_combine_shapes_live_needs_at_least_two():
+    context.reset()
+    _install(active_document=FakeDocument(), shapes=[FakeShape("rectangle")])
+    shape_id = _handler("list_shapes_live")()["result"]["shapes"][0]["shape_id"]
+    result = _handler("combine_shapes_live")(shape_ids=[shape_id])
+    assert result["success"] is False
+    assert result["error"]["code"] == "INVALID_PARAMETER"
+
+
+def test_split_shape_live_unregisters_source_and_registers_parts():
+    context.reset()
+    uno_bridge, _, _ = _install(active_document=FakeDocument(), shapes=[FakeShape("combined")])
+    shape_id = _handler("list_shapes_live")()["result"]["shapes"][0]["shape_id"]
+    result = _handler("split_shape_live")(shape_id=shape_id)
+    assert result["success"] is True
+    assert result["result"]["count"] == 2
+    assert len(uno_bridge.shapes) == 2
+    assert _handler("get_shape_live")(shape_id=shape_id)["error"]["code"] == "OBJECT_NOT_FOUND"
+    for new_id in result["result"]["shape_ids"]:
+        assert _handler("get_shape_live")(shape_id=new_id)["success"] is True
+
+
+def test_bind_shapes_live_unregisters_members_and_registers_result():
+    context.reset()
+    uno_bridge, _, _ = _install(active_document=FakeDocument(), shapes=[FakeShape("rectangle"), FakeShape("ellipse")])
+    ids = [s["shape_id"] for s in _handler("list_shapes_live")()["result"]["shapes"]]
+    result = _handler("bind_shapes_live")(shape_ids=ids)
+    assert result["success"] is True
+    assert result["result"]["type"] == "bound"
+    for member_id in ids:
+        assert _handler("get_shape_live")(shape_id=member_id)["error"]["code"] == "OBJECT_NOT_FOUND"
+
+
+def test_unbind_shape_live_unregisters_source_and_registers_parts():
+    context.reset()
+    uno_bridge, _, _ = _install(active_document=FakeDocument(), shapes=[FakeShape("bound")])
+    shape_id = _handler("list_shapes_live")()["result"]["shapes"][0]["shape_id"]
+    result = _handler("unbind_shape_live")(shape_id=shape_id)
+    assert result["success"] is True
+    assert result["result"]["count"] == 2
+    assert _handler("get_shape_live")(shape_id=shape_id)["error"]["code"] == "OBJECT_NOT_FOUND"
 
 
 # -- insert_connector_live / glue points --
@@ -604,7 +691,11 @@ if __name__ == "__main__":
         test_distribute_shapes_live_needs_three_shapes_to_do_anything,
         test_group_shapes_live_creates_a_group_and_leaves_member_ids_resolvable,
         test_ungroup_shape_live_unregisters_the_group,
-        test_combine_split_bind_unbind_are_still_not_implemented,
+        test_combine_shapes_live_unregisters_members_and_registers_result,
+        test_combine_shapes_live_needs_at_least_two,
+        test_split_shape_live_unregisters_source_and_registers_parts,
+        test_bind_shapes_live_unregisters_members_and_registers_result,
+        test_unbind_shape_live_unregisters_source_and_registers_parts,
         test_insert_connector_live,
         test_glue_point_lifecycle,
         test_insert_image_live_and_replace_and_set_properties,

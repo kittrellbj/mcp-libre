@@ -26,20 +26,28 @@ per-doctype resolution (Writer's single document-wide draw page, a Calc
 sheet's own draw page, or a specific Impress/Draw page); this module
 only ever passes `container` through unchanged.
 
-Scope limit, deliberate, carried from uno_bridge.py's docstring for this
-section: combine_shapes_live, split_shape_live, bind_shapes_live,
-unbind_shape_live, insert_embedded_object_live, and
-activate_embedded_object_live are NOT_IMPLEMENTED this pass. The first
-four only exist as .uno: dispatch commands in UNO (no direct API); live-
-testing this pass showed .uno:Combine executing successfully but then
-crashing the headless soffice process outright on the very next UNO
-call (DisposedException: "Binary URP bridge disposed during call") --
-that would take down the extension's whole host process for every
-connected MCP client, not just the caller issuing the risky call, so
-it's not safe to ship without a dedicated isolation/testing pass. The
-embedded-object tools are the same OLE-activation/dispatch risk class
-and were not exploration-tested this pass given the crash above. All
-six are P3 (lowest priority) in the spec.
+combine_shapes_live/split_shape_live/bind_shapes_live/unbind_shape_live
+were originally scope-limited to NOT_IMPLEMENTED in this pass, after
+live-testing showed .uno:Combine executing successfully but then
+crashing headless soffice outright on the very next UNO call
+(DisposedException). Re-investigated and re-enabled by the draw.py
+pass's dispatch-safety correction: that crash turned out to be an
+artifact of the *external test script's* pattern (URP connection +
+dispatch + a same-document doc.close() right after), not a defect in
+dispatch commands used from the extension's own in-process code -- see
+docs/MCP_TOOLING_SCAFFOLD_PLAN.md's draw.py entry for the full
+re-investigation. Combine/bind are destructive (unlike group_shapes_live):
+live-verified the member shapes' own handles stop resolving as
+independent shapes afterward, so their ObjectRegistry entries are
+unregistered as part of the operation, the same way ungroup_shape_live
+already unregisters a consumed group's handle.
+
+insert_embedded_object_live and activate_embedded_object_live remain
+NOT_IMPLEMENTED -- that scope limit was never about dispatch safety
+(embedded-object creation covers a wide, uncertain range of OLE types;
+OLE activation wasn't exploration-tested this pass either), so it's
+unaffected by the correction above. Both are P3 (lowest priority) in
+the spec.
 """
 
 from typing import Any, Dict, List, Optional
@@ -431,10 +439,30 @@ def ungroup_shape_live(shape_id: str) -> Dict[str, Any]:
     priority="P3",
     purpose="Combine shapes using drawing-page combine semantics.",
     parameters=schema({"shape_ids": {"type": "array", "items": {"type": "string"}}}, required=["shape_ids"]),
+    status="implemented",
 )
 def combine_shapes_live(shape_ids: List[str]) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("combine_shapes_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        object_registry = _get_object_registry(ctx, resolved_id)
+        shapes = [object_registry.resolve_object(sid) for sid in shape_ids]
+        combined = ctx.uno_bridge.combine_shapes(doc, shapes)
+        # Combine is destructive (unlike group): the member shapes' own
+        # geometry is absorbed into one new path shape, live-verified
+        # the originals no longer resolve as independent shapes
+        # afterward -- unregister them so their old handles fail clean
+        # rather than resolving to a disposed/meaningless proxy.
+        for sid in shape_ids:
+            object_registry.unregister_object(sid)
+        combined_id = object_registry.register_object(combined)
+        return envelope.build_success(
+            result=ctx.uno_bridge.get_shape_summary(combined, combined_id), document_id=resolved_id,
+            elapsed_ms=envelope.elapsed_ms_since(start),
+        )
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -442,10 +470,24 @@ def combine_shapes_live(shape_ids: List[str]) -> Dict[str, Any]:
     priority="P3",
     purpose="Split a combined shape.",
     parameters=schema({"shape_id": {"type": "string"}}, required=["shape_id"]),
+    status="implemented",
 )
 def split_shape_live(shape_id: str) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("split_shape_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        object_registry = _get_object_registry(ctx, resolved_id)
+        shape = object_registry.resolve_object(shape_id)
+        result_selection = ctx.uno_bridge.split_shape(doc, shape)
+        object_registry.unregister_object(shape_id)
+        new_ids = [
+            object_registry.register_object(result_selection.getByIndex(i))
+            for i in range(result_selection.getCount())
+        ] if hasattr(result_selection, "getCount") else [object_registry.register_object(result_selection)]
+        return envelope.build_success(result={"shape_ids": new_ids, "count": len(new_ids)}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -453,10 +495,25 @@ def split_shape_live(shape_id: str) -> Dict[str, Any]:
     priority="P3",
     purpose="Bind shapes into one path/object where supported.",
     parameters=schema({"shape_ids": {"type": "array", "items": {"type": "string"}}}, required=["shape_ids"]),
+    status="implemented",
 )
 def bind_shapes_live(shape_ids: List[str]) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("bind_shapes_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        object_registry = _get_object_registry(ctx, resolved_id)
+        shapes = [object_registry.resolve_object(sid) for sid in shape_ids]
+        bound = ctx.uno_bridge.bind_shapes(doc, shapes)
+        for sid in shape_ids:
+            object_registry.unregister_object(sid)
+        bound_id = object_registry.register_object(bound)
+        return envelope.build_success(
+            result=ctx.uno_bridge.get_shape_summary(bound, bound_id), document_id=resolved_id,
+            elapsed_ms=envelope.elapsed_ms_since(start),
+        )
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -464,10 +521,24 @@ def bind_shapes_live(shape_ids: List[str]) -> Dict[str, Any]:
     priority="P3",
     purpose="Unbind bound shape.",
     parameters=schema({"shape_id": {"type": "string"}}, required=["shape_id"]),
+    status="implemented",
 )
 def unbind_shape_live(shape_id: str) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("unbind_shape_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        object_registry = _get_object_registry(ctx, resolved_id)
+        shape = object_registry.resolve_object(shape_id)
+        result_selection = ctx.uno_bridge.unbind_shape(doc, shape)
+        object_registry.unregister_object(shape_id)
+        new_ids = [
+            object_registry.register_object(result_selection.getByIndex(i))
+            for i in range(result_selection.getCount())
+        ] if hasattr(result_selection, "getCount") else [object_registry.register_object(result_selection)]
+        return envelope.build_success(result={"shape_ids": new_ids, "count": len(new_ids)}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(

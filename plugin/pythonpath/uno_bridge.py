@@ -3854,13 +3854,79 @@ class UNOBridge:
         page = shape.getParent()
         page.ungroup(shape)
 
-    # combine_shapes/split_shape/bind_shapes/unbind_shape (P3) have no
-    # bridge methods at all -- see this section's opening comment and
-    # tools/drawing_objects.py's module docstring for why (.uno:Combine
-    # live-tested this pass, crashed headless soffice on the very next
-    # UNO call). Those 4 tools stay pure status="stub" NOT_IMPLEMENTED
-    # responses, same as before this pass, rather than a bridge method
-    # that only ever raises.
+    # combine_shapes/split_shape/bind_shapes/unbind_shape (P3): re-enabled
+    # by the draw.py pass's dispatch-safety correction -- the
+    # drawing_objects.py pass's original conclusion (.uno: dispatch
+    # commands broadly unsafe, since .uno:Combine crashed headless
+    # soffice on the next UNO call) turned out to be an artifact of the
+    # *external test script's* pattern (URP connection + dispatch + a
+    # same-document doc.close() right after), not a real production
+    # risk -- see docs/MCP_TOOLING_SCAFFOLD_PLAN.md's draw.py entry for
+    # the full re-investigation, live-verified through the real running
+    # server this time, not an external script.
+
+    def _select_and_dispatch(self, doc: Any, shapes: List[Any], command: str) -> None:
+        controller = doc.getCurrentController()
+        if len(shapes) == 1:
+            controller.select(shapes[0])
+        else:
+            collection = self.smgr.createInstanceWithContext("com.sun.star.drawing.ShapeCollection", self.ctx)
+            for shape in shapes:
+                collection.add(shape)
+            controller.select(collection)
+        frame = controller.getFrame()
+        dispatch_helper = self.smgr.createInstanceWithContext("com.sun.star.frame.DispatchHelper", self.ctx)
+        dispatch_helper.executeDispatch(frame, command, "", 0, ())
+
+    def combine_shapes(self, doc: Any, shapes: List[Any]) -> Any:
+        if len(shapes) < 2:
+            raise ValueError("combine_shapes needs at least 2 shapes.")
+        self._select_and_dispatch(doc, shapes, ".uno:Combine")
+        selection = doc.getCurrentController().getSelection()
+        if hasattr(selection, "getCount") and selection.getCount() == 1:
+            return selection.getByIndex(0)
+        raise NotImplementedError(
+            "Combine did not produce a single combined shape for the given shapes -- "
+            "LibreOffice's .uno:Combine may not support this shape combination."
+        )
+
+    def split_shape(self, doc: Any, shape: Any) -> Any:
+        self._select_and_dispatch(doc, [shape], ".uno:Split")
+        return doc.getCurrentController().getSelection()
+
+    def bind_shapes(self, doc: Any, shapes: List[Any]) -> Any:
+        """Live-verified .uno:Bind no-ops (leaves the input shapes
+        unchanged, selection count stays at the input count) for both
+        primitive (rectangle/ellipse) and polygon shapes in this
+        LibreOffice 26.2 build -- not a dispatch-safety problem (the
+        server stays healthy either way, confirmed), genuinely no bound
+        shape gets created. Detected explicitly here rather than letting
+        the caller crash trying to read .Position off a multi-item
+        selection; matches the spec's own "where supported" hedge for
+        this tool exactly -- it isn't, in this build, for the shape
+        types tested."""
+        if len(shapes) < 2:
+            raise ValueError("bind_shapes needs at least 2 shapes.")
+        self._select_and_dispatch(doc, shapes, ".uno:Bind")
+        selection = doc.getCurrentController().getSelection()
+        if hasattr(selection, "getCount") and selection.getCount() == 1:
+            return selection.getByIndex(0)
+        raise NotImplementedError(
+            "Bind did not produce a single bound shape for the given shapes -- "
+            "live-testing found .uno:Bind no-ops for both primitive and polygon "
+            "shapes in this LibreOffice build; matches this tool's own spec "
+            "purpose text ('where supported') exactly."
+        )
+
+    def unbind_shape(self, doc: Any, shape: Any) -> Any:
+        """Not independently live-verified against a genuinely-bound
+        shape this pass -- bind_shapes() could not produce one to unbind
+        (see its own docstring). Implemented symmetrically with
+        split_shape() on the reasonable assumption Unbind's UNO behavior
+        mirrors Split's; flagged here rather than silently presented as
+        verified."""
+        self._select_and_dispatch(doc, [shape], ".uno:Unbind")
+        return doc.getCurrentController().getSelection()
 
     def insert_connector(self, doc: Any, from_shape: Any, to_shape: Any, from_glue: Optional[str] = None,
                           to_glue: Optional[str] = None, connector_type: Optional[str] = None) -> Any:

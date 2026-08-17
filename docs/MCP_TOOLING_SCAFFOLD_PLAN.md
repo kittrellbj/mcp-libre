@@ -19,7 +19,7 @@ up exactly where it left off.
 | Writer - text, navigation, editing, search, review | 45 | 27 | 18 | **18/18 new tools Implemented** (`tools/writer_text.py`) -- real logic, live-verified; the 27 "(existing)" tools stay in `mcp_server.py`/`uno_bridge.py` under the original 32, not duplicated here |
 | Writer - page layout, publishing, styles, headers, fields, indexes | 43 | 0 | 43 | **Scaffolded** (`tools/writer_layout.py`) |
 | Writer - tables, sections, notes, content controls, mail merge | 38 | 0 | 38 | **Scaffolded** (`tools/writer_tables.py`) |
-| Common drawing objects, images, shapes, embedded objects | 31 | 0 | 31 | **25/31 Implemented** (`tools/drawing_objects.py`) -- real logic, live-verified; combine/split/bind/unbind + insert/activate_embedded_object (all P3) still stub, dispatch-crash risk |
+| Common drawing objects, images, shapes, embedded objects | 31 | 0 | 31 | **29/31 Implemented** (`tools/drawing_objects.py`) -- real logic, live-verified; only insert/activate_embedded_object (P3) still stub (uncertain OLE scope, not dispatch risk -- combine/split/bind/unbind re-enabled once the dispatch-safety finding was corrected) |
 | Charts and data visualizations | 20 | 0 | 20 | **Scaffolded** (`tools/charts.py`) |
 | Calc - sheets, cells, ranges, formulas, layout | 42 | 0 | 42 | **42/42 Implemented** (`tools/calc_sheets.py`) -- real logic, live-verified |
 | Calc - data management, analysis, pivots, validation, external data | 42 | 0 | 42 | **Scaffolded** (`tools/calc_data.py`) |
@@ -1126,16 +1126,82 @@ are live-verified instead, not something a fake can usefully assert).
 
 Direct consequence of the dispatch-safety correction above. Re-tested
 `combine_shapes_live`/`split_shape_live`/`bind_shapes_live`/
-`unbind_shape_live` (all P3) through the same real-server-diagnostic
-methodology (not an external script that also calls `close()`) and
-confirmed `.uno:Combine`/`.uno:Split`/`.uno:Bind`/`.uno:Unbind` are safe
-from the extension's own in-process code. Implemented for real; see the
-dedicated commit for detail (kept separate from `draw.py`'s own commit
-for reviewability -- one topic per commit). `insert_embedded_object_live`/
-`activate_embedded_object_live` remain `status="stub"` -- that scope
-limit was never about dispatch safety (embedded-object creation is
-broad/uncertain in scope; OLE activation wasn't exploration-tested this
-pass either), so it's unaffected by this correction.
+`unbind_shape_live` (all P3) through the same real-running-server
+methodology draw.py's investigation established (not an external script
+that also calls `close()`), and confirmed `.uno:Combine`/`.uno:Split`/
+`.uno:Bind`/`.uno:Unbind` are all safe to dispatch from the extension's
+own in-process code -- the server stayed healthy and `soffice.bin`
+stayed alive through every call below, including the one that failed.
+`insert_embedded_object_live`/`activate_embedded_object_live` remain
+`status="stub"` -- that scope limit was never about dispatch safety
+(embedded-object creation is broad/uncertain in scope; OLE activation
+wasn't exploration-tested this pass either), so it's unaffected by this
+correction.
+
+**`combine_shapes_live`** implemented and live-verified end to end:
+combined a rectangle and an ellipse, confirmed via an independent raw
+UNO read that the page's shape count dropped from 2 to 1 and the result
+is a real bezier-path shape; confirmed the two original `shape_id`s no
+longer resolve (`OBJECT_NOT_FOUND`) -- combine is destructive, unlike
+`group_shapes_live`, whose member handles deliberately stay valid (see
+the `drawing_objects.py` pass's own group/ungroup finding). Made
+defensive against a combine that doesn't reduce to exactly one shape
+(raises a clear `UNSUPPORTED_CAPABILITY`-mapped error instead of
+crashing downstream trying to read `.Position` off a multi-item
+selection), mirroring the fix `bind_shapes_live` needed below --
+though combine itself worked correctly in every case tested this pass.
+
+**`split_shape_live`** live-verified to execute without error against a
+combined shape and register the resulting shape(s), but the shape count
+returned was 1, not the 2 a full "undo of combine" might imply. Not
+treated as a bug: `split_shape_live`'s own spec purpose text
+("Split a combined shape") doesn't guarantee restoring the original
+shape count, and the tool correctly reports whatever `.uno:Split`
+itself returns (same "report whatever UNO returns, don't second-guess
+it" principle `calc_sheets.py`'s `queryPrecedents` finding already
+established) -- flagged here as an observed characteristic, not
+verified against every possible combined-shape structure.
+
+**`bind_shapes_live`, a real bug found and fixed by live-verifying:**
+the initial implementation assumed `.uno:Bind` always produces one
+bound shape (same pattern as combine), and calling
+`get_shape_summary()` on whatever came back crashed with a raw
+`AttributeError` on `.Position` (surfaced as `UNO_EXCEPTION` to the
+caller) when it didn't. Live-testing found `.uno:Bind` genuinely
+**no-ops** -- leaves the input shapes completely unchanged, selection
+count stays at the input count -- for both primitive shapes
+(rectangle/ellipse) and actual polygon/freeform shapes in this
+LibreOffice 26.2 build; not a dispatch-safety problem (confirmed the
+server stayed healthy and `soffice.bin` stayed alive through the
+no-op), genuinely no bound shape gets created either way. Fixed to
+detect this explicitly (selection count didn't reduce to 1) and raise
+a clear, documented `UNSUPPORTED_CAPABILITY` error instead of crashing
+-- this also matches the tool's own spec purpose text ("Bind shapes
+into one path/object **where supported**") exactly: in this build, for
+the shape types tested, it isn't. Re-verified live post-fix: the error
+is now clean and documented, the server stays healthy, and -- because
+the tool layer only unregisters the input `shape_id`s *after* a
+successful bridge call -- a failed bind leaves the original `shape_id`s
+correctly still resolvable (confirmed independently).
+
+**`unbind_shape_live`**: implemented symmetrically with `split_shape_live`
+on the reasonable assumption `.uno:Unbind`'s UNO behavior mirrors
+`.uno:Split`'s, but **not independently live-verified against a
+genuinely-bound shape this pass** -- `bind_shapes_live` could not
+produce one to unbind (see above), so there was nothing real to test
+`unbind_shape_live` against. Flagged explicitly rather than silently
+presented as verified; a future pass with a LibreOffice build/shape
+combination where Bind actually produces something should close this
+gap.
+
+**Testing:** 4 new/replaced tests in `tests/test_drawing_objects.py`
+(the fake models Bind as always succeeding, since exercising the
+tool-layer plumbing for the success path is a legitimate and useful
+thing to test even though real UNO sometimes no-ops -- the no-op
+behavior itself is exactly the class of defect only live-testing could
+catch, and is documented above, not asserted in the fake). 293/293
+passing under `pytest` across the full relevant suite (289 prior + 4
+new).
 
 ## What was built
 
