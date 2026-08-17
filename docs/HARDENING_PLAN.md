@@ -207,8 +207,44 @@ have 17 direct unit tests in `tests/test_uno_datetime.py`.
 
 ## 3. PyUNO robustness sweep (#33)
 
-Not started. `DATABASE_ERROR`/SDBC exception mapping (see item 1 above)
-folds in here.
+**Status: in progress.** `DATABASE_ERROR`/SDBC exception mapping (see
+item 1 above) still folds in here, not yet done.
+
+**Real bug found (while investigating #32) and fixed, live-verified:**
+`set_custom_property_live`'s bridge method, `set_custom_property()`, has
+two write paths depending on whether the named property already exists
+-- `container.setPropertyValue()` (UPDATE, existing name) or
+`container.addProperty()` (CREATE, new name). A plain Python `int` value
+live-verified raises `IllegalTypeException` on the CREATE path only --
+confirmed directly: `addProperty(name, PropertyAttribute.REMOVABLE, 42)`
+fails, `addProperty(name, PropertyAttribute.REMOVABLE, 42.0)` (a float)
+succeeds, and `setPropertyValue(name, 99)` (an int, against an
+already-`double`-typed existing property) succeeds and auto-coerces to
+`99.0`. Root cause: pyuno can't infer which UNO numeric type a bare
+Python `int` should become for a brand-new property with no existing
+type to coerce toward; a `setPropertyValue()` call against an existing
+property has that type already established and coerces fine. `uno.Any`-
+typing the value (this session's usual fix for ambiguous-type UNO calls)
+does NOT work here either -- `addProperty` specifically rejects it with
+`"uno.Any instance not accepted during method call, use uno.invoke
+instead"`, a different UNO API quirk than the sequence-typing pattern
+`sort_range()`/`sort_table()` already established. Fixed by coercing a
+plain `int` (explicitly excluding `bool`, an `int` subclass in Python --
+`isinstance(True, int)` is `True`) to `float` on the CREATE path only.
+Rebuilt, redeployed, re-verified live: `set_custom_property_live` with
+`value=42` no longer raises, reads back as `42.0`; the UPDATE path and a
+`bool` value both still work correctly (no regression). No fakes-based
+regression test added -- `UNOBridge` can't be instantiated outside a
+running LibreOffice process (its constructor calls `uno.
+getComponentContext()`), so this class of bug is only exercisable live,
+same constraint #31/#32 already hit.
+
+Not yet done: the deliberate, systematic sweep for the broader danger
+patterns (`isinstance()` on UNO interfaces, `id()`-based identity, raw
+`str()` of structs, bare `except` blocks, `dict()` assumptions on UNO
+sequences) across `uno_bridge.py` as a whole -- everything found so far
+this pass was incidental, surfaced while working on #31/#32, not from a
+deliberate pattern-by-pattern audit.
 
 ## 4. Writer/Calc/Draw production-hardening
 

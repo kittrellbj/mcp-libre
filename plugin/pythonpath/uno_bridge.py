@@ -560,7 +560,21 @@ class UNOBridge:
         }
 
     def set_custom_property(self, doc: Any, name: str, value: Any, property_type: Optional[str] = None) -> None:
-        """Create or update a user-defined document property."""
+        """Create or update a user-defined document property.
+
+        Hardening-pass finding (#32/#33): addProperty() -- the CREATE
+        path, used the first time a given name is set -- live-verified
+        raises IllegalTypeException on a plain Python int (pyuno can't
+        infer which UNO integer/float type an untyped int should become
+        for a brand-new property with no existing type to coerce
+        toward). setPropertyValue() -- the UPDATE path, for a name that
+        already exists -- has no such problem; it auto-coerces a plain
+        int against the property's already-established type just fine,
+        live-verified. A plain float works on both paths without any
+        special typing. Fixed by coercing a plain int (explicitly NOT
+        bool, which is an int subclass in Python -- isinstance(True,
+        int) is True) to float only on the CREATE path, where it's
+        actually needed."""
         from com.sun.star.beans import PropertyAttribute
 
         container = doc.getDocumentProperties().getUserDefinedProperties()
@@ -568,6 +582,8 @@ class UNOBridge:
         if name in existing_names:
             container.setPropertyValue(name, value)
         else:
+            if isinstance(value, int) and not isinstance(value, bool):
+                value = float(value)
             container.addProperty(name, PropertyAttribute.REMOVABLE, value)
 
     def remove_custom_property(self, doc: Any, name: str) -> None:
