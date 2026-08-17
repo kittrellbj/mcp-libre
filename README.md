@@ -124,7 +124,7 @@ Required:
 Clone this fork:
 
 ```bash
-git clone https://github.com/YOUR_GITHUB_USERNAME/mcp-libre.git
+git clone https://github.com/kittrellbj/mcp-libre.git
 cd mcp-libre
 ```
 
