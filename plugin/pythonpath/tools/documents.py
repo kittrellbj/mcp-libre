@@ -192,7 +192,8 @@ class DocumentRegistry:
             self._ids_by_identity[new_document] = document_id
 
     def list_documents(self) -> List[Dict[str, Any]]:
-        """Return [{document_id, type, title, modified}, ...] for every registered document.
+        """Return [{document_id, type, title, modified, introspection_error}, ...]
+        for every registered document.
 
         Backs both the existing list_open_documents compatibility tool and
         the new get_active_document_live / activate_document_live stubs.
@@ -200,6 +201,11 @@ class DocumentRegistry:
         left dangling by an out-of-band close, until dispose-listener
         eviction lands) are reported with type/title/modified left None
         rather than dropped, so a caller can still see the id exists.
+        introspection_error carries "{ExceptionType}: {message}" for that
+        case so a caller (or a human reading a bug report) can tell a
+        legitimately-dangling proxy apart from a real bug in
+        get_document_info() -- both used to produce the exact same
+        all-None result. introspection_error is None on the success path.
         """
         with self._lock:
             items = list(self._documents.items())
@@ -207,14 +213,23 @@ class DocumentRegistry:
         results = []
         for document_id, document in items:
             info: Dict[str, Any] = {}
+            introspection_error = None
             try:
                 info = self.uno_bridge.get_document_info(document)
-            except Exception:
+            except Exception as e:
                 info = {}
+                # Surface what actually went wrong instead of silently
+                # blanking the fields -- a dangling proxy from an
+                # out-of-band close (the documented case) and a real bug
+                # in get_document_info() both land here and previously
+                # produced the exact same all-None result, indistinguishable
+                # to a caller.
+                introspection_error = f"{type(e).__name__}: {e}"
             results.append({
                 "document_id": document_id,
                 "type": info.get("type"),
                 "title": info.get("title"),
                 "modified": info.get("modified"),
+                "introspection_error": introspection_error,
             })
         return results

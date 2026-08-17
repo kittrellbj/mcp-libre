@@ -743,14 +743,20 @@ class UNOBridge:
             try:
                 active_sheet = controller.getActiveSheet()
                 state["active_sheet"] = active_sheet.getName() if active_sheet else None
-            except Exception:
+            except Exception as e:
+                # A calc document always has an active sheet, so a failure
+                # here is a real anomaly (disposed controller, etc.), not a
+                # legitimate "no sheet" state -- both previously produced
+                # the same active_sheet: None with no way to tell them apart.
                 state["active_sheet"] = None
+                state["warnings"] = [f"Could not read active sheet name: {e}"]
         elif doc_type in ("impress", "draw"):
             try:
                 current_page = controller.getCurrentPage()
                 state["current_page_name"] = current_page.Name if current_page else None
-            except Exception:
+            except Exception as e:
                 state["current_page_name"] = None
+                state["warnings"] = [f"Could not read current page name: {e}"]
         return state
 
     def set_zoom(self, doc: Any, percent: Optional[int] = None, mode: Optional[str] = None) -> Dict[str, Any]:
@@ -918,10 +924,19 @@ class UNOBridge:
                 pass
         return applied
 
-    def clone_style(self, doc: Any, family: str, source_style: str, new_style_name: str) -> None:
+    def clone_style(self, doc: Any, family: str, source_style: str, new_style_name: str) -> List[str]:
         """Clone an existing style: create new_style_name in the same family
         with the same parent, then copy every directly-set (non-default,
-        non-readonly) property value from the source."""
+        non-readonly) property value from the source.
+
+        Returns the list of directly-set property names that failed to
+        copy. Unlike create_style/update_style (which are told which
+        properties to apply and report which of *those* succeeded), this
+        method decides for itself which properties to attempt, so a silent
+        per-property failure here can hide a real bug (as opposed to a
+        caller passing an unsettable key on purpose) -- surfaced to the
+        caller instead of the previous bare `except: continue`.
+        """
         family_container = self._get_style_family(doc, family)
         if not family_container.hasByName(source_style):
             raise KeyError(f"No such style '{source_style}' in family '{family}'.")
@@ -937,6 +952,7 @@ class UNOBridge:
         if getattr(source, "ParentStyle", None):
             clone.ParentStyle = source.ParentStyle
 
+        failed: List[str] = []
         info = source.getPropertySetInfo()
         for prop in info.getProperties():
             try:
@@ -944,7 +960,9 @@ class UNOBridge:
                     continue
                 clone.setPropertyValue(prop.Name, source.getPropertyValue(prop.Name))
             except Exception:
+                failed.append(prop.Name)
                 continue
+        return failed
 
     def update_style(self, doc: Any, family: str, style_name: str, properties: Dict[str, Any]) -> List[str]:
         """Update style properties. Returns the list of keys actually applied."""
@@ -1413,17 +1431,24 @@ class UNOBridge:
             recording = False
             showing = False
             pending_count = 0
+            # recording/showing/pending_count default to the same False/0
+            # a genuinely-off document reports. Without this, a read
+            # failure here (e.g. the interface is present per hasattr()
+            # but getPropertyValue() still raises) is silently
+            # indistinguishable from "track changes is genuinely off" in
+            # a "success": true response. warnings makes that visible.
+            warnings: List[str] = []
 
             # Access document properties via XPropertySet
             if hasattr(doc, 'getPropertyValue'):
                 try:
                     recording = doc.getPropertyValue("RecordChanges")
-                except Exception:
-                    pass
+                except Exception as e:
+                    warnings.append(f"Could not read RecordChanges: {e}")
                 try:
                     showing = doc.getPropertyValue("ShowChanges")
-                except Exception:
-                    pass
+                except Exception as e:
+                    warnings.append(f"Could not read ShowChanges: {e}")
 
             # Count pending redlines using XRedlinesSupplier
             if hasattr(doc, 'getRedlines'):
@@ -1431,16 +1456,19 @@ class UNOBridge:
                     redlines = doc.getRedlines()
                     if redlines:
                         pending_count = redlines.getCount()
-                except Exception:
-                    pass
+                except Exception as e:
+                    warnings.append(f"Could not count pending redlines: {e}")
 
             logger.info(f"Track Changes status: recording={recording}, showing={showing}, pending={pending_count}")
-            return {
+            result = {
                 "success": True,
                 "recording": recording,
                 "showing": showing,
                 "pending_count": pending_count
             }
+            if warnings:
+                result["warnings"] = warnings
+            return result
 
         except Exception as e:
             logger.error(f"Failed to get track changes status: {e}")
@@ -2658,13 +2686,20 @@ class UNOBridge:
 
             # Check if Track Changes is enabled
             track_changes_active = False
+            warnings: List[str] = []
             if hasattr(doc, 'getPropertyValue'):
                 try:
                     recording = doc.getPropertyValue("RecordChanges")
                     showing = doc.getPropertyValue("ShowChanges")
                     track_changes_active = recording or showing
-                except Exception:
-                    pass
+                except Exception as e:
+                    # track_changes_active silently staying False here is
+                    # indistinguishable from "genuinely off" in the
+                    # response below without this warning -- and a False
+                    # here also silently skips the tracked-deletion filter
+                    # a few lines down, which would leak deleted text into
+                    # search results.
+                    warnings.append(f"Could not read RecordChanges/ShowChanges: {e}")
 
             # Create search descriptor
             search = doc.createSearchDescriptor()
@@ -2699,13 +2734,16 @@ class UNOBridge:
                     })
 
             logger.info(f"Found {len(matches)} occurrences of '{query}' (Track Changes: {track_changes_active})")
-            return {
+            result = {
                 "success": True,
                 "matches": matches,
                 "count": len(matches),
                 "query": query,
                 "track_changes_active": track_changes_active
             }
+            if warnings:
+                result["warnings"] = warnings
+            return result
 
         except Exception as e:
             logger.error(f"Failed to find text: {e}")
@@ -2815,11 +2853,21 @@ class UNOBridge:
 
             # Check if Track Changes is enabled
             track_changes_active = False
+            warnings: List[str] = []
             if hasattr(doc, 'getPropertyValue'):
                 try:
                     track_changes_active = doc.getPropertyValue("RecordChanges")
-                except Exception:
-                    pass
+                except Exception as e:
+                    # A read failure here silently falls through to the
+                    # "Track Changes disabled" fast path below (native
+                    # replaceAll, which does NOT skip tracked deletions),
+                    # exactly as if RecordChanges genuinely were False.
+                    # Preserving that existing behavior per the no-success-
+                    # path-changes rule, but a caller needs to be able to
+                    # tell "genuinely off" from "read failed, replaceAll ran
+                    # without the tracked-deletion guard it would normally
+                    # get."
+                    warnings.append(f"Could not read RecordChanges: {e}")
 
             # If Track Changes is disabled, use native replaceAll for performance
             if not track_changes_active:
@@ -2829,13 +2877,16 @@ class UNOBridge:
                 count = doc.replaceAll(replace)
 
                 logger.info(f"Replaced {count} occurrences of '{old}' with '{new}' (Track Changes disabled)")
-                return {
+                result = {
                     "success": True,
                     "count": count,
                     "old": old,
                     "new": new,
                     "track_changes_active": False
                 }
+                if warnings:
+                    result["warnings"] = warnings
+                return result
 
             # Track Changes is enabled - must iterate manually to skip tracked deletions
             # Native replaceAll ignores Track Changes, so we use findFirst/findNext
@@ -3942,8 +3993,18 @@ class UNOBridge:
         if connector_type is not None:
             try:
                 connector.EdgeKind = uno.Enum("com.sun.star.drawing.ConnectorType", connector_type.upper())
-            except Exception:
-                pass
+            except Exception as e:
+                # A bad connector_type (typo/unsupported value) previously
+                # failed silently: the connector was still created and
+                # returned as if the call fully succeeded, just with
+                # whatever EdgeKind default it started with. That's a real
+                # caller input error, not an optional/absent feature --
+                # surface it like insert_shape() does for an unknown
+                # shape_type. connector is already page.add()-ed; remove it
+                # so a bad connector_type doesn't leave an orphaned,
+                # unregistered connector shape in the document.
+                page.remove(connector)
+                raise ValueError(f"Unknown connector_type '{connector_type}': {e}") from e
         return connector
 
     def list_glue_points(self, shape: Any) -> List[Dict[str, Any]]:
@@ -3990,13 +4051,24 @@ class UNOBridge:
         if anchor is not None and hasattr(shape, "AnchorType"):
             try:
                 shape.AnchorType = uno.Enum("com.sun.star.text.TextContentAnchorType", anchor.upper())
-            except Exception:
-                pass
+            except Exception as e:
+                # Same reasoning as insert_connector's connector_type: a
+                # bad anchor value is a real caller input error that
+                # previously vanished silently, leaving the shape's default
+                # anchor in place with no indication anything was wrong.
+                # shape is already page.add()-ed at this point (Graphic is
+                # set from file_path, which is the far more likely thing to
+                # fail and did so before this point) -- remove it before
+                # raising so a bad anchor/wrap value doesn't leave an
+                # orphaned, unregistered image shape in the document.
+                page.remove(shape)
+                raise ValueError(f"Unknown anchor '{anchor}': {e}") from e
         if wrap is not None and hasattr(shape, "Surround"):
             try:
                 shape.Surround = uno.Enum("com.sun.star.text.WrapTextMode", wrap.upper())
-            except Exception:
-                pass
+            except Exception as e:
+                page.remove(shape)
+                raise ValueError(f"Unknown wrap '{wrap}': {e}") from e
         return shape
 
     def replace_image(self, shape: Any, file_path: str) -> None:

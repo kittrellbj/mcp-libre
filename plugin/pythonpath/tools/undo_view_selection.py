@@ -246,7 +246,16 @@ def get_view_state_live(document_id: Optional[str] = None) -> Dict[str, Any]:
     try:
         doc, resolved_id = _resolve_and_register(ctx, document_id)
         state = ctx.uno_bridge.get_view_state(doc)
-        return envelope.build_success(result=state, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+        # get_view_state() nests a "warnings" key in its result on a
+        # partial read failure (e.g. active sheet name unreadable); lift it
+        # to the envelope's top-level warnings field where every other tool
+        # surfaces non-fatal issues, rather than leaving two inconsistent
+        # warnings locations in the response.
+        warnings = state.pop("warnings", [])
+        return envelope.build_success(
+            result=state, document_id=resolved_id, warnings=warnings,
+            elapsed_ms=envelope.elapsed_ms_since(start),
+        )
     except Exception as e:
         return _error_response(e, start, document_id=document_id)
 

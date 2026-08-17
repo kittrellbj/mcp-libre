@@ -145,8 +145,15 @@ def clone_style_live(family: str, source_style: str, new_style: str) -> Dict[str
     ctx = context.get_context()
     try:
         doc, resolved_id = _resolve_and_register(ctx)
-        ctx.uno_bridge.clone_style(doc, family, source_style, new_style)
-        return envelope.build_success(result={"cloned": new_style, "from": source_style}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+        # clone_style() returns the directly-set property names it failed
+        # to copy (a fake/legacy uno_bridge in tests may still return None
+        # -- treat that as "nothing to report", not a crash).
+        failed = ctx.uno_bridge.clone_style(doc, family, source_style, new_style) or []
+        warnings = [f"Could not clone property '{p}'" for p in failed]
+        return envelope.build_success(
+            result={"cloned": new_style, "from": source_style}, document_id=resolved_id,
+            warnings=warnings, elapsed_ms=envelope.elapsed_ms_since(start),
+        )
     except Exception as e:
         return _error_response(e, start)
 

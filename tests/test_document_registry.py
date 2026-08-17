@@ -153,6 +153,30 @@ def test_list_documents_survives_a_document_that_raises_on_introspection():
     assert listed[0]["type"] is None
 
 
+def test_list_documents_surfaces_the_introspection_error_instead_of_hiding_it():
+    """Regression: list_documents() used to catch introspection failures with
+    a bare `except Exception: info = {}`, so a genuinely dangling proxy and a
+    real bug in get_document_info() (e.g. a typo'd property name that raises
+    for every document) produced the identical all-None result -- a caller
+    had no way to tell "nothing wrong, proxy is gone" from "something is
+    broken". introspection_error must carry the real exception type/message."""
+    class ExplodingUnoBridge(FakeUnoBridge):
+        def get_document_info(self, doc):
+            raise RuntimeError("disposed UNO proxy")
+
+    registry = DocumentRegistry(ExplodingUnoBridge())
+    registry.register_document(FakeDocument("Doomed"))
+    listed = registry.list_documents()
+    assert listed[0]["introspection_error"] == "RuntimeError: disposed UNO proxy"
+
+
+def test_list_documents_introspection_error_is_none_on_the_success_path():
+    registry = DocumentRegistry(FakeUnoBridge())
+    registry.register_document(FakeDocument("Fine"))
+    listed = registry.list_documents()
+    assert listed[0]["introspection_error"] is None
+
+
 def test_replace_document_keeps_the_same_id_pointing_at_a_new_object():
     """Used by reload_document_live: the reloaded UNO component has a new
     object identity, but callers should keep using the same document_id."""
@@ -253,6 +277,8 @@ if __name__ == "__main__":
         test_unregister_unknown_id_is_a_no_op,
         test_list_documents_reports_shape_from_uno_bridge,
         test_list_documents_survives_a_document_that_raises_on_introspection,
+        test_list_documents_surfaces_the_introspection_error_instead_of_hiding_it,
+        test_list_documents_introspection_error_is_none_on_the_success_path,
         test_replace_document_keeps_the_same_id_pointing_at_a_new_object,
         test_replace_document_unknown_id_raises,
         test_get_object_registry_creates_one_lazily_per_document_id,
