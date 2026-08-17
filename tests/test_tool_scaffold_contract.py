@@ -275,14 +275,16 @@ def test_every_tool_has_a_valid_status():
 # Update this set (and nothing else) as more modules get *fully* implemented.
 IMPLEMENTED_MODULES = ("core_runtime", "document_lifecycle")
 
-# undo_view_selection.py is a mixed module: 6 of its 14 tools (the undo
-# ones) are real; the other 8 (view/zoom/selection/document-update-locking/
-# document-events) are a separate follow-up pass and stay status="stub".
-# Listed by name rather than added to IMPLEMENTED_MODULES since that
-# constant asserts *every* tool in the module.
+# undo_view_selection.py is a mixed module: 12 of its 14 tools (undo +
+# view/selection/locking) are real; the remaining 2 (document event
+# capture) are a separate follow-up pass and stay status="stub". Listed by
+# name rather than added to IMPLEMENTED_MODULES since that constant
+# asserts *every* tool in the module.
 IMPLEMENTED_TOOL_NAMES = {
     "get_undo_state_live", "undo_live", "redo_live",
     "begin_undo_context_live", "end_undo_context_live", "cancel_undo_context_live",
+    "get_view_state_live", "set_zoom_live", "get_selection_live", "clear_selection_live",
+    "lock_document_updates_live", "unlock_document_updates_live",
 }
 
 
@@ -298,7 +300,7 @@ def test_implemented_modules_tools_are_marked_implemented():
 
 def test_implemented_undo_tools_are_marked_implemented():
     """Same guard as test_implemented_modules_tools_are_marked_implemented,
-    for the 6 individually-implemented tools in the mixed
+    for the 12 individually-implemented tools in the mixed
     undo_view_selection.py module (see IMPLEMENTED_TOOL_NAMES)."""
     registry = get_registry()
     for name in IMPLEMENTED_TOOL_NAMES:

@@ -8,17 +8,25 @@ types where supported).
 UNO basis per spec: XUndoManagerSupplier/XUndoManager, XController/XFrame,
 document events, view data.
 
-The 6 undo tools (get_undo_state_live, undo_live, redo_live,
-begin_undo_context_live, end_undo_context_live, cancel_undo_context_live)
-are real (status="implemented"), following the same pattern as
-core_runtime.py/document_lifecycle.py: tools.context.get_context() for live
-UNOBridge/DocumentRegistry/RuntimeState, _resolve_and_register/
-_error_response/_map_exception_to_code reused from document_lifecycle.py
-rather than re-derived here (single source of truth for that mapping).
+12 of this module's 14 tools are real (status="implemented"), following
+the same pattern as core_runtime.py/document_lifecycle.py:
+tools.context.get_context() for live UNOBridge/DocumentRegistry/
+RuntimeState, _resolve_and_register/_error_response/_map_exception_to_code
+reused from document_lifecycle.py rather than re-derived here (single
+source of truth for that mapping):
+  - The 6 undo tools: get_undo_state_live, undo_live, redo_live,
+    begin_undo_context_live, end_undo_context_live, cancel_undo_context_live.
+  - The 6 view/selection/locking tools: get_view_state_live, set_zoom_live,
+    get_selection_live, clear_selection_live, lock_document_updates_live,
+    unlock_document_updates_live.
 
-The remaining 8 tools in this module (view state, zoom, selection,
-document-update locking, document events) are still NOT_IMPLEMENTED
-stubs -- a separate follow-up pass, not part of this one.
+The remaining 2 tools (get_document_events_live,
+wait_for_document_event_live) are still NOT_IMPLEMENTED stubs --
+deliberately a separate follow-up pass: event capture needs a persistent
+listener registered against the document/desktop and a bounded event
+buffer with its own lifecycle, which is a different (and more complex)
+concern than the otherwise-synchronous UNO calls the rest of this module
+makes -- it deserves its own live-test cycle rather than being bundled in.
 
 Undo-context state (which named context is open, on which document, and
 its baseline undo-stack depth) is tracked on RuntimeState -- see
@@ -230,10 +238,17 @@ def cancel_undo_context_live() -> Dict[str, Any]:
     priority="P2",
     purpose="Return controller/view mode, zoom, visible sheet/page/slide, cursor/selection summary.",
     parameters=schema({"document_id": {"type": "string"}}),
+    status="implemented",
 )
 def get_view_state_live(document_id: Optional[str] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("get_view_state_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx, document_id)
+        state = ctx.uno_bridge.get_view_state(doc)
+        return envelope.build_success(result=state, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start, document_id=document_id)
 
 
 @register_tool(
@@ -244,10 +259,17 @@ def get_view_state_live(document_id: Optional[str] = None) -> Dict[str, Any]:
         "percent": {"type": "integer"},
         "mode": {"type": "string", "enum": ["optimal", "page", "width"]},
     }),
+    status="implemented",
 )
 def set_zoom_live(percent: Optional[int] = None, mode: Optional[str] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("set_zoom_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        result = ctx.uno_bridge.set_zoom(doc, percent=percent, mode=mode)
+        return envelope.build_success(result=result, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -255,10 +277,17 @@ def set_zoom_live(percent: Optional[int] = None, mode: Optional[str] = None) -> 
     priority="P1",
     purpose="Return normalized current selection with document-type-specific details.",
     parameters=schema({"document_id": {"type": "string"}}),
+    status="implemented",
 )
 def get_selection_live(document_id: Optional[str] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("get_selection_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx, document_id)
+        result = ctx.uno_bridge.get_selection(doc)
+        return envelope.build_success(result=result, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start, document_id=document_id)
 
 
 @register_tool(
@@ -266,10 +295,17 @@ def get_selection_live(document_id: Optional[str] = None) -> Dict[str, Any]:
     priority="P2",
     purpose="Collapse/clear current selection without modifying content.",
     parameters=schema({"document_id": {"type": "string"}}),
+    status="implemented",
 )
 def clear_selection_live(document_id: Optional[str] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("clear_selection_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx, document_id)
+        ctx.uno_bridge.clear_selection(doc)
+        return envelope.build_success(result={"cleared": True}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start, document_id=document_id)
 
 
 @register_tool(
@@ -305,10 +341,17 @@ def wait_for_document_event_live(event_types: List[str], timeout_ms: int) -> Dic
     priority="P2",
     purpose="Temporarily lock automatic view/model update for bulk operations.",
     parameters=schema({"document_id": {"type": "string"}}),
+    status="implemented",
 )
 def lock_document_updates_live(document_id: Optional[str] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("lock_document_updates_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx, document_id)
+        ctx.uno_bridge.lock_document_updates(doc)
+        return envelope.build_success(result={"locked": True}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start, document_id=document_id)
 
 
 @register_tool(
@@ -316,7 +359,14 @@ def lock_document_updates_live(document_id: Optional[str] = None) -> Dict[str, A
     priority="P2",
     purpose="Release update lock and refresh.",
     parameters=schema({"document_id": {"type": "string"}}),
+    status="implemented",
 )
 def unlock_document_updates_live(document_id: Optional[str] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("unlock_document_updates_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx, document_id)
+        ctx.uno_bridge.unlock_document_updates(doc)
+        return envelope.build_success(result={"unlocked": True}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start, document_id=document_id)

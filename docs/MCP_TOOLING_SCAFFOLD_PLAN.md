@@ -14,7 +14,7 @@ up exactly where it left off.
 |---|---|---|---|---|
 | Core runtime, discovery, capability negotiation | 12 | 0 | 12 | **Implemented** (`tools/core_runtime.py`) -- real logic, live-verified |
 | Document and session lifecycle | 27 | 5 | 22 | **Implemented** (`tools/document_lifecycle.py`) -- real logic, live-verified |
-| Undo, view, selection, events, orchestration | 14 | 0 | 14 | **Scaffolded** (`tools/undo_view_selection.py`) |
+| Undo, view, selection, events, orchestration | 14 | 0 | 14 | **12/14 Implemented** (`tools/undo_view_selection.py`) -- real logic, live-verified; document-events (2 tools) still stub, separate pass |
 | Styles and formatting infrastructure | 12 | 0 | 12 | **Scaffolded** (`tools/styles.py`) |
 | Writer - text, navigation, editing, search, review | 45 | 27 | 18 | **Scaffolded** (`tools/writer_text.py`) |
 | Writer - page layout, publishing, styles, headers, fields, indexes | 43 | 0 | 43 | **Scaffolded** (`tools/writer_layout.py`) |
@@ -296,6 +296,92 @@ document if they need active-document resolution to work.
 proxy-identity regression test above). 95/95 passing under `pytest` across
 the full relevant suite.
 
+## Real implementation pass: undo, view, selection, and locking tools
+
+Split into two sub-passes per explicit direction, since undo semantics
+were the highest-leverage next step (two architectural holes -- see
+below -- depended on it) and view/selection/locking could follow
+separately without blocking on it.
+
+**Sub-pass 1: the 6 undo tools** (`get_undo_state_live`, `undo_live`,
+`redo_live`, `begin_undo_context_live`, `end_undo_context_live`,
+`cancel_undo_context_live`) via `XUndoManagerSupplier.getUndoManager()`.
+Closed two real architectural holes rather than just adding tool count:
+
+- `batch_execute_live`'s `undo_label` now opens a real named undo context
+  before running its operations and closes it after, instead of emitting
+  a "not implemented yet" warning and running ungrouped.
+- `get_session_state_live`'s `pending_undo_context` now reports the real
+  open context's title/document_id while one is open, `null` after
+  end/cancel, instead of being hardcoded to `None`.
+
+New plumbing: `RuntimeState` tracks the single open undo context
+(`set_undo_context`/`get_undo_context`/`clear_undo_context` --
+`{title, document_id, baseline_count}`, no UNO references); a new
+`INVALID_STATE` error code (`envelope.py`, a documented scaffold-only
+addition beyond the spec's own list) for nesting rejection and
+end/cancel-with-nothing-open. Deliberate design choice: nested
+`begin_undo_context_live` is rejected outright (`INVALID_STATE`) rather
+than silently supported -- the tracker can only hold one context at a
+time, and end/cancel take no title/document_id to disambiguate which of
+two open contexts they'd target.
+
+Live-verified against real headless LibreOffice with 8 explicit
+acceptance tests (begin/3-edits/end coalescing into one Undo step,
+`batch_execute_live`'s undo_label producing the same behavior, session
+state reporting, nesting rejection, no-context-open errors, cancel
+genuinely restoring pre-context content, count bounds/exhaustion,
+real UNO action titles). All 8 passed; no live-only bugs turned up this
+sub-pass. One discovered-not-hidden behavior: `XUndoManager` has no true
+"cancel" primitive, so `cancel_undo_context_live` works by undoing, which
+pushes the "cancelled" edits onto the *redo* stack like any other undo --
+a `redo_live` right after a cancel resurrects them. Correct UNO semantics,
+just worth knowing.
+
+**Sub-pass 2: the 6 view/selection/locking tools** (`get_view_state_live`,
+`set_zoom_live`, `get_selection_live`, `clear_selection_live`,
+`lock_document_updates_live`, `unlock_document_updates_live`).
+`get_document_events_live`/`wait_for_document_event_live` deliberately
+NOT included -- event capture needs a persistent listener with its own
+lifecycle/concurrency behavior, different enough from these otherwise-
+synchronous UNO calls to deserve its own pass.
+
+**One real bug found and fixed by live-verifying** (again, something a
+fakes-based unit test structurally can't catch -- the fakes model the
+UNOBridge method boundary, not the shape of the real UNO controller
+object underneath it): `set_zoom_live`/`get_view_state_live` assumed
+`ZoomValue`/`ZoomType` were direct properties of `doc.getCurrentController()`.
+Reading `controller.ZoomValue` silently returned `None` and writing
+`controller.ZoomType` raised a real UNO exception. Live-verified the
+actual location: `controller.ViewSettings` (an `XPropertySet`, service
+`com.sun.star.text.ViewSettings` for Writer) -- fixed to read/write zoom
+via `getPropertyValue`/`setPropertyValue` on that object instead, with a
+fallback to the controller itself if `ViewSettings` isn't present.
+**Scope note:** only Writer was available to live-verify this pass: the
+UNO API docs describe the same `ViewSettings` pattern for Calc/Impress/
+Draw controllers, but that's not independently confirmed here.
+
+`get_selection_live`/`clear_selection_live` and `lock_document_updates_live`/
+`unlock_document_updates_live` all worked as designed on the first live
+attempt (`doc.lockControllers()`/`unlockControllers()` and
+`controller.getSelection()` are well-established, less surprising UNO
+APIs than the zoom property location was). One discovered nuance, not a
+bug: after `clear_selection_live` collapses a Writer selection to a
+point, `has_selection` still reports `true` (a collapsed cursor is still
+a zero-length selection object, per the same `_has_selection()` helper
+the original 32 tools already use) while `selected_text` correctly comes
+back empty -- consistent with existing codebase semantics, not a new
+inconsistency.
+
+**Testing:** `tests/test_undo_view_selection.py` grew from 17 to 27 tests
+(fakes for `UNOBridge`, real `DocumentRegistry`/`RuntimeState`/`context`,
+same pattern as the other real-implementation test files).
+`tests/test_tool_scaffold_contract.py`'s `IMPLEMENTED_TOOL_NAMES` now
+lists all 12 implemented tools in this mixed module (the remaining 2
+document-event tools are asserted to still be `status="stub"`). 129/129
+passing under `pytest` across the full relevant suite after both
+sub-passes.
+
 ## What was built
 
 **Shared plumbing (`plugin/pythonpath/tools/`):**
@@ -335,12 +421,14 @@ the full relevant suite.
   module's stubs still ignore it -- wiring it into each of those is real
   tool-by-tool implementation work, not scaffolding.
 
-**Tool modules, 366 functions across 14 files (332 still stub, 34 real --
-`core_runtime.py` and `document_lifecycle.py`, see the two "Real
-implementation pass" sections above):**
+**Tool modules, 366 functions across 14 files (320 still stub, 46 real --
+`core_runtime.py`, `document_lifecycle.py`, and 12/14 of
+`undo_view_selection.py`, see the "Real implementation pass" sections
+above):**
 
 - Phase A: `core_runtime.py` (12, **implemented**), `document_lifecycle.py`
-  (22 new, **implemented**, on top of 5 pre-existing), `undo_view_selection.py` (14), `styles.py` (12).
+  (22 new, **implemented**, on top of 5 pre-existing), `undo_view_selection.py`
+  (14, **12 implemented** -- document-events pair still stub), `styles.py` (12).
 - Phase B: `writer_text.py` (18 new, on top of 27 pre-existing),
   `writer_layout.py` (43), `writer_tables.py` (38).
 - Phase C: `drawing_objects.py` (31), `charts.py` (20), `calc_sheets.py`
@@ -376,17 +464,21 @@ extension.
 
 ## What is intentionally NOT done
 
-- **No UNO implementation in the remaining 332 tool stubs** (everything
-  outside `core_runtime.py`/`document_lifecycle.py`). They all return
-  `NOT_IMPLEMENTED`. Implementing them needs a working `uno`/`unohelper`
-  environment inside LibreOffice -- confirmed working end-to-end for 34
-  tools across two modules now (see both "Real implementation pass"
-  sections above); the same approach applies to the rest, tool by tool.
+- **No UNO implementation in the remaining 320 tool stubs** (everything
+  outside `core_runtime.py`/`document_lifecycle.py` and 12/14 of
+  `undo_view_selection.py`). They all return `NOT_IMPLEMENTED`.
+  Implementing them needs a working `uno`/`unohelper` environment inside
+  LibreOffice -- confirmed working end-to-end for 46 tools across three
+  modules now (see the "Real implementation pass" sections above); the
+  same approach applies to the rest, tool by tool.
 - **`DocumentRegistry`'s dispose-listener eviction** -- see above.
-- **The 332 remaining stub tools are still not wired into the live server
+- **`get_document_events_live`/`wait_for_document_event_live`** -- still
+  stub; deliberately deferred to their own pass (persistent listener
+  lifecycle/concurrency, a different concern from the rest of
+  `undo_view_selection.py`).
+- **The 320 remaining stub tools are still not wired into the live server
   by default** -- see the `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS` env var gate
-  above. (The 34 `core_runtime.py`/`document_lifecycle.py` tools ARE
-  always-on now, unconditionally.)
+  above. (The 46 implemented tools ARE always-on now, unconditionally.)
 - **Undo-context tracking** (`begin_undo_context_live`/`end_undo_context_live`)
   -- still stubs, which is why `batch_execute_live`'s `undo_label` and
   `get_session_state_live`'s `pending_undo_context` can't be backed for real yet.
@@ -435,17 +527,20 @@ Not a blocker: `tools/` stays additive and reversible either way.
 2. ~~Implement `document_lifecycle.py`'s 22 tools for real~~ -- done,
    live-verified (including real file I/O), see "Real implementation
    pass: document lifecycle tools" above.
-3. Implement `begin_undo_context_live`/`end_undo_context_live` for real --
-   `batch_execute_live` and `get_session_state_live` both have a
-   documented gap waiting on this.
-4. Wire `mcp_server.py`'s HTTP layer (`ai_interface.py`) to surface
+3. ~~Implement `undo_view_selection.py`'s undo + view/selection/locking
+   tools (12 of 14) for real~~ -- done, live-verified, see "Real
+   implementation pass: undo, view, selection, and locking tools" above.
+4. Implement `get_document_events_live`/`wait_for_document_event_live` --
+   the deliberately-deferred pair from step 3, needs a persistent
+   listener with its own lifecycle/concurrency design, not just another
+   synchronous UNO call.
+5. Wire `mcp_server.py`'s HTTP layer (`ai_interface.py`) to surface
    `NOT_IMPLEMENTED` responses distinctly (e.g. HTTP 501) so a client can
    tell "not implemented yet" apart from a real runtime error while these
    phases are partially built out.
-5. Natural next real-implementation target: `undo_view_selection.py` or
-   `styles.py` (both Phase A, both depend on the same document-resolution
-   machinery already built) -- or continue scaffolding Phases E-F (Base
-   and database access, forms and controls, Math formula documents,
-   linguistic/accessibility/publishing QA, security/scripts/events/
-   advanced UNO escape hatch -- 86 more rows), using the same
-   `tools/registry.py` pattern established in Phases A-D.
+6. Natural next real-implementation target: `styles.py` (Phase A, depends
+   on the same document-resolution machinery already built) -- or
+   continue scaffolding Phases E-F (Base and database access, forms and
+   controls, Math formula documents, linguistic/accessibility/publishing
+   QA, security/scripts/events/advanced UNO escape hatch -- 86 more rows),
+   using the same `tools/registry.py` pattern established in Phases A-D.

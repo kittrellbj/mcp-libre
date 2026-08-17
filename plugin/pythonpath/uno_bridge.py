@@ -688,6 +688,148 @@ class UNOBridge:
         resulting_count = len(manager.getAllUndoActionTitles())
         return {"reverted_count": reverted, "restored": resulting_count <= baseline_count, "resulting_count": resulting_count}
 
+    # -- View state, zoom, selection, document-update locking --------------
+
+    # com.sun.star.view.DocumentZoomType constants. Not modeled as a
+    # uno.Enum on the controller -- ZoomType is a plain short property
+    # using this constants group -- so these are the caller-facing names
+    # for set_zoom's `mode` parameter; BY_VALUE is used internally when
+    # `percent` is set (see set_zoom) rather than exposed as a `mode` value.
+    _ZOOM_MODE_TO_TYPE = {"optimal": 0, "page": 2, "width": 1}
+    _ZOOM_TYPE_TO_MODE = {0: "optimal", 1: "width", 2: "page", 3: "value", 4: "width_exact"}
+
+    def _get_controller(self, doc: Any) -> Any:
+        controller = doc.getCurrentController()
+        if controller is None:
+            raise RuntimeError("Document has no current controller.")
+        return controller
+
+    def _get_zoom_property_set(self, controller: Any) -> Any:
+        """Return the XPropertySet that carries ZoomValue/ZoomType.
+
+        Live-verified against a real Writer document that these are NOT
+        direct properties of the controller itself -- reading
+        controller.ZoomValue silently returns None and writing
+        controller.ZoomType raises a UNO exception. The real location is
+        controller.ViewSettings (an XPropertySet; service
+        com.sun.star.text.ViewSettings for Writer, and per the UNO API the
+        same XViewSettingsSupplier.ViewSettings pattern is documented for
+        Calc/Impress/Draw controllers too, though only Writer was
+        available to live-verify this pass -- falls back to the
+        controller itself if ViewSettings isn't present, in case some
+        controller type doesn't follow this pattern.
+        """
+        view_settings = getattr(controller, "ViewSettings", None)
+        if view_settings is not None and hasattr(view_settings, "getPropertyValue"):
+            return view_settings
+        return controller
+
+    def get_view_state(self, doc: Any) -> Dict[str, Any]:
+        """Return controller/view mode, zoom, and a document-type-specific
+        visible sheet/page/slide indicator, plus a selection summary."""
+        controller = self._get_controller(doc)
+        doc_type = self._get_document_type(doc)
+        zoom_props = self._get_zoom_property_set(controller)
+        zoom_type = zoom_props.getPropertyValue("ZoomType") if hasattr(zoom_props, "getPropertyValue") else None
+        state: Dict[str, Any] = {
+            "type": doc_type,
+            "zoom_value": zoom_props.getPropertyValue("ZoomValue") if hasattr(zoom_props, "getPropertyValue") else None,
+            "zoom_mode": self._ZOOM_TYPE_TO_MODE.get(zoom_type, zoom_type),
+            "has_selection": self._has_selection(doc),
+        }
+        if doc_type == "calc":
+            try:
+                active_sheet = controller.getActiveSheet()
+                state["active_sheet"] = active_sheet.getName() if active_sheet else None
+            except Exception:
+                state["active_sheet"] = None
+        elif doc_type in ("impress", "draw"):
+            try:
+                current_page = controller.getCurrentPage()
+                state["current_page_name"] = current_page.Name if current_page else None
+            except Exception:
+                state["current_page_name"] = None
+        return state
+
+    def set_zoom(self, doc: Any, percent: Optional[int] = None, mode: Optional[str] = None) -> Dict[str, Any]:
+        """Set zoom percent (exact value) or a named fit mode. Exactly one
+        of percent/mode should be meaningful; if both are given, percent
+        wins (mode is applied first, then overridden by the exact value)."""
+        if percent is None and mode is None:
+            raise ValueError("Provide either percent or mode.")
+        controller = self._get_controller(doc)
+        zoom_props = self._get_zoom_property_set(controller)
+        if not hasattr(zoom_props, "setPropertyValue"):
+            raise NotImplementedError("This document's controller does not expose a settable zoom property set.")
+        if mode is not None:
+            zoom_type = self._ZOOM_MODE_TO_TYPE.get(mode)
+            if zoom_type is None:
+                raise ValueError(f"Unknown zoom mode '{mode}', expected one of {sorted(self._ZOOM_MODE_TO_TYPE)}")
+            zoom_props.setPropertyValue("ZoomType", zoom_type)
+        if percent is not None:
+            zoom_props.setPropertyValue("ZoomType", 3)  # BY_VALUE -- otherwise a fit-mode set above would override ZoomValue
+            zoom_props.setPropertyValue("ZoomValue", percent)
+        return {"zoom_value": zoom_props.getPropertyValue("ZoomValue"),
+                "zoom_mode": self._ZOOM_TYPE_TO_MODE.get(zoom_props.getPropertyValue("ZoomType"))}
+
+    def get_selection(self, doc: Any) -> Dict[str, Any]:
+        """Return a document-type-specific summary of the current selection."""
+        controller = self._get_controller(doc)
+        doc_type = self._get_document_type(doc)
+        result: Dict[str, Any] = {"type": doc_type, "has_selection": self._has_selection(doc)}
+        selection = controller.getSelection()
+        if selection is None:
+            return result
+
+        if doc_type == "writer":
+            try:
+                texts = [selection.getByIndex(i).getString() for i in range(selection.getCount())]
+                result["selected_text"] = "".join(texts)
+                result["range_count"] = selection.getCount()
+            except Exception:
+                pass
+        elif doc_type == "calc":
+            try:
+                if hasattr(selection, "getRangeAddress"):
+                    addr = selection.getRangeAddress()
+                    result["range"] = {"sheet": addr.Sheet, "start_column": addr.StartColumn,
+                                        "start_row": addr.StartRow, "end_column": addr.EndColumn, "end_row": addr.EndRow}
+            except Exception:
+                pass
+        elif doc_type in ("impress", "draw"):
+            try:
+                if hasattr(selection, "getCount"):
+                    result["shape_count"] = selection.getCount()
+                    result["shape_names"] = [selection.getByIndex(i).Name for i in range(selection.getCount())]
+            except Exception:
+                pass
+        return result
+
+    def clear_selection(self, doc: Any) -> None:
+        """Collapse/clear the current selection without modifying content."""
+        controller = self._get_controller(doc)
+        doc_type = self._get_document_type(doc)
+        if doc_type == "writer":
+            view_cursor = controller.getViewCursor()
+            view_cursor.collapseToStart()
+        elif doc_type == "calc":
+            active_sheet = controller.getActiveSheet()
+            controller.select(active_sheet.getCellByPosition(0, 0))
+        elif doc_type in ("impress", "draw"):
+            controller.select(())
+        else:
+            raise NotImplementedError(f"clear_selection is not implemented for document type '{doc_type}'.")
+
+    def lock_document_updates(self, doc: Any) -> None:
+        """Temporarily lock automatic view/model update via XModel.lockControllers()."""
+        doc.lockControllers()
+
+    def unlock_document_updates(self, doc: Any) -> None:
+        """Release the update lock via XModel.unlockControllers() -- must be
+        called exactly once per lock_document_updates() call; UNO tracks
+        this as a nesting count, not a boolean."""
+        doc.unlockControllers()
+
     def refresh_document(self, doc: Any) -> None:
         """Refresh fields/links/data via XRefreshable, where the document type supports it."""
         if not hasattr(doc, "refresh"):
