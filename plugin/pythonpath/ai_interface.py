@@ -90,6 +90,18 @@ ADMISSION_TIMEOUT_SECONDS = 30
 _UNO_EXECUTION_LOCK = threading.Lock()
 _ADMISSION_SEMAPHORE = threading.BoundedSemaphore(MAX_CONCURRENT_TOOL_CALLS)
 
+# MCP transport protocol conformance (hardening Phase 3, docs/HARDENING_
+# PLAN.md -- Brian's 2026-08-18 call: its own item, before 1.0, separate
+# from the concurrency-control work above). One SessionRegistry per
+# running server process, same lifetime as _UNO_EXECUTION_LOCK/
+# _ADMISSION_SEMAPHORE -- sessions aren't meant to survive a soffice
+# restart, matching there being no other per-session state to restore.
+# The actual header-validation rules live in mcp_jsonrpc.py
+# (check_protocol_version_header()/check_session_header(), pure and
+# unit-tested with no UNO/HTTP dependency); this registry is the mutable
+# state those pure functions read against.
+_SESSION_REGISTRY = mcp_jsonrpc.SessionRegistry()
+
 
 class ServerBusyError(Exception):
     """Raised by _execute_tool_sync() when a caller can't be admitted
@@ -310,11 +322,15 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
         self.close_connection = True
 
     def do_DELETE(self):
-        """Handle DELETE requests -- only meaningful for /mcp session
-        termination. This server has no per-session state to actually
-        tear down yet (see _handle_mcp_jsonrpc()'s Mcp-Session-Id note),
-        so this just acknowledges the client's intent to end the session
-        rather than rejecting the request outright."""
+        """Handle DELETE requests -- session termination on /mcp
+        (hardening Phase 3, docs/HARDENING_PLAN.md). Missing/unknown
+        Mcp-Session-Id follows the same rules POST /mcp enforces (see
+        mcp_jsonrpc.check_session_header()'s docstring for the spec
+        language it encodes): 400 if the header is absent, 404 if it
+        names a session this server never knew or already terminated.
+        A known session is actually removed from _SESSION_REGISTRY here
+        -- unlike the prior no-op version, a terminated session id is no
+        longer accepted on a later POST /mcp."""
         parsed_path = urlparse(self.path)
         path = parsed_path.path
 
@@ -323,10 +339,19 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
         if not self._reject_untrusted_host():
             return
 
-        if path in MCP_JSONRPC_PATHS:
-            self._send_response(200, {"status": "session terminated"})
-        else:
+        if path not in MCP_JSONRPC_PATHS:
             self._send_response(404, {"error": "Not found"})
+            return
+
+        session_id = self.headers.get("Mcp-Session-Id")
+        session_error = mcp_jsonrpc.check_session_header(False, session_id, _SESSION_REGISTRY)
+        if session_error is not None:
+            status, body = session_error
+            self._send_response(status, {"error": body["error"]["message"]})
+            return
+
+        _SESSION_REGISTRY.end_session(session_id)
+        self._send_response(200, {"status": "session terminated"})
 
     def _reject_untrusted_host(self) -> bool:
         """Send 403 and return False for a request whose Host header isn't localhost.
@@ -469,6 +494,29 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             return
 
         is_initialize = isinstance(data, dict) and data.get("method") == "initialize"
+        session_id = self.headers.get("Mcp-Session-Id")
+
+        # Transport-lifecycle validation (hardening Phase 3, docs/
+        # HARDENING_PLAN.md) -- reject before the request reaches
+        # message dispatch at all, per the Streamable HTTP transport
+        # spec's session-management and MCP-Protocol-Version rules (see
+        # mcp_jsonrpc.py's check_protocol_version_header()/
+        # check_session_header() docstrings for the exact spec language
+        # each encodes). Neither check applies to `initialize` itself --
+        # it mints a session and hasn't negotiated a protocol version
+        # yet, so there's nothing valid to check against.
+        if not is_initialize:
+            version_error = mcp_jsonrpc.check_protocol_version_header(self.headers.get("MCP-Protocol-Version"))
+            if version_error is not None:
+                status, body = version_error
+                self._send_json_rpc_response(body, status)
+                return
+
+        session_error = mcp_jsonrpc.check_session_header(is_initialize, session_id, _SESSION_REGISTRY)
+        if session_error is not None:
+            status, body = session_error
+            self._send_json_rpc_response(body, status)
+            return
 
         response_body, status = mcp_jsonrpc.dispatch(
             data,
@@ -476,20 +524,17 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             self._execute_tool_sync,
         )
 
-        # Mint an Mcp-Session-Id on initialize and echo it on every
-        # response (including this one) -- permissive, not yet validated
-        # against subsequent requests (see mcp_jsonrpc.py's module
-        # docstring for the same scope note on protocol-version
-        # negotiation). There is no per-session state to isolate today;
-        # this exists so clients that expect the header to be present
-        # get it, without this server pretending to enforce a guarantee
-        # it doesn't actually provide yet.
-        session_id = self.headers.get("Mcp-Session-Id")
+        # Mint and register an Mcp-Session-Id on initialize; a request
+        # that reaches here with any other method already carries a
+        # known, already-validated session id (checked above), so it's
+        # simply echoed back.
         protocol_version = None
-        if is_initialize and not session_id:
-            session_id = uuid.uuid4().hex
-        if is_initialize and isinstance(response_body, dict):
-            protocol_version = (response_body.get("result") or {}).get("protocolVersion")
+        if is_initialize:
+            if not session_id:
+                session_id = uuid.uuid4().hex
+            _SESSION_REGISTRY.create_session(session_id)
+            if isinstance(response_body, dict):
+                protocol_version = (response_body.get("result") or {}).get("protocolVersion")
 
         self._send_json_rpc_response(response_body, status, session_id=session_id, protocol_version=protocol_version)
 

@@ -57,6 +57,24 @@ def test_initialize_without_protocol_version_still_returns_one():
     assert isinstance(resp["result"]["protocolVersion"], str) and resp["result"]["protocolVersion"]
 
 
+def test_initialize_falls_back_to_latest_supported_on_unknown_version():
+    """Per the lifecycle spec's version negotiation: an unsupported
+    requested version does NOT error the initialize -- the server
+    responds with its own supported version instead (hardening Phase 3,
+    docs/HARDENING_PLAN.md)."""
+    msg = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "1900-01-01"}}
+    resp = mcp_jsonrpc.dispatch_one(msg, FAKE_TOOLS, fake_execute_tool_ok)
+    assert "error" not in resp
+    assert resp["result"]["protocolVersion"] == mcp_jsonrpc.LATEST_PROTOCOL_VERSION
+
+
+def test_initialize_accepts_every_supported_version_unchanged():
+    for version in mcp_jsonrpc.SUPPORTED_PROTOCOL_VERSIONS:
+        msg = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": version}}
+        resp = mcp_jsonrpc.dispatch_one(msg, FAKE_TOOLS, fake_execute_tool_ok)
+        assert resp["result"]["protocolVersion"] == version
+
+
 # -- notifications --
 
 def test_notifications_initialized_gets_no_response():
@@ -211,10 +229,104 @@ def test_dispatch_empty_batch_is_an_error_not_a_silent_202():
     assert response["error"]["code"] == mcp_jsonrpc.INVALID_REQUEST
 
 
+# -- SessionRegistry (hardening Phase 3: Mcp-Session-Id enforcement) --
+
+def test_session_registry_created_session_is_active():
+    registry = mcp_jsonrpc.SessionRegistry()
+    registry.create_session("abc123")
+    assert registry.has_session("abc123") is True
+
+
+def test_session_registry_unknown_session_is_not_active():
+    registry = mcp_jsonrpc.SessionRegistry()
+    assert registry.has_session("never-created") is False
+
+
+def test_session_registry_create_is_idempotent():
+    registry = mcp_jsonrpc.SessionRegistry()
+    registry.create_session("abc123")
+    registry.create_session("abc123")  # re-registering is not an error
+    assert registry.has_session("abc123") is True
+
+
+def test_session_registry_end_session_removes_a_known_session():
+    registry = mcp_jsonrpc.SessionRegistry()
+    registry.create_session("abc123")
+    assert registry.end_session("abc123") is True
+    assert registry.has_session("abc123") is False
+
+
+def test_session_registry_end_session_on_unknown_id_reports_false():
+    registry = mcp_jsonrpc.SessionRegistry()
+    assert registry.end_session("never-created") is False
+
+
+# -- check_session_header() (hardening Phase 3: Mcp-Session-Id enforcement) --
+
+def test_check_session_header_skips_validation_for_initialize():
+    registry = mcp_jsonrpc.SessionRegistry()
+    assert mcp_jsonrpc.check_session_header(True, None, registry) is None
+
+
+def test_check_session_header_missing_is_bad_request():
+    registry = mcp_jsonrpc.SessionRegistry()
+    status, body = mcp_jsonrpc.check_session_header(False, None, registry)
+    assert status == 400
+    assert body["error"]["code"] == mcp_jsonrpc.INVALID_REQUEST
+
+
+def test_check_session_header_unknown_id_is_not_found():
+    registry = mcp_jsonrpc.SessionRegistry()
+    status, body = mcp_jsonrpc.check_session_header(False, "never-created", registry)
+    assert status == 404
+    assert body["error"]["code"] == mcp_jsonrpc.INVALID_REQUEST
+
+
+def test_check_session_header_known_id_passes():
+    registry = mcp_jsonrpc.SessionRegistry()
+    registry.create_session("abc123")
+    assert mcp_jsonrpc.check_session_header(False, "abc123", registry) is None
+
+
+def test_check_session_header_terminated_id_is_rejected_again():
+    """A DELETE'd session must not still validate on a later request --
+    the exact spec case (session-management rule #3) this hardening item
+    exists to close."""
+    registry = mcp_jsonrpc.SessionRegistry()
+    registry.create_session("abc123")
+    registry.end_session("abc123")
+    status, body = mcp_jsonrpc.check_session_header(False, "abc123", registry)
+    assert status == 404
+
+
+# -- check_protocol_version_header() (hardening Phase 3: protocol-version validation) --
+
+def test_check_protocol_version_header_absent_is_allowed():
+    """Absent header falls back to DEFAULT_PROTOCOL_VERSION per the
+    transport spec's backwards-compatibility clause -- not itself a
+    violation."""
+    assert mcp_jsonrpc.check_protocol_version_header(None) is None
+
+
+def test_check_protocol_version_header_every_supported_version_passes():
+    for version in mcp_jsonrpc.SUPPORTED_PROTOCOL_VERSIONS:
+        assert mcp_jsonrpc.check_protocol_version_header(version) is None
+
+
+def test_check_protocol_version_header_unsupported_is_bad_request():
+    status, body = mcp_jsonrpc.check_protocol_version_header("1900-01-01")
+    assert status == 400
+    assert body["error"]["code"] == mcp_jsonrpc.INVALID_REQUEST
+    assert body["error"]["data"]["requested"] == "1900-01-01"
+    assert body["error"]["data"]["supported"] == list(mcp_jsonrpc.SUPPORTED_PROTOCOL_VERSIONS)
+
+
 if __name__ == "__main__":
     tests = [
         test_initialize_echoes_requested_protocol_version,
         test_initialize_without_protocol_version_still_returns_one,
+        test_initialize_falls_back_to_latest_supported_on_unknown_version,
+        test_initialize_accepts_every_supported_version_unchanged,
         test_notifications_initialized_gets_no_response,
         test_unknown_notification_gets_no_response_not_an_error,
         test_ping_returns_empty_result,
@@ -235,6 +347,19 @@ if __name__ == "__main__":
         test_dispatch_batch_returns_a_list_matching_only_the_requests_with_ids,
         test_dispatch_batch_of_only_notifications_returns_none_and_202,
         test_dispatch_empty_batch_is_an_error_not_a_silent_202,
+        test_session_registry_created_session_is_active,
+        test_session_registry_unknown_session_is_not_active,
+        test_session_registry_create_is_idempotent,
+        test_session_registry_end_session_removes_a_known_session,
+        test_session_registry_end_session_on_unknown_id_reports_false,
+        test_check_session_header_skips_validation_for_initialize,
+        test_check_session_header_missing_is_bad_request,
+        test_check_session_header_unknown_id_is_not_found,
+        test_check_session_header_known_id_passes,
+        test_check_session_header_terminated_id_is_rejected_again,
+        test_check_protocol_version_header_absent_is_allowed,
+        test_check_protocol_version_header_every_supported_version_passes,
+        test_check_protocol_version_header_unsupported_is_bad_request,
     ]
     for test in tests:
         test()

@@ -30,18 +30,46 @@ this server exposes no MCP resources), `prompts/list` (always empty --
 no MCP prompts). JSON-RPC 2.0 batch arrays are supported (each entry
 dispatched independently; notifications get no response entry, matching
 spec). Left for a later pass: resources/prompts becoming non-empty if
-this project ever wants to expose documents as MCP resources;
-`Mcp-Protocol-Version` negotiation is permissive (this server always
-echoes back whatever version the client requested in `initialize` rather
-than validating against a fixed supported-version list) -- reasonable
-for a first real-transport pass with one server version to support, but
-a future pass adding real version negotiation should tighten this.
+this project ever wants to expose documents as MCP resources.
+
+Protocol-version negotiation and session-lifecycle enforcement (hardening
+Phase 3, `docs/HARDENING_PLAN.md`): `SUPPORTED_PROTOCOL_VERSIONS`,
+`_handle_initialize()`'s negotiation, `SessionRegistry`, and
+`check_protocol_version_header()`/`check_session_header()` implement the
+MCP Streamable HTTP transport spec's session-management and
+`MCP-Protocol-Version` header rules (see each item below for the exact
+spec language they encode). Scoped deliberately to the initialize-
+handshake ("legacy", per the spec's own terminology) protocol era this
+server already implements -- the newer per-request `_meta`-based version
+negotiation model is a separate, much larger architectural question, not
+addressed here; see `docs/HARDENING_PLAN.md`'s Phase 3 section.
 """
 
 import json
+import threading
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 JSONRPC_VERSION = "2.0"
+
+# Legacy (initialize-handshake) MCP protocol versions this server's wire
+# format is actually compatible with -- the message shapes this module
+# implements (initialize/tools/list/tools/call, no per-request `_meta`,
+# no `server/discover`) haven't changed across any of these three. Used
+# both to negotiate `initialize` (fall back to LATEST_PROTOCOL_VERSION
+# if the client asks for something we don't support, per the spec's
+# lifecycle doc: "the server MUST respond with another protocol version
+# it supports") and to validate the `MCP-Protocol-Version` HTTP header
+# on every later request (ai_interface.py, via
+# check_protocol_version_header()).
+SUPPORTED_PROTOCOL_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18")
+LATEST_PROTOCOL_VERSION = SUPPORTED_PROTOCOL_VERSIONS[-1]
+
+# Streamable HTTP transport spec's own backwards-compatibility fallback:
+# "if the server does not receive an MCP-Protocol-Version header, and
+# has no other way to identify the version... the server SHOULD assume
+# protocol version 2025-03-26." Applied by ai_interface.py when the
+# header is absent on a request carrying a known session.
+DEFAULT_PROTOCOL_VERSION = "2025-03-26"
 
 # Reserved JSON-RPC 2.0 error code range, per the spec.
 PARSE_ERROR = -32700
@@ -77,10 +105,19 @@ def tool_entry_to_mcp_schema(name: str, tool_entry: Dict[str, Any]) -> Dict[str,
 
 def _handle_initialize(msg: Dict[str, Any]) -> Dict[str, Any]:
     params = msg.get("params") or {}
-    # Permissive version handling -- see module docstring's scope note.
-    client_protocol_version = params.get("protocolVersion") or "2025-06-18"
+    # Version negotiation per the lifecycle spec: "If the server supports
+    # the requested protocol version, it MUST respond with the same
+    # version. Otherwise, the server MUST respond with another protocol
+    # version it supports. This SHOULD be the latest version supported by
+    # the server." Not a JSON-RPC error either way -- the client decides
+    # whether to proceed or disconnect based on the version it gets back.
+    requested_protocol_version = params.get("protocolVersion")
+    if requested_protocol_version in SUPPORTED_PROTOCOL_VERSIONS:
+        negotiated_protocol_version = requested_protocol_version
+    else:
+        negotiated_protocol_version = LATEST_PROTOCOL_VERSION
     result = {
-        "protocolVersion": client_protocol_version,
+        "protocolVersion": negotiated_protocol_version,
         "capabilities": {"tools": {"listChanged": False}},
         "serverInfo": SERVER_INFO,
         "instructions": (
@@ -173,6 +210,97 @@ def dispatch_one(
         # answered with an error (there is no "id" to error against).
         return None
     return build_error(msg.get("id"), METHOD_NOT_FOUND, f"Method not found: {method}")
+
+
+class SessionRegistry:
+    """Tracks MCP session IDs minted during `initialize`, so the
+    Streamable HTTP transport (ai_interface.py) can enforce the session-
+    management rules the spec requires ("Session Management", MCP
+    Streamable HTTP transport doc):
+
+    - "Servers that require a session ID SHOULD respond to requests
+      without an Mcp-Session-Id header (other than initialization) with
+      HTTP 400 Bad Request."
+    - "The server MAY terminate the session at any time, after which it
+      MUST respond to requests containing that session ID with HTTP 404
+      Not Found."
+
+    Pure bookkeeping, no UNO/HTTP dependency, so it's unit-testable like
+    the rest of this module (see mcp_jsonrpc.py's module docstring).
+    One instance lives for the lifetime of the running server process
+    (ai_interface.py's module-level `_SESSION_REGISTRY`) -- sessions are
+    not persisted across a soffice restart, consistent with there being
+    no other per-session state to restore either.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._active_ids = set()
+
+    def create_session(self, session_id: str) -> None:
+        """Register session_id as active. Idempotent -- re-registering an
+        already-active id is not an error."""
+        with self._lock:
+            self._active_ids.add(session_id)
+
+    def has_session(self, session_id: str) -> bool:
+        with self._lock:
+            return session_id in self._active_ids
+
+    def end_session(self, session_id: str) -> bool:
+        """Remove session_id if present. Returns True if it was active
+        (and is now terminated), False if it was already unknown --
+        callers use this to decide the DELETE response (200 vs 404)."""
+        with self._lock:
+            if session_id in self._active_ids:
+                self._active_ids.discard(session_id)
+                return True
+            return False
+
+
+def check_protocol_version_header(header_value: Optional[str]) -> Optional[Tuple[int, Dict[str, Any]]]:
+    """Validate the `MCP-Protocol-Version` HTTP header against
+    SUPPORTED_PROTOCOL_VERSIONS, per the Streamable HTTP transport spec:
+    "If the server receives a request with an invalid or unsupported
+    MCP-Protocol-Version, it MUST respond with 400 Bad Request."
+
+    An absent header is NOT a violation here -- the same spec section's
+    backwards-compatibility clause says a missing header falls back to
+    DEFAULT_PROTOCOL_VERSION, not a rejection; callers apply that
+    fallback themselves. Returns None if the request may proceed, or an
+    (http_status, json_rpc_error_body) pair to send back immediately
+    otherwise.
+    """
+    if header_value is None or header_value in SUPPORTED_PROTOCOL_VERSIONS:
+        return None
+    return 400, build_error(
+        None,
+        INVALID_REQUEST,
+        f"Unsupported MCP-Protocol-Version: {header_value}",
+        {"supported": list(SUPPORTED_PROTOCOL_VERSIONS), "requested": header_value},
+    )
+
+
+def check_session_header(
+    is_initialize: bool,
+    header_value: Optional[str],
+    session_registry: SessionRegistry,
+) -> Optional[Tuple[int, Dict[str, Any]]]:
+    """Validate the `Mcp-Session-Id` HTTP header against session_registry,
+    per the Streamable HTTP transport spec's session-management rules
+    (see SessionRegistry's docstring for the exact spec language). Not
+    applicable to `initialize`, which mints a fresh session rather than
+    presenting an existing one. Returns None if the request may proceed,
+    or an (http_status, json_rpc_error_body) pair to send back
+    immediately otherwise.
+    """
+    if is_initialize:
+        return None
+    if not header_value:
+        return 400, build_error(None, INVALID_REQUEST, "Missing required Mcp-Session-Id header")
+    if not session_registry.has_session(header_value):
+        return 404, build_error(None, INVALID_REQUEST, "Unknown or already-terminated Mcp-Session-Id")
+    return None
 
 
 def dispatch(

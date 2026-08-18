@@ -565,3 +565,124 @@ deliberately rather than folded in silently; flagging for Brian's call
 on whether they're their own follow-up item or fold into the
 release-readiness list (`docs/HARDENING_PLAN.md`'s bottom-line section
 above).
+
+## Phase 3 (after Phase 2): MCP transport protocol conformance
+
+Brian's call (2026-08-18): the two protocol-conformance gaps Phase 2
+scoped out -- `Mcp-Session-Id` enforcement and `MCP-Protocol-Version`
+validation -- become their own item, due before 1.0, not reopening or
+holding up the concurrency-control work above (which stays closed).
+
+**Status: done.** `plugin/pythonpath/mcp_jsonrpc.py` +
+`plugin/pythonpath/ai_interface.py`.
+
+**Getting the actual rules right, not guessed at.** Both gaps have
+precise MUST/SHOULD language in the MCP spec's Streamable HTTP transport
+doc, read directly before writing anything (`https://modelcontextprotocol.io/specification/2025-06-18/basic/transports`
+and `.../basic/lifecycle`) rather than inferred from the matrix's one-
+line framing:
+
+- *Session management.* "Servers that require a session ID SHOULD
+  respond to requests without an `Mcp-Session-Id` header (other than
+  initialization) with HTTP 400 Bad Request." / "The server MAY
+  terminate the session at any time, after which it MUST respond to
+  requests containing that session ID with HTTP 404 Not Found."
+- *Protocol version header.* "If the server receives a request with an
+  invalid or unsupported `MCP-Protocol-Version`, it MUST respond with
+  400 Bad Request." / backwards-compat clause: if the header is absent
+  and there's no other way to identify the version, the server SHOULD
+  assume `2025-03-26`, not reject the request.
+- *Version negotiation at `initialize`* (lifecycle doc, not the
+  transport doc): "If the server supports the requested protocol
+  version, it MUST respond with the same version. Otherwise, the server
+  MUST respond with another protocol version it supports" -- a normal
+  successful `initialize` result with the server's own version
+  substituted, not a JSON-RPC error.
+
+**A real scope boundary found doing this research, deliberately not
+touched.** The spec has since split into two eras: "legacy"
+(initialize-handshake, protocol versions `2025-11-25` and earlier -- what
+this project implements) and "modern" (`2026-07-28` and later --
+version declared per-request via `_meta`, no handshake, a mandatory
+`server/discover` RPC). This project's `mcp_jsonrpc.py` only implements
+legacy-era message shapes; adopting the modern per-request model would
+be a much larger, separate architectural change (a new RPC, a different
+negotiation model entirely), not a conformance tweak. Not attempted here
+-- flagging for Morgan/Brian if supporting modern-era clients ever
+becomes a real requirement. This pass stays entirely within the legacy
+era the rest of the codebase already speaks.
+
+**What changed, `mcp_jsonrpc.py` (pure, no UNO/HTTP dependency, same
+split as every other function in this module -- see its own docstring):**
+
+- `SUPPORTED_PROTOCOL_VERSIONS = ("2024-11-05", "2025-03-26",
+  "2025-06-18")` -- the three legacy protocol versions this server's
+  actual wire format (no per-request `_meta`, no `server/discover`)
+  hasn't changed across. `LATEST_PROTOCOL_VERSION` and
+  `DEFAULT_PROTOCOL_VERSION` (`"2025-03-26"`, the spec's own
+  backwards-compat fallback) derive from it.
+- `_handle_initialize()` now actually negotiates: echoes the client's
+  requested version if it's in the supported set, otherwise substitutes
+  `LATEST_PROTOCOL_VERSION` -- replacing the prior permissive "always
+  echo back whatever the client asked for" behavior the module docstring
+  used to flag as a known gap.
+- `SessionRegistry`, a small thread-safe set of active session IDs
+  (`create_session`/`has_session`/`end_session`) -- the mutable state the
+  session-management rules above need. Pure bookkeeping, no document/UNO
+  concept involved (this is a transport-level protocol session, not a
+  `DocumentRegistry` handle).
+- `check_protocol_version_header(header_value)` and
+  `check_session_header(is_initialize, header_value, session_registry)`
+  -- pure functions returning `None` (proceed) or `(http_status,
+  json_rpc_error_body)` (reject), encoding the MUST/SHOULD rules above
+  exactly. Both fully unit-tested in `tests/test_mcp_jsonrpc.py` (15 new
+  tests: initialize negotiation, `SessionRegistry` lifecycle, both check
+  functions' every branch) -- 449/449 passing (434 prior + 15 new), no
+  regressions.
+
+**What changed, `ai_interface.py` (HTTP-transport wiring):**
+
+- Module-level `_SESSION_REGISTRY = mcp_jsonrpc.SessionRegistry()`,
+  same lifetime as `_UNO_EXECUTION_LOCK`/`_ADMISSION_SEMAPHORE` (one per
+  running server process; sessions don't survive a `soffice` restart,
+  consistent with there being no other per-session state to restore
+  either).
+- `_handle_mcp_jsonrpc()` now runs both header checks before dispatch
+  reaches the message-routing layer at all (skipped for `initialize`
+  itself, which mints a session and hasn't negotiated a version yet).
+  On `initialize`, the minted session id is registered via
+  `_SESSION_REGISTRY.create_session()` -- previously minted but never
+  stored anywhere, so nothing could actually validate against it later.
+- `do_DELETE()` now calls `_SESSION_REGISTRY.end_session()` for real.
+  The prior version always returned `200 {"status": "session
+  terminated"}` regardless of what (if anything) was in the header --
+  an acknowledgment with no effect. Now: missing header -> 400, unknown
+  id -> 404, known id -> actually removed and 200 -- and a later request
+  reusing that same id gets 404, not silently accepted.
+
+**Live verification.** Same constraint as Phase 2:
+`ai_interface.py` imports `mcp_server` -> `uno_bridge` -> `uno`, so it
+can't be imported outside a live LibreOffice process, and the actual
+HTTP-header wiring (as opposed to the pure logic functions, which are
+unit-tested directly) can't be a pytest test either.
+`transport-conformance-probe-windows.py`, new, built on the same
+build/install/launch/health-check/uninstall harness
+`concurrency-probe-windows.py` established -- one Writer document (no
+concurrency angle to this probe, so no need for two), then 15 live HTTP
+checks against the real running extension: `initialize` mints a session
+and negotiates version correctly (including the fallback case); `tools/
+list` returns 400 missing the session header, 404 on an unknown one,
+200 on the real one; 400 on an unsupported `MCP-Protocol-Version`
+header, 200 when it's absent entirely; `DELETE` terminates a real
+session (200), a reused post-DELETE session id then correctly gets 404
+instead of 200, and `DELETE` itself follows the same missing/unknown
+header rules (400/404). Ran it for real: **15/15 checks passed**, clean
+`unopkg list`-confirmed uninstall after, no leftover `soffice` process
+or `build/` directory.
+
+**Not touched, deliberately out of scope for this item:** the JSON-RPC
+path's admission-semaphore busy response (Phase 2's noted follow-up --
+`ServerBusyError` surfaces as a generic `INTERNAL_ERROR` rather than a
+dedicated busy code on `/mcp`, unrelated to session/version conformance);
+adopting the modern (`2026-07-28`+) per-request protocol era, per the
+scope-boundary note above.
