@@ -498,7 +498,70 @@ deliberate scope calls rather than blocking anything today.
 
 ## Phase 2 (after 1-6): MCP transport concurrency control
 
-Not started. Scope per `docs/WRITERAGENT_COMPARISON_MATRIX.md`'s "MCP
-transport" row: no global backpressure semaphore, no per-document
-mutation lock, `Mcp-Session-Id` minted/echoed but not enforced, no
-protocol-version validation against a supported-version list.
+Done, `plugin/pythonpath/ai_interface.py`. Scope per
+`docs/WRITERAGENT_COMPARISON_MATRIX.md`'s "MCP transport" row named four
+gaps; this pass closes the two that are actually about concurrency
+safety and leaves the other two as a deliberate scope note below.
+
+**The actual bug, found before writing any fix.** The matrix's "no
+per-document mutation lock" framing assumes the corruption risk is a
+data race between two callers touching the *same* document. Tested that
+assumption directly instead of taking it on faith: two threads each
+running 300 iterations of `insert_text_live` + `get_text_content_live`
+against *different* Writer documents, no lock at all -- corrupted up to
+60%+ of one thread's calls with a bare `AttributeError: createTextCursor`
+(the method vanishing off a live PyUNO proxy mid-call). The two
+documents' content never cross-contaminated in any run, so this is not a
+per-document race; it's PyUNO's own proxy/bridge layer corrupting under
+any concurrent access, same document or not. Tried the finer-grained fix
+the matrix's framing implies anyway (a lock scoped to the mutation calls
+only, keyed per document) as a control: errors dropped but didn't reach
+zero (95/600 still failed), because it left the object-resolution call
+(`doc.getText()`) outside the lock. Only a single process-wide lock
+around the *entire* tool-execution sequence -- resolution through
+mutation -- reached 0/600 errors, repeatably. That's `_UNO_EXECUTION_LOCK`:
+one `threading.Lock()`, not a per-document registry, because the real
+constraint is coarser than the matrix's framing assumed.
+
+**Backpressure**, the matrix's other named gap, is a genuinely separate
+concern from the lock even though the lock already serializes work:
+without a cap, a burst of concurrent requests still each spin up their
+own OS thread (`ReusableThreadingTCPServer`'s inherited
+`ThreadingTCPServer` behavior, unbounded) and all pile up waiting on the
+lock -- fine for a handful of callers, a real resource-exhaustion risk
+for hundreds. `_ADMISSION_SEMAPHORE` (`threading.BoundedSemaphore`,
+`MAX_CONCURRENT_TOOL_CALLS = 4`) is acquired with a timeout
+(`ADMISSION_TIMEOUT_SECONDS = 30`) before the lock; a caller that can't
+be admitted in time gets a `ServerBusyError`, mapped to a real HTTP 503
++ `Retry-After` header on the REST path (`_send_busy_response`). On the
+JSON-RPC path it's caught by `mcp_jsonrpc.py`'s existing broad
+`except Exception` and surfaces as a generic `INTERNAL_ERROR` (-32603)
+rather than a dedicated JSON-RPC busy code -- `mcp_jsonrpc.py` is
+deliberately UNO/HTTP-free and unit-testable standalone, so it doesn't
+know about transport-level exception types; teaching it one is a
+reasonable, narrow follow-up, not done this pass.
+
+**Live verification.** `ai_interface.py` imports `mcp_server` ->
+`uno_bridge` -> `uno`, so it can't be imported outside a live LibreOffice
+process (same constraint `tests/test_host_trust.py`'s docstring notes
+for `host_trust.py`'s UNO-free sibling) -- this can't be a pytest unit
+test. `concurrency-probe-windows.py` is the reusable version of the ad
+hoc empirical test above, built on `smoke-test-windows.py`'s
+install/launch/health-check harness: builds and installs the real .oxt,
+opens two Writer documents, dispatches the real extension, then runs 2
+threads x 300 iterations (600 concurrent round trips) against the live
+HTTP tool-execution path. Run for real: **600/600 succeeded, 0 errors**,
+clean uninstall after. 434/434 existing unit tests still pass (no
+regression from the two files it touches).
+
+**Scope note -- not addressed this pass.** The matrix's other two named
+gaps, `Mcp-Session-Id` minted/echoed but not enforced and no
+protocol-version validation against a supported-version list, are
+protocol-conformance gaps, not concurrency-safety gaps -- grouped under
+the same "MCP transport" row in the matrix but a different kind of
+problem (a client sending a stale/wrong session ID or an unsupported
+protocol version isn't a thread-safety risk). Left out of this phase
+deliberately rather than folded in silently; flagging for Brian's call
+on whether they're their own follow-up item or fold into the
+release-readiness list (`docs/HARDENING_PLAN.md`'s bottom-line section
+above).

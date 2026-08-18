@@ -27,6 +27,82 @@ from host_trust import is_trusted_host
 # handler (see docs/MCP_TOOLING_SCAFFOLD_PLAN.md's transport pass).
 MCP_JSONRPC_PATHS = ("/mcp", "/sse", "/messages")
 
+# ---------------------------------------------------------------------
+# Concurrency control (hardening-pass phase 2, WriterAgent-comparison
+# gap: "no concurrency control of any kind"). ReusableThreadingTCPServer
+# below spawns one OS thread per incoming HTTP connection with zero
+# synchronization around the shared UNOBridge/UNO API calls tool
+# execution makes -- confirmed live, empirically, before writing any of
+# this: two threads each hammering createTextCursor()/insertString() on
+# two DIFFERENT Writer documents concurrently (300 iterations each, no
+# lock) corrupted up to 60%+ of one thread's calls with a bare
+# `AttributeError: createTextCursor` -- the method vanished off a live
+# PyUNO proxy object mid-run. This is NOT a per-document data race (the
+# two documents' *content* never cross-contaminated in any run); it's
+# PyUNO's own proxy/bridge layer corrupting under concurrent access,
+# regardless of which document each thread targets. A per-document lock
+# (the finer-grained approach a design doc might reach for by default)
+# would NOT have prevented this -- confirmed by testing a lock that only
+# wrapped the per-iteration mutation calls: errors dropped but did not
+# reach zero (95/600 still failed). Only wrapping the ENTIRE UNO
+# interaction sequence for a call -- including the initial object
+# resolution (doc.getText()), not just the later mutating calls -- in a
+# single process-wide lock reached 0 errors, 300/300 for both documents,
+# repeatably. That is the concrete, evidence-based reason this is one
+# global lock around all tool execution, not a per-document lock
+# registry: this runtime's actual constraint is coarser than "don't let
+# two writers touch the same document," it's "don't let two threads
+# touch UNO at the same time at all."
+#
+# Two separate primitives, solving two different problems:
+# - _UNO_EXECUTION_LOCK: correctness. Unconditional, blocking acquire
+#   around the full tool-execution call (_execute_tool_sync below) --
+#   every tool call runs one at a time, full stop, regardless of
+#   document. Not a semaphore-count-1 stand-in for this: a plain Lock
+#   makes the "one at a time, no exceptions" intent explicit and is
+#   reentrancy-safe to reason about (BoundedSemaphore(1) behaves the
+#   same but reads as "N=1 is my current choice," which this isn't).
+# - _ADMISSION_SEMAPHORE: backpressure, a genuinely different concern
+#   from the lock even though the lock already serializes actual work.
+#   Without a cap, a burst of concurrent requests would still each spin
+#   up their own OS thread (ThreadingTCPServer's own behavior, unbounded)
+#   and all pile up waiting on the lock -- fine for a handful, a real
+#   resource-exhaustion risk for hundreds. Acquired with a timeout
+#   BEFORE the lock; a request that can't get admitted within the
+#   timeout is rejected outright (503 on the REST path) rather than
+#   joining an unbounded queue. MAX_CONCURRENT_TOOL_CALLS bounds how
+#   many requests may be admitted (actively executing or waiting on the
+#   lock) at once; ADMISSION_TIMEOUT_SECONDS bounds how long a rejected-
+#   for-now caller waits before getting a clear "busy" answer instead of
+#   hanging indefinitely behind a slow tool call.
+#
+# Known simplification, not yet done: WriterAgent's own transport
+# (per docs/WRITERAGENT_COMPARISON_MATRIX.md) has "a documented
+# exemption path for long-running tools that bypasses the semaphore
+# without bypassing the lock" -- this pass has no per-tool duration
+# classification to build that on, so every tool call goes through both
+# primitives uniformly. The admission semaphore's timeout (rather than a
+# hard non-blocking cap) gives some of the same graceful-degradation
+# behavior without needing a per-tool allowlist.
+MAX_CONCURRENT_TOOL_CALLS = 4
+ADMISSION_TIMEOUT_SECONDS = 30
+
+_UNO_EXECUTION_LOCK = threading.Lock()
+_ADMISSION_SEMAPHORE = threading.BoundedSemaphore(MAX_CONCURRENT_TOOL_CALLS)
+
+
+class ServerBusyError(Exception):
+    """Raised by _execute_tool_sync() when a caller can't be admitted
+    within ADMISSION_TIMEOUT_SECONDS -- too many tool calls are already
+    executing or queued. Callers should map this to a "busy, retry"
+    response rather than a generic 500 (the REST path does; the JSON-RPC
+    path's tools/call handler currently maps any exception escaping the
+    execute_tool callback to the generic JSON-RPC INTERNAL_ERROR code --
+    mcp_jsonrpc.py is deliberately UNO/HTTP-free and unit-testable
+    standalone, so it doesn't know about this exception type; teaching
+    it a dedicated "server busy" JSON-RPC error code is a reasonable
+    follow-up, not done this pass)."""
+
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -276,11 +352,29 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
         or a future synchronous one. Shared by the REST bridge's
         _handle_tool_execution() and the real MCP JSON-RPC tools/call
         path (_handle_mcp_jsonrpc()) so there's exactly one place that
-        knows how to run it."""
-        result = self.mcp_server.execute_tool(tool_name, parameters)
-        if inspect.isawaitable(result):
-            result = asyncio.run(result)
-        return result
+        knows how to run it -- also exactly one place that needs to
+        acquire the concurrency-control primitives (see the module-level
+        comment above _UNO_EXECUTION_LOCK for why both exist and why the
+        lock is process-wide rather than per-document).
+
+        Raises:
+            ServerBusyError: couldn't be admitted within
+                ADMISSION_TIMEOUT_SECONDS -- too many calls already in
+                flight.
+        """
+        if not _ADMISSION_SEMAPHORE.acquire(timeout=ADMISSION_TIMEOUT_SECONDS):
+            raise ServerBusyError(
+                f"Server busy: {MAX_CONCURRENT_TOOL_CALLS} tool calls already in flight, "
+                f"none admitted within {ADMISSION_TIMEOUT_SECONDS}s. Retry shortly."
+            )
+        try:
+            with _UNO_EXECUTION_LOCK:
+                result = self.mcp_server.execute_tool(tool_name, parameters)
+                if inspect.isawaitable(result):
+                    result = asyncio.run(result)
+                return result
+        finally:
+            _ADMISSION_SEMAPHORE.release()
 
     def _handle_tool_execution(
         self,
@@ -314,6 +408,10 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                 f"{tool_name}: {e}"
             )
 
+        except ServerBusyError as e:
+            logger.warning(f"Rejecting {tool_name}: {e}")
+            self._send_busy_response(str(e))
+
         except Exception as e:
             logger.exception(
                 f"Error executing tool {tool_name}"
@@ -323,6 +421,35 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                 e,
                 tool_name=tool_name
             )
+
+    def _send_busy_response(self, message: str):
+        """503 + Retry-After for a ServerBusyError -- distinct from
+        _try_send_error_response()'s generic 500, since this is not a
+        tool/server fault, just "too much concurrent load, try again
+        shortly." Sent directly rather than through _send_response() so
+        the real HTTP Retry-After header (the standard mechanism clients
+        check, not just a JSON field) can be added without changing
+        _send_response()'s signature for every other caller.
+        ADMISSION_TIMEOUT_SECONDS is a reasonable Retry-After value: a
+        caller retrying sooner than that is likely to hit the same
+        rejection again."""
+        try:
+            payload = json.dumps(
+                {"success": False, "error": message, "retry_after_seconds": ADMISSION_TIMEOUT_SECONDS},
+                indent=2, default=str,
+            ).encode("utf-8")
+            self.send_response(503)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Retry-After", str(ADMISSION_TIMEOUT_SECONDS))
+            self.send_header("Connection", "close")
+            self._send_cors_headers()
+            self.end_headers()
+            self.wfile.write(payload)
+            self.wfile.flush()
+            self.close_connection = True
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            logger.warning("Unable to send busy response because the client disconnected")
 
     def _handle_mcp_jsonrpc(self, data: Any):
         """Real MCP JSON-RPC 2.0 endpoint (mandated item #4) -- POST
