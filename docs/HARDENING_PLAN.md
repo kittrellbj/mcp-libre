@@ -394,7 +394,107 @@ false-passing.
 
 ## 6. Release-readiness list (#43)
 
-Not started -- depends on 1-5.
+**Status: done.** A plain list of what's solid and what still blocks
+calling `mcp-libre` production-ready, as of this hardening pass
+(`scaffold/mcp-tooling-phase-a`, items 1-5 above complete, phase 2/
+concurrency control not yet started).
+
+### Solid, no known blockers
+
+- **Tool catalog:** ~90 real, live-verified tools across 14 modules
+  (`core_runtime.py`, `document_lifecycle.py`, `undo_view_selection.py`,
+  `styles.py`, `writer_text.py`, `drawing_objects.py`, `charts.py`,
+  `calc_sheets.py`, `calc_data.py`, `calc_page.py`, `impress.py`,
+  `draw.py`, `writer_layout.py`, `writer_tables.py`), plus the original
+  32 legacy tools, all against real headless LibreOffice 26.2 -- no
+  scaffolded modules left. A short list of individual tools stay
+  documented stubs for genuine UNO/API limits, never silently claimed
+  working (`set_chapter_numbering_live`, `mail_merge_live`,
+  `add_chart_series_live`, 4 animation-mutation + 3 slideshow-effect
+  tools in `impress.py`, `insert/activate_embedded_object_live`,
+  `create/refresh/delete_external_link_live`) -- see each module's own
+  section in `docs/MCP_TOOLING_SCAFFOLD_PLAN.md` for why.
+- **Error-code consistency:** one shared, validated envelope
+  (`envelope.build_error()`/`build_success()`) across every real tool;
+  `WRONG_DOCUMENT_TYPE` now correctly wired (was dead code catalog-wide
+  before this pass).
+- **UNO->JSON conversion:** one shared, tested converter; the
+  Locale-struct silent-drop bug (a real, confirmed data-loss case) is
+  fixed.
+- **PyUNO robustness:** systematic sweep across all five named danger
+  patterns complete; zero bare `except:`, zero `id()`-based identity,
+  zero unguarded `isinstance()` on UNO interfaces in real-tool code,
+  zero `dict()`-on-UNO-sequence bugs; the two live bugs found
+  (`get_selection`, `get_comments`) are fixed.
+- **Packaging:** the build script can't silently ship an incomplete
+  extension (globs source files, hard-fails on anything missing,
+  validates archive integrity).
+- **Testing discipline:** 434 fakes-based unit tests plus mandatory live
+  verification against real headless LibreOffice for every real-
+  implementation pass -- not just claimed, demonstrated repeatedly.
+
+### Real, unaddressed gaps -- each needs its own decision, not a silent fix
+
+1. **MCP transport concurrency control -- not started.** Per
+   `docs/WRITERAGENT_COMPARISON_MATRIX.md`'s "MCP transport" row (the
+   widest, most confident gap in that whole comparison): no global
+   backpressure semaphore, no per-document mutation lock, `Mcp-Session-
+   Id` minted/echoed but not enforced, no protocol-version validation
+   against a supported-version list. This is explicitly Brian's next
+   phase (see the top of this doc) -- named here for completeness, not
+   because it was missed.
+2. **No authentication on the MCP endpoint.** Read directly in an
+   earlier research pass (`docs/WRITERAGENT_COMPARISON_MATRIX.md`'s
+   "Security" row): loopback-only, no per-caller authorization for a
+   tool surface that can read/write/delete real documents. `host_trust.
+   py`'s Host/Origin header validation is a real, narrow DNS-rebinding
+   mitigation, not authentication -- marked "both weak, neither strong"
+   against WriterAgent (which has the identical gap, explicitly accepted
+   by WriterAgent as a local-dev-tool risk). Not addressed by this
+   hardening pass; a genuine pre-production question if this is ever
+   exposed beyond a trusted local machine.
+3. **No automated CI.** No `.github/workflows/`, no other CI config --
+   every check in this project's history, including this entire
+   hardening pass, has been run manually. The build script and the new
+   smoke test (`smoke-test-windows.py`) both exist and both work, but
+   nothing runs them automatically on push/PR. Needs its own
+   infrastructure decision (a LibreOffice-capable runner).
+4. **Original 32 legacy tools use a different, flatter error envelope**
+   (`{"success": False, "error": "<string>"}`, not the modern structured
+   `{"code", "message", "details"}` shape) -- flagged in item 1 above.
+   Real inconsistency for any caller trying to handle errors uniformly
+   across the full tool catalog; migrating 25+ long-stable legacy call
+   sites is a bigger undertaking than this pass's scope.
+5. **`DATABASE_ERROR` error code still unreachable.** Declared, never
+   mapped -- `preview_mail_merge_live` (the only SDBC-touching code in
+   the codebase) would currently surface a malformed-query/connection
+   failure as the generic `UNO_EXCEPTION` catch-all instead. Narrow
+   (one tool), not yet fixed.
+6. **Windows-only tooling.** `build-oxt-windows.py` and
+   `smoke-test-windows.py` are both Windows-specific (this project's own
+   dev-environment convention throughout); there's an older, likely-
+   stale `plugin/install.sh` assuming a Linux/PATH-based `libreoffice`/
+   `unopkg` setup, not verified working in this pass. Whether Linux/
+   macOS support matters depends on the actual deployment target, not
+   evaluated here.
+7. **Spec-gap capabilities, explicitly parked by Brian until after this
+   hardening phase completes:** vision/screenshot document
+   understanding, embeddings/RAG over content, a notebook-cell
+   interface, and a Calc analysis engine (DuckDB/symbolic math/
+   forecasting/solver) are real WriterAgent capabilities with zero
+   presence in the 484-tool spec this project implements. Not a defect
+   in what's built -- a scope call still sitting with Brian.
+
+### Bottom line
+
+Nothing above blocks the tool catalog itself from being correct and
+live-verified -- it is. What blocks calling the *service* production-
+ready, in likely order of consequence if ignored: concurrency control
+(phase 2, already scheduled) and authentication (item 2, not scheduled)
+if this is ever exposed beyond a single trusted local machine; the rest
+(CI, legacy error-envelope migration, `DATABASE_ERROR`, platform
+support) are real but narrower and can reasonably wait for their own
+deliberate scope calls rather than blocking anything today.
 
 ## Phase 2 (after 1-6): MCP transport concurrency control
 
