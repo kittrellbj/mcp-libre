@@ -294,7 +294,15 @@ def get_selection_live(document_id: Optional[str] = None) -> Dict[str, Any]:
     try:
         doc, resolved_id = _resolve_and_register(ctx, document_id)
         result = ctx.uno_bridge.get_selection(doc)
-        return envelope.build_success(result=result, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+        # get_selection() nests a "warnings" key in its result on a partial
+        # read failure (e.g. selection details unreadable for this
+        # document type); lift it to the envelope's top-level warnings
+        # field, same pattern get_view_state_live already uses above.
+        warnings = result.pop("warnings", [])
+        return envelope.build_success(
+            result=result, document_id=resolved_id, warnings=warnings,
+            elapsed_ms=envelope.elapsed_ms_since(start),
+        )
     except Exception as e:
         return _error_response(e, start, document_id=document_id)
 

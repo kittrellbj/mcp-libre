@@ -814,12 +814,26 @@ class UNOBridge:
                 "zoom_mode": self._ZOOM_TYPE_TO_MODE.get(zoom_props.getPropertyValue("ZoomType"))}
 
     def get_selection(self, doc: Any) -> Dict[str, Any]:
-        """Return a document-type-specific summary of the current selection."""
+        """Return a document-type-specific summary of the current selection.
+
+        Hardening-pass finding (#33 robustness sweep): unlike every other
+        best-effort try/except in this file (which either leaves a None/
+        False fallback the caller can detect, e.g. get_headers_footers's
+        header_X: None, or is enriching a genuinely-optional field a
+        given object type may not support at all, e.g. shape rotation),
+        this method's three per-doc-type blocks used to catch and
+        silently discard with no fallback value and no signal
+        whatsoever -- a caller had no way to distinguish "nothing
+        selected" from "reading the selection details failed." Now
+        records a warning string instead."""
         controller = self._get_controller(doc)
         doc_type = self._get_document_type(doc)
         result: Dict[str, Any] = {"type": doc_type, "has_selection": self._has_selection(doc)}
+        warnings: List[str] = []
         selection = controller.getSelection()
         if selection is None:
+            if warnings:
+                result["warnings"] = warnings
             return result
 
         if doc_type == "writer":
@@ -827,23 +841,25 @@ class UNOBridge:
                 texts = [selection.getByIndex(i).getString() for i in range(selection.getCount())]
                 result["selected_text"] = "".join(texts)
                 result["range_count"] = selection.getCount()
-            except Exception:
-                pass
+            except Exception as e:
+                warnings.append(f"Could not read Writer selection details: {e}")
         elif doc_type == "calc":
             try:
                 if hasattr(selection, "getRangeAddress"):
                     addr = selection.getRangeAddress()
                     result["range"] = {"sheet": addr.Sheet, "start_column": addr.StartColumn,
                                         "start_row": addr.StartRow, "end_column": addr.EndColumn, "end_row": addr.EndRow}
-            except Exception:
-                pass
+            except Exception as e:
+                warnings.append(f"Could not read Calc selection details: {e}")
         elif doc_type in ("impress", "draw"):
             try:
                 if hasattr(selection, "getCount"):
                     result["shape_count"] = selection.getCount()
                     result["shape_names"] = [selection.getByIndex(i).Name for i in range(selection.getCount())]
-            except Exception:
-                pass
+            except Exception as e:
+                warnings.append(f"Could not read {doc_type} selection details: {e}")
+        if warnings:
+            result["warnings"] = warnings
         return result
 
     def clear_selection(self, doc: Any) -> None:
@@ -1419,7 +1435,22 @@ class UNOBridge:
                             "id": self._comment_id_for(field, len(comments)),
                             "author": field.Author if hasattr(field, 'Author') else "",
                             "content": field.Content if hasattr(field, 'Content') else "",
-                            "date": str(field.Date) if hasattr(field, 'Date') else "",
+                            # str(field.Date) previously produced the raw UNO
+                            # struct repr ("(com.sun.star.util.DateTime){
+                            # NanoSeconds = ... }"), not a readable date --
+                            # hardening-pass finding (#33). Live-verified
+                            # field.Date is actually com.sun.star.util.Date
+                            # (date-only, no Hours/Minutes/Seconds) despite
+                            # the property name suggesting DateTime -- an
+                            # earlier version of this fix used uno_datetime_
+                            # to_iso() (which requires those fields) and
+                            # silently returned None even for a genuinely
+                            # set date, caught by testing with a real,
+                            # non-zero date via a plain duck-typed fake
+                            # rather than trusting the property name. Uses
+                            # the duck-typed dispatcher instead of assuming
+                            # the specific struct shape.
+                            "date": uno_temporal_value_to_plain(field.Date) if hasattr(field, 'Date') else "",
                         }
                         # Try to get the anchor text (what the comment is attached to)
                         if hasattr(field, 'getAnchor'):

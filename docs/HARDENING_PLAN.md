@@ -239,12 +239,94 @@ running LibreOffice process (its constructor calls `uno.
 getComponentContext()`), so this class of bug is only exercisable live,
 same constraint #31/#32 already hit.
 
-Not yet done: the deliberate, systematic sweep for the broader danger
-patterns (`isinstance()` on UNO interfaces, `id()`-based identity, raw
-`str()` of structs, bare `except` blocks, `dict()` assumptions on UNO
-sequences) across `uno_bridge.py` as a whole -- everything found so far
-this pass was incidental, surfaced while working on #31/#32, not from a
-deliberate pattern-by-pattern audit.
+**Status: done.** Completed the deliberate, systematic sweep across all
+five named danger patterns, on the current (much larger -- 8400+ lines,
+7 modules added since the original task #13 sweep) codebase.
+
+**Bare `except:` blocks:** zero. The prior sweep's narrowing to `except
+Exception:` held completely across every module added since.
+
+**`except Exception:` silent-swallow audit:** wrote a small script to
+extract every `except Exception[ as e]:` block's body and flag ones with
+no clear action (no raise/return/append/warning/log) or an unused
+captured exception variable -- 27 candidates out of 101 total blocks.
+Read every one in context. 26 were legitimate, matching established,
+already-reviewed patterns: a `None`/`False` fallback the caller can
+detect (e.g. `get_headers_footers`'s `header_X: None`,
+`get_document_statistics`'s `page_count: None`), the documented
+"best-effort, report what applied" convention already used throughout
+(`clone_style`/`update_style`'s per-property `applied` list,
+`_insert_paragraph_block`'s per-paragraph style reapplication,
+`set_shape_geometry`'s flip handling), optional-field shape enrichment
+where absence doesn't misrepresent anything (`_shape_geometry`'s
+rotation/shear, `get_shape`'s z_order/title/description), or a
+try-primary-then-fallback structure (`_comment_id_for`,
+`resolve_comment`). One genuine finding, fixed and live-verified:
+`get_selection()`'s three per-doc-type blocks (Writer/Calc/Impress-Draw)
+had NO signal at all on failure -- unlike every other case above, a
+caller had no way to distinguish "nothing selected" from "reading the
+selection details failed." Now records a warning string per doc type,
+lifted to the envelope's top-level `warnings` field in
+`get_selection_live` via the exact same pop-and-lift pattern
+`get_view_state_live` already established. Live-verified the happy path
+is unchanged (no regression).
+
+**`isinstance()` on UNO interfaces:** re-audited given the file's growth
+since task #13's original sweep (19 new `isinstance()` calls added).
+Zero touch UNO interface types -- all check plain Python parameter
+shapes (`dict`/`list`/`tuple`/`str`/`int`/`float`/`bool`) for dispatch/
+validation purposes, a fundamentally different and safe use than the
+PyUNO-proxy-identity fragility this pattern warns about. Every real tool
+added since task #13 correctly routes document-type detection through
+`_get_document_type()`'s `supportsService()`-based check (via
+`_require_writer`/`_require_calc`/`_require_draw`/`_require_impress`),
+never a bare `isinstance()` on a document/UNO object. The two already-
+known, already-documented original-32 legacy cases (`format_text_live`,
+`get_document_info_live`) remain the only fragile call sites, unchanged
+from task #13's finding and still deliberately left alone to preserve
+the original 32 exactly.
+
+**`id()`-based identity:** zero live occurrences (the two grep hits are
+both comments explaining why `id()` is deliberately NOT used, documenting
+the task #13/85e9b6b fix). `DocumentRegistry` and `ObjectRegistry` both
+correctly key by UNO object equality throughout, held consistently
+across every module added since.
+
+**Raw `str()` of UNO structs:** found and fixed one genuine case, `get_
+comments`'s `"date": str(field.Date)` -- would have produced the raw
+struct repr (`"(com.sun.star.util.DateTime){ NanoSeconds = ... }"`) for
+any comment with a real date, not a readable value. `get_comments`
+backs `get_comments_live` (one of the original 32) but was already
+touched by the writer_text.py real-implementation pass (which added
+`_comment_id_for()` for `update_comment_live`/`delete_comment_live`/
+`resolve_comment_live` to address comments by), so it's not in the
+"preserve exactly, never touch" bucket the isinstance() cases are --
+fair game, and a purely additive display-quality fix, not a behavior/
+detection-logic change. First fix attempt used `uno_datetime_to_iso()`
+directly and silently returned `None` even for a genuinely-set date --
+caught by testing with a plain duck-typed fake object carrying a real,
+non-zero date rather than trusting the property name ("Date" turned out
+to mean `com.sun.star.util.Date`, date-only, no `Hours`/`Minutes`/
+`Seconds` -- `uno_datetime_to_iso()` requires those and raises
+`AttributeError`, caught internally and returned as `None`). Fixed by
+using the duck-typed dispatcher, `uno_temporal_value_to_plain()`,
+instead of assuming a specific struct shape. Live-verified end to end:
+set a real, non-zero date on a comment field via raw UNO, confirmed
+`get_comments_live` now returns `"date": "2026-08-18"` instead of the
+struct repr or a wrongly-`None`ed value. All other `str()` calls in the
+file are normalizing caller-supplied JSON parameter values for a write
+operation (e.g. `str(orientation).lower()`), not stringifying UNO
+structs -- a safe, different use.
+
+**`dict()` assumptions on UNO sequences:** zero remaining. Only 3 raw
+`dict()` calls in the whole file; 2 are on plain Python parameter dicts
+(safe), 1 is the exact danger pattern already caught and fixed in an
+earlier pass (`get_document_info`'s filter-factory enumeration, with an
+explanatory comment: `getByName()` returns a `PropertyValue` tuple, not
+a mapping, and `dict()` on it directly raises `TypeError`). The
+established `{p.Name: p.Value for p in <sequence>}` comprehension
+pattern is used consistently everywhere a `PropertyValue` sequence needs
+dict-ifying.
 
 ## 4. Writer/Calc/Draw production-hardening
 
