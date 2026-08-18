@@ -330,12 +330,67 @@ dict-ifying.
 
 ## 4. Writer/Calc/Draw production-hardening
 
-Not started. See the note above on what's actually in scope here vs. the
-parked spec-gap decision.
+**Status: done, folded into items 1-3 as scoped at the start of this
+doc.** The note above the sequencing section already drew the
+distinction: genuine capability gaps the spec never planned for
+(WriterAgent's review/grammar/document-research subsystems, DuckDB/
+forecast/symbolic-math/vision-based Calc analysis) are the parked
+spec-gap decision, not touched here; production-hardening depth on
+capability the spec already covers is the real scope of this item, and
+that's exactly what items 1-3's fixes were -- WRONG_DOCUMENT_TYPE (every
+real Writer/Calc/Draw/Impress tool's error path), the silently-dropped
+CharLocale/date-struct conversion bugs (Writer formatting/comments),
+set_custom_property_live's int-typing crash, and get_selection's silent
+failure (spans all four document types). No separate checklist needed
+beyond what 1-3 already delivered.
 
 ## 5. Packaging + install smoke tests (#36/#37)
 
-Not started.
+**Status: done, with one finding flagged for a separate scope decision.**
+
+**Manifest/packaging verification (#36):** already solid, confirmed by
+reading `build-oxt-windows.py`. Every `pythonpath/*.py` module and the
+whole `tools/` package are globbed in at build time, not hand-listed --
+the comment in the script itself explains why: a hand-maintained file
+list silently went stale twice before (`tools/` was missing entirely
+until the Phase A+D real-implementation pass, then `uno_datetime.py` was
+nearly missed the same way right after fixing that). The build also
+hard-fails on any missing source file before writing the archive, and
+independently re-opens and `testzip()`s the built `.oxt` to catch a
+corrupt archive. This was already correct going in -- no fix needed.
+
+**No automated CI exists in this repo at all** -- confirmed by directly
+checking: no `.github/workflows/`, no other CI config file anywhere.
+Every verification in this project's history, including this entire
+hardening pass, has been run manually. Whether "CI checks every file
+ships" (as originally scoped in Buddy's assignment) means "the build
+script itself checks this when run" (already true, see above) or "an
+automated pipeline runs the build on every push" (not true, and would
+need its own infrastructure -- a GitHub-hosted runner has no LibreOffice
+preinstalled, needs `apt-get install libreoffice` or equivalent on
+first setup) is a real, separate scope decision, not something to build
+speculatively under this item. Flagged here rather than either silently
+building a CI pipeline or silently skipping the question.
+
+**Scripted clean-profile install -> start -> health-check ->
+representative-tool-execute -> uninstall test (#37): built and
+live-verified.** `smoke-test-windows.py`, new -- every prior real-
+implementation pass's live verification was ad hoc shell commands typed
+fresh each time (kill soffice, build, unopkg remove/add, launch,
+bootstrap, curl health, curl a tool, clean up); this captures that exact
+cycle as a reusable, runnable artifact for the first time. Eight steps:
+clean slate -> build -> uninstall any stale deployment -> install ->
+launch headless LibreOffice and dispatch `mcp:start_mcp_server` (polling
+the real state via a bootstrap-script retry loop, not a fixed sleep) ->
+poll `/health` until healthy -> a genuine functional round trip
+(`insert_text_live` a marker string, `get_text_content_live` confirms it
+reads back) -> uninstall and confirm via `unopkg list` that the
+extension is actually gone. Ran it for real: all 8 steps passed cleanly
+on the first run, exit code 0, no leftover `soffice` process or `build/`
+directory afterward. Also verified the failure path -- pointed
+`LIBREOFFICE_PROGRAM_DIR` at a nonexistent directory, confirmed it fails
+fast with a clear message and exit code 1 rather than hanging or
+false-passing.
 
 ## 6. Release-readiness list (#43)
 

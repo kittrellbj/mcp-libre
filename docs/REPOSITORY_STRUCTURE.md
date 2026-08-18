@@ -109,7 +109,9 @@ mcp-libre/
 ├── 📄 .gitignore                   # Git ignore rules
 ├── 📄 .python-version              # Python version specification
 ├── 🔧 mcp-helper.sh               # Wrapper for scripts/mcp-helper.sh
-└── 🔧 generate-config.sh          # Wrapper for scripts/generate-config.sh
+├── 🔧 generate-config.sh          # Wrapper for scripts/generate-config.sh
+├── 🔧 build-oxt-windows.py        # Windows .oxt build: globs pythonpath/*.py + tools/*.py, validates zip integrity
+└── 🔧 smoke-test-windows.py       # Scripted install -> health-check -> tool-execute -> uninstall smoke test
 ```
 
 ## 📋 File Descriptions
