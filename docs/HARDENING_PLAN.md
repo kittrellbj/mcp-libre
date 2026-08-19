@@ -408,12 +408,20 @@ concurrency control not yet started).
   `draw.py`, `writer_layout.py`, `writer_tables.py`), plus the original
   32 legacy tools, all against real headless LibreOffice 26.2 -- no
   scaffolded modules left. A short list of individual tools stay
-  documented stubs for genuine UNO/API limits, never silently claimed
-  working (`set_chapter_numbering_live`, `mail_merge_live`,
-  `add_chart_series_live`, 4 animation-mutation + 3 slideshow-effect
+  documented stubs, never silently claimed working, split into two
+  distinct groups: 5 are genuinely blocked on a UNO API/environment
+  limitation (`set_chapter_numbering_live` -- `ChapterNumberingRules.
+  replaceByIndex()` raises `IllegalArgumentException` on an unmodified
+  round-trip; `mail_merge_live` -- `MailMerge` needs a `DataSourceName`
+  registered through `DatabaseContext`, which refuses to register an ad
+  hoc `DataSource` without a persisted `.odb`; the 3 slideshow-effect
+  tools in `impress.py` -- headless mode's `XSlideShowController` is
+  always `None`), the other 12 are unattempted-but-plausible scope
+  limits, not blocked (`add_chart_series_live`, 4 animation-mutation
   tools in `impress.py`, `insert/activate_embedded_object_live`,
-  `create/refresh/delete_external_link_live`) -- see each module's own
-  section in `docs/MCP_TOOLING_SCAFFOLD_PLAN.md` for why.
+  `create/refresh/delete_external_link_live`, plus document-events) --
+  see each module's own section in `docs/MCP_TOOLING_SCAFFOLD_PLAN.md`
+  for why.
 - **Error-code consistency:** one shared, validated envelope
   (`envelope.build_error()`/`build_success()`) across every real tool;
   `WRONG_DOCUMENT_TYPE` now correctly wired (was dead code catalog-wide

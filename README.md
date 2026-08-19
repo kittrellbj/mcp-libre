@@ -494,7 +494,7 @@ The v1.0.0 tool names remain backward-compatible as the interface expands.
 
 Page styles and layout, custom page sizes, margins, headers/footers, sections, columns, paragraph/character styles, lists and numbering, tables, frames, images, fields, footnotes/endnotes, bookmarks, cross-references, indexes/TOC, advanced typography, page numbering, document properties.
 
-Stub-only: `set_chapter_numbering_live`, `mail_merge_live`.
+Stub-only, both blocked on a genuine UNO API limitation, not a scheduling gap — see [Tooling Roadmap](#tooling-roadmap): `set_chapter_numbering_live`, `mail_merge_live`.
 
 See `plugin/pythonpath/tools/writer_layout.py`, `writer_tables.py`, `writer_text.py` for the full tool list.
 
@@ -516,7 +516,7 @@ See `plugin/pythonpath/tools/calc_data.py`, `calc_page.py`, `calc_sheets.py` for
 
 Slides, layouts, master slides, text boxes, images, shapes, tables, notes, transitions, slide ordering, presentation settings, export.
 
-Stub-only: `add_animation_live`, `update_animation_live`, `delete_animation_live`, `reorder_animations_live`, `next_slideshow_effect_live`, `previous_slideshow_effect_live`, `goto_slideshow_slide_live`.
+Stub-only: `add_animation_live`, `update_animation_live`, `delete_animation_live`, `reorder_animations_live` (scope-limited, planned — see [Tooling Roadmap](#tooling-roadmap)); `next_slideshow_effect_live`, `previous_slideshow_effect_live`, `goto_slideshow_slide_live` (blocked — headless mode's `XSlideShowController` is always `None`, see [Tooling Roadmap](#tooling-roadmap)).
 
 See `plugin/pythonpath/tools/impress.py` for the full tool list.
 
@@ -670,14 +670,21 @@ These changes prevent a slow or abandoned client request from blocking the entir
 
 # Tooling Roadmap
 
-Most of the v1.0.0 roadmap is now implemented — see [Writer / Calc / Impress / Draw Automation via MCP](#writer--calc--impress--draw-automation-via-mcp) for the live catalog. 17 tools remain stub-only, opt-in behind `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS=1`, each returning `NOT_IMPLEMENTED` until a senior engineer fills in a real body:
+Most of the v1.0.0 roadmap is now implemented — see [Writer / Calc / Impress / Draw Automation via MCP](#writer--calc--impress--draw-automation-via-mcp) for the live catalog. 17 tools remain stub-only, opt-in behind `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS=1`, each returning `NOT_IMPLEMENTED` until finished. They split into two distinct groups — five are genuinely blocked, twelve are just unbuilt:
 
-- **Writer**: `set_chapter_numbering_live`, `mail_merge_live`
+**Cannot implement due to a UNO API/environment limitation (5)** — live-verified against real LibreOffice, not a scheduling gap:
+
+- `set_chapter_numbering_live` — `ChapterNumberingRules.replaceByIndex()` raises `IllegalArgumentException` even when passed back the exact unmodified sequence `getByIndex()` returned. A real UNO API limitation, not a usage bug on our side. (`get_chapter_numbering_live`, read-only, works fine.)
+- `mail_merge_live` — the real `com.sun.star.text.MailMerge` service needs a `DataSourceName` registered through `DatabaseContext`, which live-verified refuses to register an ad hoc `DataSource` without first persisting it to a real `.odb` file via `XStorable`. (`preview_mail_merge_live` works today via an unregistered ad hoc SDBC connection over a CSV folder.)
+- `next_slideshow_effect_live`, `previous_slideshow_effect_live`, `goto_slideshow_slide_live` — all three need a live `XSlideShowController`, confirmed via live verification to always be `None` in headless mode (no window manager to render a slideshow view to). (`start_slideshow_live`/`stop_slideshow_live` don't need the controller and work fine.)
+
+**Scope-limited (12)** — a real UNO mechanism exists, just not attempted yet:
+
 - **Calc**: `create_external_link_live`, `refresh_external_link_live`, `delete_external_link_live`
-- **Impress**: `add_animation_live`, `update_animation_live`, `delete_animation_live`, `reorder_animations_live`, `next_slideshow_effect_live`, `previous_slideshow_effect_live`, `goto_slideshow_slide_live`
+- **Impress**: `add_animation_live`, `update_animation_live`, `delete_animation_live`, `reorder_animations_live`
 - **Shared services**: `add_chart_series_live`, `insert_embedded_object_live`, `activate_embedded_object_live`, `get_document_events_live`, `wait_for_document_event_live`
 
-Beyond finishing those 17, longer-term goals include:
+Beyond finishing those 12, longer-term goals include:
 
 - Adopting the MCP spec's modern (2026-07-28+) transport era, if a real client requirement emerges (see [MCP JSON-RPC Transport](#mcp-json-rpc-transport))
 - A dedicated JSON-RPC busy/backpressure error code, rather than routing admission-timeout rejections through `mcp_jsonrpc.py`'s generic `INTERNAL_ERROR`
