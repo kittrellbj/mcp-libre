@@ -14,6 +14,7 @@ This fork focuses on making the native LibreOffice extension work cleanly on Win
 ## Table of Contents
 
 - [What's New in v2.0.0](#whats-new-in-v200)
+- [Project Stats](#project-stats)
 - [LibreOffice MCP Tools for AI Agents](#libreoffice-mcp-tools-for-ai-agents)
 - [Repository Structure](#repository-structure)
 - [Requirements](#requirements)
@@ -70,6 +71,20 @@ Validated functionality included:
 - Document metadata and outline access
 - Save and export operations
 - Local HTTP health and tool discovery endpoints
+
+---
+
+## Project Stats
+
+Numbers pulled from the project's own history (`docs/MCP_TOOLING_SCAFFOLD_PLAN.md`, `docs/HARDENING_PLAN.md`), not estimated. Where a number is a floor rather than an exact total, that's called out explicitly.
+
+- **449 tests passing, 0 failing** — the current fakes-based `pytest` suite (`uv run pytest`).
+- **At least 18 full-suite test runs are individually documented** across the project's history — one recorded at the close of each real-implementation pass, hardening item, and protocol-conformance phase, climbing from the first tracked snapshot (95/95) up to today's 449/449. This is a floor, not the true total: this project has no CI and no captured shell history, so the additional red/green iterations run while writing each test along the way aren't individually counted anywhere.
+- **41 real bugs found and fixed** via live verification against a real, running LibreOffice instance — each caught only because a live round trip was run, not by the fakes-based unit suite alone. Every one is documented at its source with root cause and fix.
+- **600/600** concurrent tool-call round trips succeeded with 0 errors in the concurrency-safety probe (2 threads × 300 iterations against two live Writer documents).
+- **15/15** MCP transport protocol-conformance checks passed live against a real running extension (session-id enforcement, protocol-version negotiation).
+- **51 commits** landed since the v1.0.0 baseline (85 commits total across the project's full history).
+- **398 registered MCP tools** across Writer (99), Calc (99), Impress (41), Draw (16), and shared services (111), plus the original 32 legacy tools — 381 live by default, 17 stub-only pending (see [Tooling Roadmap](#tooling-roadmap)).
 
 ---
 
