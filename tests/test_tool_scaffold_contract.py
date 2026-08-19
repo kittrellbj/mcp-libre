@@ -405,11 +405,14 @@ def test_implemented_impress_tools_are_marked_implemented():
         assert registry[name]["status"] == "stub", f"{name} should still be status='stub' (no real code path this pass, see module docstring)"
 
 
-# calc_data.py is also a mixed module: 39 of its 42 tools are real. The
-# remaining 3 (create/refresh/delete_external_link_live) stay
-# status="stub" -- doc.ExternalDocLinks' write side wasn't
-# exploration-tested this pass (list_external_links_live, the read-only
-# side, IS real), see calc_data.py's module docstring.
+# calc_data.py: all 42 tools are real as of a follow-up pass --
+# create/refresh/delete_external_link_live (the last 3) are built on
+# com.sun.star.sheet.XAreaLinks, a separate mechanism from
+# list_external_links_live's original doc.ExternalDocLinks read-only
+# side, see calc_data.py's module docstring. Kept as an explicit name
+# set (not folded into test_implemented_modules_tools_are_marked_
+# implemented) so a future regression in this module has the same
+# per-name guard the mixed-module era relied on.
 IMPLEMENTED_CALC_DATA_TOOL_NAMES = {
     "list_named_ranges_live", "create_named_range_live", "update_named_range_live",
     "delete_named_range_live", "sort_range_live", "apply_filter_live", "clear_filter_live",
@@ -420,7 +423,8 @@ IMPLEMENTED_CALC_DATA_TOOL_NAMES = {
     "update_pivot_table_live", "refresh_pivot_table_live", "delete_pivot_table_live",
     "list_scenarios_live", "create_scenario_live", "apply_scenario_live", "delete_scenario_live",
     "goal_seek_live", "solver_solve_live", "list_database_ranges_live", "create_database_range_live",
-    "delete_database_range_live", "list_external_links_live", "import_csv_to_range_live",
+    "delete_database_range_live", "list_external_links_live", "create_external_link_live",
+    "refresh_external_link_live", "delete_external_link_live", "import_csv_to_range_live",
     "export_range_to_csv_live", "group_rows_live", "ungroup_rows_live", "group_columns_live",
     "ungroup_columns_live",
 }
@@ -428,8 +432,9 @@ IMPLEMENTED_CALC_DATA_TOOL_NAMES = {
 
 def test_implemented_calc_data_tools_are_marked_implemented():
     """Same guard as test_implemented_modules_tools_are_marked_implemented,
-    for the 39 individually-implemented tools in the mixed calc_data.py
-    module (see IMPLEMENTED_CALC_DATA_TOOL_NAMES)."""
+    for all 42 individually-implemented tools in calc_data.py (see
+    IMPLEMENTED_CALC_DATA_TOOL_NAMES) -- still_stub is empty now, kept
+    for symmetry with the other mixed-module tests in this file."""
     registry = get_registry()
     for name in IMPLEMENTED_CALC_DATA_TOOL_NAMES:
         assert registry[name]["status"] == "implemented", f"{name} should be status='implemented'"

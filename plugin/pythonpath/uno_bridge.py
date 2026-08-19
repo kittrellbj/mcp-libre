@@ -9,6 +9,7 @@ import builtins
 import uno
 import unohelper
 from com.sun.star.beans import PropertyValue
+from com.sun.star.sheet import CellFlags
 from com.sun.star.text.ControlCharacter import PARAGRAPH_BREAK
 from com.sun.star.util import NumberFormat
 from typing import Any, Optional, Dict, List
@@ -6006,13 +6007,30 @@ class UNOBridge:
     #
     # Same raise-on-failure convention as calc_sheets.py above. Sheet
     # resolution reuses _resolve_sheet()/_require_calc() from that
-    # section. 39 of 42 tools are real; create_external_link_live/
-    # refresh_external_link_live/delete_external_link_live stay
-    # NOT_IMPLEMENTED stubs -- doc.ExternalDocLinks' write-side mechanism
-    # (creating a real external link, vs. list_external_links_live's
-    # read-only enumeration, which IS real) wasn't exploration-tested
-    # this pass, same honest-scope-limit precedent as
-    # add_chart_series_live/add_animation_live before it.
+    # section. All 42 tools are real as of this pass; create_external_
+    # link_live/refresh_external_link_live/delete_external_link_live were
+    # the last 3 -- live-verified real UNO mechanism is
+    # com.sun.star.sheet.XAreaLinks (doc.AreaLinks), NOT doc.
+    # ExternalDocLinks. Those are two genuinely separate, non-overlapping
+    # mechanisms -- live-verified inserting via one does not populate the
+    # other: ExternalDocLinks is a read-only cache auto-created when a
+    # formula references an external file's cell (no write/refresh/remove
+    # API exists for it at all -- live-verified no XRefreshable on the
+    # doc, the links collection, or an individual entry; no dispatchable
+    # `.uno:UpdateLinks`-style command resolves; doc.calculateAll() does
+    # NOT refresh its cached values even after the source file changes on
+    # disk and is re-saved). AreaLinks is the "linked data area"
+    # mechanism (Calc's Sheet > Insert Sheet from File... as a link, or
+    # equivalently Data > External Data): genuinely CRUD-capable via
+    # XAreaLinks.insertAtPosition()/removeByIndex(), and each entry
+    # queryInterface()s to a real, working XRefreshable. This also fixes
+    # a real purpose/implementation mismatch: list_external_links_live's
+    # own registered purpose has always said "List area/external links
+    # and refresh state," but the original implementation only read
+    # ExternalDocLinks, which has no refresh state at all -- AreaLinks
+    # entries are the ones that do (RefreshDelay). See
+    # list_external_links()/create_external_link()'s own docstrings
+    # below for the exact live-verified call shapes.
     #
     # scope (named ranges) means: a sheet name/index -> that sheet's own
     # NamedRanges container; omitted -> the workbook-level
@@ -6648,18 +6666,133 @@ class UNOBridge:
             raise KeyError(f"No such database range '{name}'.")
         ranges.removeByName(name)
 
-    def list_external_links(self, doc: Any) -> List[Dict[str, Any]]:
+    def list_external_links(self, doc: Any) -> Dict[str, List[Dict[str, Any]]]:
+        """Reports both of Calc's genuinely separate cross-file-reference
+        mechanisms -- see this section's header comment above for how
+        they were live-verified as non-overlapping. `formula_links` is
+        the pre-existing read-only ExternalDocLinks enumeration
+        (link_id/url only -- no refresh state, no write side).
+        `area_links` is the AreaLinks mechanism create_external_link()/
+        refresh_external_link()/delete_external_link() operate on below,
+        with real refresh state (`refresh_delay_seconds`)."""
         self._require_calc(doc, "list_external_links")
-        links = doc.ExternalDocLinks
-        return [{"link_id": name, "url": name} for name in links.getElementNames()]
+        formula_links = [{"link_id": name, "url": name} for name in doc.ExternalDocLinks.getElementNames()]
+        area_links = [self._describe_area_link(doc, i) for i in range(doc.AreaLinks.getCount())]
+        return {"formula_links": formula_links, "area_links": area_links}
 
-    # create_external_link_live/refresh_external_link_live/
-    # delete_external_link_live have no bridge methods -- doc.
-    # ExternalDocLinks' write side (adding a new link, vs.
-    # list_external_links_live's read-only enumeration) wasn't
-    # exploration-tested this pass, same honest-scope-limit precedent as
-    # add_chart_series_live/add_animation_live. All 3 stay pure
-    # status="stub" NOT_IMPLEMENTED responses, see tools/calc_data.py.
+    def _area_link_id(self, sheet_name: str, dest_col: int, dest_row: int) -> str:
+        return f"{sheet_name}!{self._column_row_to_a1(dest_col, dest_row)}"
+
+    def _describe_area_link(self, doc: Any, index: int) -> Dict[str, Any]:
+        item = doc.AreaLinks.getByIndex(index)
+        dest = item.DestArea
+        sheet_name = doc.getSheets().getByIndex(dest.Sheet).Name
+        dest_a1 = (
+            f"{sheet_name}.{self._column_row_to_a1(dest.StartColumn, dest.StartRow)}"
+            f":{self._column_row_to_a1(dest.EndColumn, dest.EndRow)}"
+        )
+        return {
+            "link_id": self._area_link_id(sheet_name, dest.StartColumn, dest.StartRow),
+            "url": item.Url,
+            "source_area": item.SourceArea,
+            "destination": dest_a1,
+            "filter": item.Filter,
+            "refresh_delay_seconds": item.RefreshDelay,
+        }
+
+    def _find_area_link_index(self, doc: Any, link_id: str) -> int:
+        for i in range(doc.AreaLinks.getCount()):
+            item = doc.AreaLinks.getByIndex(i)
+            dest = item.DestArea
+            sheet_name = doc.getSheets().getByIndex(dest.Sheet).Name
+            if self._area_link_id(sheet_name, dest.StartColumn, dest.StartRow) == link_id:
+                return i
+        raise KeyError(f"No such external link '{link_id}'.")
+
+    # Filter names live-verified against real LibreOffice for
+    # insertAtPosition()'s required "filter" argument -- only these
+    # extensions are mapped; anything else raises rather than guessing a
+    # filter name that would silently fail to open.
+    _AREA_LINK_FILTERS = {
+        ".ods": "calc8",
+        ".xlsx": "Calc MS Excel 2007 XML",
+        ".xls": "MS Excel 97",
+        ".csv": "Text - txt - csv (StarCalc)",
+    }
+
+    def create_external_link(self, doc: Any, source_url: str, source_area: str, destination: str,
+                              filter: Optional[str] = None) -> Dict[str, Any]:
+        """Live-verified real mechanism: com.sun.star.sheet.XAreaLinks.
+        insertAtPosition(destCellAddress, url, sourceArea, filterName,
+        filterOptions) on doc.AreaLinks -- NOT doc.ExternalDocLinks,
+        which has no write side at all (see list_external_links()'s
+        docstring). `destination` accepts "SheetName.A1" (Calc-native
+        dot notation, matching `source_area`'s own format); a bare
+        "A1" with no "." resolves against the active sheet. `filter`
+        defaults to a guess from source_url's extension for the small
+        set of formats this pass verified a working filter name for
+        (see _AREA_LINK_FILTERS) -- pass filter explicitly for anything
+        else rather than have this silently guess wrong."""
+        self._require_calc(doc, "create_external_link")
+        if "." in destination:
+            sheet_name, cell_ref = destination.split(".", 1)
+            dest_sheet_obj = self._resolve_sheet_by_name_or_index(doc.getSheets(), sheet_name)
+        else:
+            cell_ref = destination
+            dest_sheet_obj = self._resolve_sheet(doc, None)
+        dest_addr = self._cell_address_from_range(dest_sheet_obj.getCellRangeByName(cell_ref))
+
+        resolved_filter = filter
+        if resolved_filter is None:
+            suffix = os.path.splitext(source_url)[1].lower()
+            resolved_filter = self._AREA_LINK_FILTERS.get(suffix)
+            if resolved_filter is None:
+                raise NotImplementedError(
+                    f"create_external_link_live could not infer a filter for '{source_url}' -- "
+                    f"pass filter explicitly (verified names: {sorted(self._AREA_LINK_FILTERS.values())})."
+                )
+
+        doc.AreaLinks.insertAtPosition(dest_addr, source_url, source_area, resolved_filter, "")
+        link_id = self._area_link_id(dest_sheet_obj.Name, dest_addr.Column, dest_addr.Row)
+        return self._describe_area_link(doc, self._find_area_link_index(doc, link_id))
+
+    def refresh_external_link(self, doc: Any, link_id: str) -> Dict[str, Any]:
+        """Live-verified: each AreaLinks entry queryInterface()s to a
+        real, working com.sun.star.util.XRefreshable -- .refresh() pulls
+        fresh values from the source file on disk into the destination
+        range immediately, live-verified against a source file modified
+        and re-saved after the link was created."""
+        self._require_calc(doc, "refresh_external_link")
+        index = self._find_area_link_index(doc, link_id)
+        item = doc.AreaLinks.getByIndex(index)
+        refreshable = item.queryInterface(uno.getTypeByName("com.sun.star.util.XRefreshable"))
+        if refreshable is None:
+            raise RuntimeError(f"Area link '{link_id}' does not expose XRefreshable.")
+        refreshable.refresh()
+        return self._describe_area_link(doc, index)
+
+    def delete_external_link(self, doc: Any, link_id: str, keep_values: bool = True) -> Dict[str, Any]:
+        """XAreaLinks.removeByIndex() only detaches the link definition
+        -- live-verified the destination cells keep whatever values were
+        last refreshed into them, matching Edit > Links > Break Link's
+        real behavior and this tool's keep_values=True default. For
+        keep_values=False, live-verified a plain clearContents() with
+        every content flag set (there is no separate "remove and clear"
+        UNO mode) empties the destination range after the link is
+        removed."""
+        self._require_calc(doc, "delete_external_link")
+        index = self._find_area_link_index(doc, link_id)
+        dest = doc.AreaLinks.getByIndex(index).DestArea
+        doc.AreaLinks.removeByIndex(index)
+        if not keep_values:
+            sheet_obj = doc.getSheets().getByIndex(dest.Sheet)
+            dest_range = sheet_obj.getCellRangeByPosition(dest.StartColumn, dest.StartRow, dest.EndColumn, dest.EndRow)
+            all_flags = (
+                CellFlags.VALUE | CellFlags.DATETIME | CellFlags.STRING | CellFlags.ANNOTATION
+                | CellFlags.FORMULA | CellFlags.HARDATTR | CellFlags.STYLES | CellFlags.OBJECTS | CellFlags.EDITATTR
+            )
+            dest_range.clearContents(all_flags)
+        return {"deleted": link_id, "kept_values": keep_values}
 
     _CSV_CHARSETS = {"utf-8": 76, "utf8": 76}
 

@@ -7,12 +7,15 @@ Source: LibreOffice_MCP_Complete_Tooling_Specification.md, section
 (scope: Calc). No tools in this section are marked "(existing)"; all 42
 were scaffolded stubs before this pass.
 
-39 of 42 tools are real; create_external_link_live/
-refresh_external_link_live/delete_external_link_live stay status="stub"
--- doc.ExternalDocLinks' write side (adding a new link, vs.
-list_external_links_live's read-only enumeration, which IS real) wasn't
-exploration-tested this pass, same honest-scope-limit precedent as
-charts.py's add_chart_series_live and impress.py's add_animation_live.
+All 42 tools are real as of a follow-up pass; create_external_link_live/
+refresh_external_link_live/delete_external_link_live were the last 3,
+built on com.sun.star.sheet.XAreaLinks (doc.AreaLinks) rather than
+doc.ExternalDocLinks -- the two are genuinely separate, non-overlapping
+mechanisms; ExternalDocLinks has no write/refresh/remove API at all (see
+uno_bridge.py's calc-data section header for the full live-verified
+story). list_external_links_live now reports both, under
+`formula_links` (the pre-existing ExternalDocLinks enumeration) and
+`area_links` (the new CRUD-capable mechanism).
 
 Conditional format rules and pivot tables resolve `rule_id`/`pivot_id`
 through the same ObjectRegistry drawing_objects.py established, but with
@@ -767,7 +770,8 @@ def list_external_links_live() -> Dict[str, Any]:
     try:
         doc, resolved_id = _resolve_and_register(ctx)
         links = ctx.uno_bridge.list_external_links(doc)
-        return envelope.build_success(result={"links": links, "count": len(links)}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+        count = len(links["formula_links"]) + len(links["area_links"])
+        return envelope.build_success(result={**links, "count": count}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
     except Exception as e:
         return _error_response(e, start)
 
@@ -782,11 +786,18 @@ def list_external_links_live() -> Dict[str, Any]:
         "destination": {"type": "string"},
         "filter": {"type": "string"},
     }, required=["source_url", "source_area", "destination"]),
+    status="implemented",
 )
 def create_external_link_live(source_url: str, source_area: str, destination: str,
                                filter: Optional[str] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("create_external_link_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        link = ctx.uno_bridge.create_external_link(doc, source_url, source_area, destination, filter)
+        return envelope.build_success(result=link, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -794,10 +805,17 @@ def create_external_link_live(source_url: str, source_area: str, destination: st
     priority="P2",
     purpose="Refresh external link.",
     parameters=schema({"link_id": {"type": "string"}}, required=["link_id"]),
+    status="implemented",
 )
 def refresh_external_link_live(link_id: str) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("refresh_external_link_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        link = ctx.uno_bridge.refresh_external_link(doc, link_id)
+        return envelope.build_success(result=link, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -808,10 +826,17 @@ def refresh_external_link_live(link_id: str) -> Dict[str, Any]:
         "link_id": {"type": "string"},
         "keep_values": {"type": "boolean", "default": True},
     }, required=["link_id"]),
+    status="implemented",
 )
 def delete_external_link_live(link_id: str, keep_values: bool = True) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("delete_external_link_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        result = ctx.uno_bridge.delete_external_link(doc, link_id, keep_values)
+        return envelope.build_success(result=result, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(

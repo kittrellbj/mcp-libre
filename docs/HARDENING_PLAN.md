@@ -416,12 +416,17 @@ concurrency control not yet started).
   registered through `DatabaseContext`, which refuses to register an ad
   hoc `DataSource` without a persisted `.odb`; the 3 slideshow-effect
   tools in `impress.py` -- headless mode's `XSlideShowController` is
-  always `None`), the other 12 are unattempted-but-plausible scope
+  always `None`), the other 9 are unattempted-but-plausible scope
   limits, not blocked (`add_chart_series_live`, 4 animation-mutation
-  tools in `impress.py`, `insert/activate_embedded_object_live`,
-  `create/refresh/delete_external_link_live`, plus document-events) --
-  see each module's own section in `docs/MCP_TOOLING_SCAFFOLD_PLAN.md`
-  for why.
+  tools in `impress.py`, `insert/activate_embedded_object_live`, plus
+  document-events) -- see each module's own section in
+  `docs/MCP_TOOLING_SCAFFOLD_PLAN.md` for why. `create/refresh/delete_
+  external_link_live` (Calc) moved out of this list in a follow-up pass
+  -- real UNO mechanism turned out to be `com.sun.star.sheet.XAreaLinks`
+  (`doc.AreaLinks`), a genuinely separate, CRUD-capable mechanism from
+  the pre-existing `ExternalDocLinks` read-only enumeration, live-
+  verified end to end including a real REST round trip against the
+  rebuilt/reinstalled extension.
 - **Error-code consistency:** one shared, validated envelope
   (`envelope.build_error()`/`build_success()`) across every real tool;
   `WRONG_DOCUMENT_TYPE` now correctly wired (was dead code catalog-wide

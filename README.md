@@ -44,10 +44,10 @@ This fork focuses on making the native LibreOffice extension work cleanly on Win
 
 Version 2.0.0 grows the project from the v1.0.0 Windows native-extension baseline into a full LibreOffice automation surface for AI agents: the tool catalog expanded roughly twelvefold, the embedded HTTP server gained real concurrency safety, and the MCP transport itself was brought into spec conformance.
 
-- **398 registered MCP tools** across Writer, Calc, Impress, Draw, and shared LibreOffice services — up from the 32-tool v1.0.0 baseline. 381 are live by default (the original 32 plus 349 fully implemented since); 17 remain stub-only, opt-in, and return `NOT_IMPLEMENTED` until finished (see [Tooling Roadmap](#tooling-roadmap)).
+- **398 registered MCP tools** across Writer, Calc, Impress, Draw, and shared LibreOffice services — up from the 32-tool v1.0.0 baseline. 384 are live by default (the original 32 plus 352 fully implemented since); 14 remain stub-only, opt-in, and return `NOT_IMPLEMENTED` until finished (see [Tooling Roadmap](#tooling-roadmap)).
 - **Concurrency control**: a process-wide UNO execution lock plus a bounded admission semaphore protect the embedded HTTP server from PyUNO bridge corruption under concurrent tool calls. Live-verified at 600/600 concurrent round trips with 0 errors.
 - **MCP transport protocol conformance**: `Mcp-Session-Id` is now enforced end to end, and `MCP-Protocol-Version` is validated and negotiated per the MCP specification on every request.
-- **449 automated tests passing**, plus live install/launch/health-check probes run against a real LibreOffice process for everything that can't be unit-tested outside one.
+- **451 automated tests passing**, plus live install/launch/health-check probes run against a real LibreOffice process for everything that can't be unit-tested outside one.
 
 Full history in [`docs/HARDENING_PLAN.md`](docs/HARDENING_PLAN.md).
 
@@ -78,13 +78,13 @@ Validated functionality included:
 
 Numbers pulled from the project's own history (`docs/MCP_TOOLING_SCAFFOLD_PLAN.md`, `docs/HARDENING_PLAN.md`), not estimated. Where a number is a floor rather than an exact total, that's called out explicitly.
 
-- **449 tests passing, 0 failing** — the current fakes-based `pytest` suite (`uv run pytest`).
-- **At least 18 full-suite test runs are individually documented** across the project's history — one recorded at the close of each real-implementation pass, hardening item, and protocol-conformance phase, climbing from the first tracked snapshot (95/95) up to today's 449/449. This is a floor, not the true total: this project has no CI and no captured shell history, so the additional red/green iterations run while writing each test along the way aren't individually counted anywhere.
-- **41 real bugs found and fixed** via live verification against a real, running LibreOffice instance — each caught only because a live round trip was run, not by the fakes-based unit suite alone. Every one is documented at its source with root cause and fix.
+- **451 tests passing, 0 failing** — the current fakes-based `pytest` suite (`uv run pytest`).
+- **At least 19 full-suite test runs are individually documented** across the project's history — one recorded at the close of each real-implementation pass, hardening item, and protocol-conformance phase, climbing from the first tracked snapshot (95/95) up to today's 451/451. This is a floor, not the true total: this project has no CI and no captured shell history, so the additional red/green iterations run while writing each test along the way aren't individually counted anywhere.
+- **42 real bugs found and fixed** via live verification against a real, running LibreOffice instance — each caught only because a live round trip was run, not by the fakes-based unit suite alone. Every one is documented at its source with root cause and fix.
 - **600/600** concurrent tool-call round trips succeeded with 0 errors in the concurrency-safety probe (2 threads × 300 iterations against two live Writer documents).
 - **15/15** MCP transport protocol-conformance checks passed live against a real running extension (session-id enforcement, protocol-version negotiation).
 - **51 commits** landed since the v1.0.0 baseline (85 commits total across the project's full history).
-- **398 registered MCP tools** across Writer (99), Calc (99), Impress (41), Draw (16), and shared services (111), plus the original 32 legacy tools — 381 live by default, 17 stub-only pending (see [Tooling Roadmap](#tooling-roadmap)).
+- **398 registered MCP tools** across Writer (99), Calc (99), Impress (41), Draw (16), and shared services (111), plus the original 32 legacy tools — 384 live by default, 14 stub-only pending (see [Tooling Roadmap](#tooling-roadmap)).
 
 ---
 
@@ -395,17 +395,17 @@ Full write-up, including the empirical test that found the actual bug, in [`docs
 
 # Writer / Calc / Impress / Draw Automation via MCP
 
-The v2.0.0 catalog registers **398 MCP tools**: the 32-tool v1.0.0 compatibility baseline (always live, Writer-focused) plus 366 tools added since, organized by LibreOffice application area. 381 tools are live by default; 17 remain stub-only until implemented (enable them for development with `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS=1` — each returns a `NOT_IMPLEMENTED` error until finished).
+The v2.0.0 catalog registers **398 MCP tools**: the 32-tool v1.0.0 compatibility baseline (always live, Writer-focused) plus 366 tools added since, organized by LibreOffice application area. 384 tools are live by default; 14 remain stub-only until implemented (enable them for development with `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS=1` — each returns a `NOT_IMPLEMENTED` error until finished).
 
 | Area | Tools | Live by default | Stub-only |
 |---|---:|---:|---:|
 | Writer (v1.0.0 baseline) | 32 | 32 | 0 |
 | Writer (layout, tables, text) | 99 | 97 | 2 |
-| Calc (sheets, cells, ranges, external data) | 99 | 96 | 3 |
+| Calc (sheets, cells, ranges, external data) | 99 | 99 | 0 |
 | Impress (slides, animation, slideshow) | 41 | 34 | 7 |
 | Draw (pages, shapes, connectors) | 16 | 16 | 0 |
 | Shared services (charts, drawing objects, styles, undo/view/selection, document lifecycle, core runtime) | 111 | 106 | 5 |
-| **Total** | **398** | **381** | **17** |
+| **Total** | **398** | **384** | **14** |
 
 <details>
 <summary><strong>v1.0.0 baseline — Document lifecycle</strong></summary>
@@ -503,9 +503,9 @@ See `plugin/pythonpath/tools/writer_layout.py`, `writer_tables.py`, `writer_text
 <details>
 <summary><strong>v2.0.0 — Calc (99 tools: calc_data.py, calc_page.py, calc_sheets.py)</strong></summary>
 
-Sheet creation/deletion, cell and range access, formatting, formulas, named ranges, sorting/filtering, conditional formatting, validation, freeze panes, print areas, page styles, data import/export.
+Sheet creation/deletion, cell and range access, formatting, formulas, named ranges, sorting/filtering, conditional formatting, validation, freeze panes, print areas, page styles, data import/export, external linked data areas (`create_external_link_live`/`refresh_external_link_live`/`delete_external_link_live`, built on `com.sun.star.sheet.XAreaLinks` — a genuinely different, CRUD-capable mechanism from the pre-existing read-only `ExternalDocLinks` enumeration `list_external_links_live` also reports).
 
-Stub-only: `create_external_link_live`, `refresh_external_link_live`, `delete_external_link_live`.
+No stub-only tools remaining in this area.
 
 See `plugin/pythonpath/tools/calc_data.py`, `calc_page.py`, `calc_sheets.py` for the full tool list.
 
@@ -670,7 +670,7 @@ These changes prevent a slow or abandoned client request from blocking the entir
 
 # Tooling Roadmap
 
-Most of the v1.0.0 roadmap is now implemented — see [Writer / Calc / Impress / Draw Automation via MCP](#writer--calc--impress--draw-automation-via-mcp) for the live catalog. 17 tools remain stub-only, opt-in behind `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS=1`, each returning `NOT_IMPLEMENTED` until finished. They split into two distinct groups — five are genuinely blocked, twelve are just unbuilt:
+Most of the v1.0.0 roadmap is now implemented — see [Writer / Calc / Impress / Draw Automation via MCP](#writer--calc--impress--draw-automation-via-mcp) for the live catalog. 14 tools remain stub-only, opt-in behind `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS=1`, each returning `NOT_IMPLEMENTED` until finished. They split into two distinct groups — five are genuinely blocked, nine are just unbuilt:
 
 **Cannot implement due to a UNO API/environment limitation (5)** — live-verified against real LibreOffice, not a scheduling gap:
 
@@ -678,13 +678,12 @@ Most of the v1.0.0 roadmap is now implemented — see [Writer / Calc / Impress /
 - `mail_merge_live` — the real `com.sun.star.text.MailMerge` service needs a `DataSourceName` registered through `DatabaseContext`, which live-verified refuses to register an ad hoc `DataSource` without first persisting it to a real `.odb` file via `XStorable`. (`preview_mail_merge_live` works today via an unregistered ad hoc SDBC connection over a CSV folder.)
 - `next_slideshow_effect_live`, `previous_slideshow_effect_live`, `goto_slideshow_slide_live` — all three need a live `XSlideShowController`, confirmed via live verification to always be `None` in headless mode (no window manager to render a slideshow view to). (`start_slideshow_live`/`stop_slideshow_live` don't need the controller and work fine.)
 
-**Scope-limited (12)** — a real UNO mechanism exists, just not attempted yet:
+**Scope-limited (9)** — a real UNO mechanism exists, just not attempted yet. Calc's 3 external-link tools were finished and moved out of this list — see the Calc entry under [Writer / Calc / Impress / Draw Automation via MCP](#writer--calc--impress--draw-automation-via-mcp) above, built on `com.sun.star.sheet.XAreaLinks`, live-verified end to end:
 
-- **Calc**: `create_external_link_live`, `refresh_external_link_live`, `delete_external_link_live`
 - **Impress**: `add_animation_live`, `update_animation_live`, `delete_animation_live`, `reorder_animations_live`
 - **Shared services**: `add_chart_series_live`, `insert_embedded_object_live`, `activate_embedded_object_live`, `get_document_events_live`, `wait_for_document_event_live`
 
-Beyond finishing those 12, longer-term goals include:
+Beyond finishing those 9, longer-term goals include:
 
 - Adopting the MCP spec's modern (2026-07-28+) transport era, if a real client requirement emerges (see [MCP JSON-RPC Transport](#mcp-json-rpc-transport))
 - A dedicated JSON-RPC busy/backpressure error code, rather than routing admission-timeout rejections through `mcp_jsonrpc.py`'s generic `INTERNAL_ERROR`
@@ -826,10 +825,10 @@ dispatch called: mcp:start_mcp_server
 Starting MCP server...
 MCP HTTP server started successfully
 UNO Bridge initialized successfully
-Registered 381 MCP tools
+Registered 384 MCP tools
 ```
 
-(381 by default — the 32-tool v1.0.0 baseline plus the 349 implemented v2.0.0 tools. Set `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS=1` before starting LibreOffice to also register the 17 remaining stub-only tools, for a total of 398.)
+(384 by default — the 32-tool v1.0.0 baseline plus the 352 implemented v2.0.0 tools. Set `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS=1` before starting LibreOffice to also register the 14 remaining stub-only tools, for a total of 398.)
 
 ## Tools menu appears but commands do nothing
 
@@ -884,7 +883,7 @@ For Windows native extension changes, verify at minimum:
 [ ] PDF export works
 ```
 
-Run the automated test suite (449 tests):
+Run the automated test suite (451 tests):
 
 ```bash
 uv run pytest
@@ -900,11 +899,11 @@ Full tool catalog, concurrency control, and MCP transport protocol conformance, 
 
 Includes:
 
-- 398 registered MCP tools (381 live by default) across Writer, Calc, Impress, Draw, and shared services — up from the 32-tool v1.0.0 baseline
+- 398 registered MCP tools (384 live by default) across Writer, Calc, Impress, Draw, and shared services — up from the 32-tool v1.0.0 baseline
 - Process-wide UNO execution lock and bounded admission semaphore for concurrency safety, live-verified at 600/600 concurrent round trips
 - `Mcp-Session-Id` enforcement and `MCP-Protocol-Version` negotiation/validation on the real MCP JSON-RPC (`/mcp`) transport, per spec
 - Systematic PyUNO robustness sweep and centralized error-code/UNO→JSON conversion handling
-- 449 automated tests passing, plus live install/launch/health-check probes
+- 451 automated tests passing, plus live install/launch/health-check probes
 
 ## v1.0.0
 

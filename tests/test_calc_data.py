@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-Unit tests for the 39 real (status="implemented") calc_data.py tools --
-create_external_link_live/refresh_external_link_live/delete_external_
-link_live stay pure NOT_IMPLEMENTED stubs (see calc_data.py's module
-docstring) and are covered by tests/test_tool_scaffold_contract.py's
-generic stub-shape contract test, not here.
+Unit tests for all 42 real (status="implemented") calc_data.py tools,
+including create_external_link_live/refresh_external_link_live/
+delete_external_link_live, built on the FakeUnoBridge's own
+`area_links` dict rather than real com.sun.star.sheet.XAreaLinks
+mechanics (which are live-verified instead, see uno_bridge.py's
+calc-data section header).
 
 Uses a FakeUnoBridge modeling named ranges/filters/conditional formats/
 validation/pivots/scenarios/database ranges as plain dicts/lists,
@@ -67,7 +68,8 @@ class FakeUnoBridge:
         self.pivot_tables = []  # list of FakePivotTable
         self.scenarios = {}  # name -> comment
         self.database_ranges = {}  # name -> {"sheet", "range"}
-        self.external_links = ["file:///external.ods"]
+        self.formula_links = ["file:///external.ods"]
+        self.area_links = {}  # link_id -> {"url", "source_area", "destination", "filter", "refresh_delay_seconds"}
         self.exported_csv = []
         self.imported_csv = []
         self.grouped_rows = []
@@ -236,7 +238,29 @@ class FakeUnoBridge:
     # -- external links --
 
     def list_external_links(self, doc):
-        return [{"link_id": u, "url": u} for u in self.external_links]
+        formula_links = [{"link_id": u, "url": u} for u in self.formula_links]
+        area_links = [dict(v, link_id=k) for k, v in self.area_links.items()]
+        return {"formula_links": formula_links, "area_links": area_links}
+
+    def create_external_link(self, doc, source_url, source_area, destination, filter=None):
+        link_id = destination
+        entry = {
+            "url": source_url, "source_area": source_area, "destination": destination,
+            "filter": filter or "calc8", "refresh_delay_seconds": 0,
+        }
+        self.area_links[link_id] = entry
+        return dict(entry, link_id=link_id)
+
+    def refresh_external_link(self, doc, link_id):
+        if link_id not in self.area_links:
+            raise KeyError(f"No such external link '{link_id}'.")
+        return dict(self.area_links[link_id], link_id=link_id)
+
+    def delete_external_link(self, doc, link_id, keep_values=True):
+        if link_id not in self.area_links:
+            raise KeyError(f"No such external link '{link_id}'.")
+        del self.area_links[link_id]
+        return {"deleted": link_id, "kept_values": keep_values}
 
     # -- CSV --
 
@@ -477,14 +501,46 @@ def test_list_external_links_live():
     result = _handler("list_external_links_live")()
     assert result["success"] is True
     assert result["result"]["count"] == 1
+    assert result["result"]["formula_links"] == [{"link_id": "file:///external.ods", "url": "file:///external.ods"}]
+    assert result["result"]["area_links"] == []
 
 
-def test_create_external_link_live_not_implemented():
+def test_create_refresh_delete_external_link_live_round_trip():
     context.reset()
     _install(active_document=FakeDocument())
-    result = _handler("create_external_link_live")(source_url="file:///x.ods", source_area="Sheet1.A1:B2", destination="Sheet1.A1")
+    created = _handler("create_external_link_live")(source_url="file:///x.ods", source_area="Sheet1.A1:B2", destination="Sheet1.A1")
+    assert created["success"] is True
+    link_id = created["result"]["link_id"]
+    assert created["result"]["url"] == "file:///x.ods"
+
+    listed = _handler("list_external_links_live")()
+    assert listed["result"]["count"] == 2  # the pre-existing formula link + the new area link
+    assert any(l["link_id"] == link_id for l in listed["result"]["area_links"])
+
+    refreshed = _handler("refresh_external_link_live")(link_id=link_id)
+    assert refreshed["success"] is True
+    assert refreshed["result"]["link_id"] == link_id
+
+    deleted = _handler("delete_external_link_live")(link_id=link_id)
+    assert deleted["success"] is True
+    assert deleted["result"] == {"deleted": link_id, "kept_values": True}
+    assert _handler("list_external_links_live")()["result"]["count"] == 1
+
+
+def test_refresh_external_link_live_not_found():
+    context.reset()
+    _install(active_document=FakeDocument())
+    result = _handler("refresh_external_link_live")(link_id="NoSuchLink")
     assert result["success"] is False
-    assert result["error"]["code"] == "NOT_IMPLEMENTED"
+    assert result["error"]["code"] == "OBJECT_NOT_FOUND"
+
+
+def test_delete_external_link_live_not_found():
+    context.reset()
+    _install(active_document=FakeDocument())
+    result = _handler("delete_external_link_live")(link_id="NoSuchLink")
+    assert result["success"] is False
+    assert result["error"]["code"] == "OBJECT_NOT_FOUND"
 
 
 # -- CSV --
@@ -550,7 +606,9 @@ if __name__ == "__main__":
         test_database_range_lifecycle_live,
         test_delete_database_range_live_not_found,
         test_list_external_links_live,
-        test_create_external_link_live_not_implemented,
+        test_create_refresh_delete_external_link_live_round_trip,
+        test_refresh_external_link_live_not_found,
+        test_delete_external_link_live_not_found,
         test_import_and_export_csv_live,
         test_import_csv_to_range_live_unsupported_encoding,
         test_group_and_ungroup_rows_live,
