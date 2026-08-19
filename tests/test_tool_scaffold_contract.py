@@ -273,7 +273,7 @@ def test_every_tool_has_a_valid_status():
 
 # Modules whose tools have real logic now, not NOT_IMPLEMENTED stub bodies.
 # Update this set (and nothing else) as more modules get *fully* implemented.
-IMPLEMENTED_MODULES = ("core_runtime", "document_lifecycle", "styles", "writer_text", "calc_sheets", "draw", "calc_page")
+IMPLEMENTED_MODULES = ("core_runtime", "document_lifecycle", "styles", "writer_text", "calc_sheets", "draw", "calc_page", "charts")
 
 # undo_view_selection.py is a mixed module: 12 of its 14 tools (undo +
 # view/selection/locking) are real; the remaining 2 (document event
@@ -342,33 +342,11 @@ def test_implemented_drawing_object_tools_are_marked_implemented():
         assert registry[name]["status"] == "stub", f"{name} should still be status='stub' (dispatch-crash risk, see module docstring)"
 
 
-# charts.py is also a mixed module: 19 of its 20 tools are real. The
-# remaining 1 (add_chart_series_live) stays status="stub" -- building a new
-# XDataSeries from raw in-memory values needs XDataProvider data-sequence
-# construction that was not exploration-tested this pass (see charts.py's
-# module docstring); it has no real code path to reach at all, unlike
-# create_chart_live/set_chart_data_live whose 'data'-array branch is the
-# only unimplemented part of an otherwise-real function.
-IMPLEMENTED_CHART_TOOL_NAMES = {
-    "list_charts_live", "create_chart_live", "get_chart_live", "delete_chart_live",
-    "set_chart_type_live", "set_chart_data_live", "set_chart_title_live", "set_chart_legend_live",
-    "get_chart_series_live", "set_chart_series_live", "remove_chart_series_live",
-    "set_chart_axis_live", "set_chart_data_labels_live", "set_chart_gridlines_live",
-    "add_chart_trendline_live", "remove_chart_trendline_live", "set_chart_error_bars_live",
-    "set_chart_geometry_live", "export_chart_live",
-}
-
-
-def test_implemented_chart_tools_are_marked_implemented():
-    """Same guard as test_implemented_modules_tools_are_marked_implemented,
-    for the 19 individually-implemented tools in the mixed charts.py module
-    (see IMPLEMENTED_CHART_TOOL_NAMES)."""
-    registry = get_registry()
-    for name in IMPLEMENTED_CHART_TOOL_NAMES:
-        assert registry[name]["status"] == "implemented", f"{name} should be status='implemented'"
-    still_stub = EXPECTED_BY_MODULE["charts"] - IMPLEMENTED_CHART_TOOL_NAMES
-    for name in still_stub:
-        assert registry[name]["status"] == "stub", f"{name} should still be status='stub' (no real code path this pass, see module docstring)"
+# charts.py is now fully implemented (all 20 tools) -- moved into
+# IMPLEMENTED_MODULES above. add_chart_series_live went real by writing raw
+# in-memory values to a scratch sheet range first, then wiring that range
+# into a new chart2 DataSeries via XDataProvider (see uno_bridge.py's
+# add_chart_series docstring for the mechanism).
 
 
 # impress.py is also a mixed module: 38 of its 41 tools are real. The
@@ -574,7 +552,6 @@ if __name__ == "__main__":
         test_implemented_modules_tools_are_marked_implemented,
         test_implemented_undo_tools_are_marked_implemented,
         test_implemented_drawing_object_tools_are_marked_implemented,
-        test_implemented_chart_tools_are_marked_implemented,
         test_implemented_impress_tools_are_marked_implemented,
         test_implemented_calc_data_tools_are_marked_implemented,
         test_implemented_writer_layout_tools_are_marked_implemented,

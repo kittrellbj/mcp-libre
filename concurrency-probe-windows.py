@@ -46,7 +46,7 @@ from pathlib import Path
 
 REPO_DIR = Path(__file__).resolve().parent
 BUILD_DIR = REPO_DIR / "build"
-OXT_PATH = BUILD_DIR / "libreoffice-mcp-extension-2.0.2.oxt"
+OXT_PATH = BUILD_DIR / "libreoffice-mcp-extension-2.0.3.oxt"
 EXTENSION_ID = "org.mcp.libreoffice.extension"
 LO_PROGRAM_DIR = Path(os.environ.get("LIBREOFFICE_PROGRAM_DIR", r"E:\LibreOffice\program"))
 SOFFICE_EXE = LO_PROGRAM_DIR / "soffice.exe"

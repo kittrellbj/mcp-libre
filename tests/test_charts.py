@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """
-Unit tests for the 19 real (status="implemented") charts.py tools --
-`add_chart_series_live` stays a pure NOT_IMPLEMENTED stub (see charts.py's
-module docstring) and is covered by a single stub-response test below.
+Unit tests for the 20 real (status="implemented") charts.py tools.
 
 Uses a FakeUnoBridge modeling charts as a dict keyed by chart_id (mirroring
 the real UNOBridge's chart2 methods' public signatures) -- enough for
@@ -146,6 +144,19 @@ class FakeUnoBridge:
         applied = [k for k in properties if k != "InvalidProperty"]
         c["series"][index].update({k: properties[k] for k in applied})
         return applied
+
+    def add_chart_series(self, doc, chart_id, values, label=None, categories=None):
+        c = self._get(chart_id)
+        if not values:
+            raise ValueError("values must be a non-empty list.")
+        index = len(c["series"])
+        entry = {"series_id": str(index), "values": list(values)}
+        if label is not None:
+            entry["label"] = label
+        if categories:
+            entry["categories"] = list(categories)
+        c["series"].append(entry)
+        return {"series_id": str(index), "range": f"Sheet1.Z{index + 1}"}
 
     def remove_chart_series(self, doc, chart_id, series_id):
         c = self._get(chart_id)
@@ -336,12 +347,23 @@ def test_set_chart_series_live():
     assert uno_bridge.charts["Chart 1"]["series"][0]["color"] == 99
 
 
-def test_add_chart_series_live_not_implemented():
+def test_add_chart_series_live():
+    context.reset()
+    uno_bridge, _, _ = _install(active_document=FakeDocument())
+    result = _handler("add_chart_series_live")(chart_id="Chart 1", values=[1, 2, 3], label="Q3")
+    assert result["success"] is True
+    assert result["result"]["series_id"] == "2"
+    assert len(uno_bridge.charts["Chart 1"]["series"]) == 3
+    assert uno_bridge.charts["Chart 1"]["series"][2]["values"] == [1, 2, 3]
+    assert uno_bridge.charts["Chart 1"]["series"][2]["label"] == "Q3"
+
+
+def test_add_chart_series_live_requires_values():
     context.reset()
     _install(active_document=FakeDocument())
-    result = _handler("add_chart_series_live")(chart_id="Chart 1", values=[1, 2, 3])
+    result = _handler("add_chart_series_live")(chart_id="Chart 1", values=[])
     assert result["success"] is False
-    assert result["error"]["code"] == "NOT_IMPLEMENTED"
+    assert result["error"]["code"] == "INVALID_PARAMETER"
 
 
 def test_remove_chart_series_live():
@@ -434,7 +456,8 @@ if __name__ == "__main__":
         test_set_chart_legend_live,
         test_get_chart_series_live,
         test_set_chart_series_live,
-        test_add_chart_series_live_not_implemented,
+        test_add_chart_series_live,
+        test_add_chart_series_live_requires_values,
         test_remove_chart_series_live,
         test_set_chart_axis_live,
         test_set_chart_data_labels_live,

@@ -18,8 +18,9 @@ modules established.
 3 tools stay status="stub" (down from 7): next_slideshow_effect_live/
 previous_slideshow_effect_live/goto_slideshow_slide_live, a genuine "not
 exploration-tested this pass" scope limit rather than a shortcut (same
-precedent as drawing_objects.py's insert/activate_embedded_object_live
-and charts.py's add_chart_series_live).
+precedent as drawing_objects.py's insert/activate_embedded_object_live;
+charts.py's add_chart_series_live has since gone real -- see that
+module's docstring).
 
 add_animation_live/update_animation_live/delete_animation_live/
 reorder_animations_live are now real: constructing/mutating a

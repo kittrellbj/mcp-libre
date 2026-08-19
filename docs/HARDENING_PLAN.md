@@ -416,11 +416,10 @@ concurrency control not yet started).
   registered through `DatabaseContext`, which refuses to register an ad
   hoc `DataSource` without a persisted `.odb`; the 3 slideshow-effect
   tools in `impress.py` -- headless mode's `XSlideShowController` is
-  always `None`), the other 5 are unattempted-but-plausible scope
-  limits, not blocked (`add_chart_series_live`,
-  `insert/activate_embedded_object_live`, plus document-events) -- see
-  each module's own section in `docs/MCP_TOOLING_SCAFFOLD_PLAN.md` for
-  why. `create/refresh/delete_external_link_live` (Calc) moved out of
+  always `None`), the other 4 are unattempted-but-plausible scope
+  limits, not blocked (`insert/activate_embedded_object_live`, plus
+  document-events) -- see each module's own section in
+  `docs/MCP_TOOLING_SCAFFOLD_PLAN.md` for why. `create/refresh/delete_external_link_live` (Calc) moved out of
   this list in a follow-up pass -- real UNO mechanism turned out to be
   `com.sun.star.sheet.XAreaLinks` (`doc.AreaLinks`), a genuinely separate,
   CRUD-capable mechanism from the pre-existing `ExternalDocLinks`
@@ -434,7 +433,15 @@ concurrency control not yet started).
   `uno_bridge.py`'s `add_animation()`/`reorder_animations()` docstrings
   for two live findings from that verification (the `UserData`-based
   `node-type` mechanism, and animcore node proxies not comparing equal
-  across independently-obtained references).
+  across independently-obtained references). `add_chart_series_live`
+  (Calc) also moved out of this list in a further follow-up pass --
+  real mechanism is `XDataProvider.createDataSequenceByRangeRepresentation`
+  against a scratch sheet range (chart2 has no value-array constructor
+  on the public interface), live-verified end to end including a real
+  REST round trip; see `uno_bridge.py`'s `add_chart_series()` docstring
+  for a live finding from that verification (an initial version wrote
+  `categories` to cells but never wired them into any data sequence,
+  caught by reading the raw chart2 series back independently).
 - **Error-code consistency:** one shared, validated envelope
   (`envelope.build_error()`/`build_success()`) across every real tool;
   `WRONG_DOCUMENT_TYPE` now correctly wired (was dead code catalog-wide

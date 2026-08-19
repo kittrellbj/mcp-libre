@@ -66,7 +66,8 @@ cursor itself selecting exactly the text it just inserted.
 `IllegalArgumentException` even passing back the exact unmodified
 sequence `getByIndex()` itself returned; `get_chapter_numbering_live`
 (read-only) is real. Same honest-scope-limit precedent as
-`add_chart_series_live`/`add_animation_live`/`create_external_link_live`.
+`drawing_objects.py`'s `insert_embedded_object_live` (`add_chart_series_live`/
+`add_animation_live`/`create_external_link_live` have all since gone real).
 """
 
 from typing import Any, Dict, List, Optional

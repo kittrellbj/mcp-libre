@@ -17,15 +17,16 @@ a non-Calc document; extending to Writer/Impress/Draw embedded charts
 (generic OLE2Shape wrapping a chart document, no dedicated named container)
 is left for a follow-up.
 
-`add_chart_series_live` stays a pure NOT_IMPLEMENTED stub (no `uno_bridge`
-call at all) rather than a function with an always-raising real code path --
-same precedent as drawing_objects.py's `insert_embedded_object_live`/
-`activate_embedded_object_live`: building a new XDataSeries from raw
-in-memory values (not a sheet range) needs XDataProvider data-sequence
-construction that was not exploration-tested this pass. `create_chart_live`
-and `set_chart_data_live` DO reach real UNO code in their common case
-(explicit `source`/`source_range`); only their `data`-array branch raises,
-so both keep `status="implemented"`.
+`add_chart_series_live` is now real: chart2's XDataProvider has no
+value-array constructor, only a range-representation one (confirmed against
+the interface reference), so raw `values`/`categories` get written to an
+untouched scratch range past the sheet's used area first, then wired into
+a new DataSeries via XDataSink -- see uno_bridge.py's `add_chart_series` for
+the mechanism. `insert_embedded_object_live`/`activate_embedded_object_live`
+in drawing_objects.py remain the precedent for a still-open stub.
+`create_chart_live` and `set_chart_data_live` DO reach real UNO code in
+their common case (explicit `source`/`source_range`); only their
+`data`-array branch raises, so both keep `status="implemented"`.
 """
 
 from typing import Any, Dict, List, Optional
@@ -267,11 +268,18 @@ def set_chart_series_live(chart_id: str, series_id: str, properties: Dict[str, A
         "label": {"type": "string"},
         "categories": {"type": "array", "items": {"type": "string"}},
     }, required=["chart_id", "values"]),
+    status="implemented",
 )
 def add_chart_series_live(chart_id: str, values: List[float], label: Optional[str] = None,
                            categories: Optional[List[str]] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("add_chart_series_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        result = ctx.uno_bridge.add_chart_series(doc, chart_id, values, label, categories)
+        return envelope.build_success(result=result, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(

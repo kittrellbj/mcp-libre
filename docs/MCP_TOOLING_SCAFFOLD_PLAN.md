@@ -20,7 +20,7 @@ up exactly where it left off.
 | Writer - page layout, publishing, styles, headers, fields, indexes | 43 | 0 | 43 | **42/43 Implemented** (`tools/writer_layout.py`) -- real logic, live-verified; `set_chapter_numbering_live` (P2) still stub -- `ChapterNumberingRules.replaceByIndex()` resists writes this build |
 | Writer - tables, sections, notes, content controls, mail merge | 38 | 0 | 38 | **37/38 Implemented** (`tools/writer_tables.py`) -- real logic, live-verified; `mail_merge_live` (P3) still stub -- `preview_mail_merge_live` (the real data-connection half) IS real |
 | Common drawing objects, images, shapes, embedded objects | 31 | 0 | 31 | **29/31 Implemented** (`tools/drawing_objects.py`) -- real logic, live-verified; only insert/activate_embedded_object (P3) still stub (uncertain OLE scope, not dispatch risk -- combine/split/bind/unbind re-enabled once the dispatch-safety finding was corrected) |
-| Charts and data visualizations | 20 | 0 | 20 | **19/20 Implemented** (`tools/charts.py`) -- real logic, live-verified, Calc-native charts only; `add_chart_series_live` (P2) still stub (no XDataProvider construction from raw values this pass) |
+| Charts and data visualizations | 20 | 0 | 20 | **20/20 Implemented** (`tools/charts.py`) -- real logic, live-verified, Calc-native charts only |
 | Calc - sheets, cells, ranges, formulas, layout | 42 | 0 | 42 | **42/42 Implemented** (`tools/calc_sheets.py`) -- real logic, live-verified |
 | Calc - data management, analysis, pivots, validation, external data | 42 | 0 | 42 | **39/42 Implemented** (`tools/calc_data.py`) -- real logic, live-verified; create/refresh/delete_external_link (P2/P3) still stub -- no write-side ExternalDocLinks mechanism this pass |
 | Calc - page setup, print ranges, annotations, protection | 15 | 0 | 15 | **15/15 Implemented** (`tools/calc_page.py`) -- real logic, live-verified |
@@ -1352,14 +1352,33 @@ runs). 318/318 passing under `pytest` across the full relevant suite
 alongside this pass -- see the preceding commit's message for that
 unrelated leftover fix from the earlier PyUNO robustness sweep).
 
+**Follow-up (v2.0.3): `add_chart_series_live` went real.** Real
+mechanism turned out to be `XDataProvider.createDataSequenceByRangeRepresentation`
+against a scratch sheet range past the chart's used area (chart2's
+public `XDataProvider` has no value-array constructor, confirmed
+against the interface reference), wired into a new chart2 `DataSeries`
+via `XDataSink.setData()`. `charts.py` is now 20/20 real, moved into
+`test_tool_scaffold_contract.py`'s `IMPLEMENTED_MODULES` (the
+mixed-module `IMPLEMENTED_CHART_TOOL_NAMES`/
+`test_implemented_chart_tools_are_marked_implemented` pair mentioned
+above no longer exists). One real bug caught live-verifying: an
+initial version wrote `categories` to real sheet cells but never
+attached them to any chart2 data sequence, silently orphaning the
+values -- caught by independently reading the raw
+`XDataSeries.getDataSequences()` back after a REST round trip, not by
+trusting the tool's own response. See `uno_bridge.py`'s
+`add_chart_series()` docstring and the README's `## v2.0.3` changelog
+entry for the full mechanism and verification detail.
+
 ## Real implementation pass: impress.py (34 of 41 tools)
 
 Third and last of charts.py/impress.py/draw.py per Buddy's go-ahead --
 draw.py and charts.py done, this one closes out the assigned set. 34 of
 41 tools real; the other 7 stay `status="stub"` in two clusters, both a
 genuine "not exploration-tested/not verifiable this pass" scope limit,
-same precedent as `add_chart_series_live`/`insert_embedded_object_live`
-before them:
+same precedent as `insert_embedded_object_live` before them
+(`add_chart_series_live` has since gone real -- see the charts.py
+section's v2.0.3 follow-up above):
 
 - `add_animation_live`/`update_animation_live`/`delete_animation_live`/
   `reorder_animations_live`: constructing or mutating a real
@@ -1522,7 +1541,9 @@ real; create_external_link_live/refresh_external_link_live/delete_
 external_link_live stay `status="stub"` -- doc.ExternalDocLinks' write
 side (adding a new link, vs. list_external_links_live's read-only
 enumeration, which IS real) wasn't exploration-tested this pass, same
-honest-scope-limit precedent as add_chart_series_live/add_animation_live.
+honest-scope-limit precedent as insert_embedded_object_live (these three
+external-link tools, add_chart_series_live, and add_animation_live have
+all since gone real -- see each module's own follow-up note).
 
 **Conditional formats use the legacy per-range `range.ConditionalFormat`
 (`XSheetConditionalEntries`), not the newer `sheet.ConditionalFormats`/

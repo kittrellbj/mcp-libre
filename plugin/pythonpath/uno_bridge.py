@@ -5266,12 +5266,88 @@ class UNOBridge:
 
     def add_chart_series(self, doc: Any, chart_id: str, values: List[float], label: Optional[str] = None,
                           categories: Optional[List[str]] = None) -> Dict[str, Any]:
-        raise NotImplementedError(
-            "add_chart_series_live is not implemented this pass: building a new XDataSeries from raw "
-            "in-memory values (not a sheet range) requires manually constructing chart2 data sequences "
-            "via XDataProvider, which was not exploration-tested this pass -- write the values to a "
-            "range and use set_chart_data_live's source_range to include them instead."
-        )
+        """Real implementation. Live-verified this pass: chart2's public
+        XDataProvider has no createDataSequenceByValueArray -- a Calc chart's
+        data provider only builds XDataSequence objects from a range
+        representation string (createDataSequenceByRangeRepresentation),
+        confirmed against the interface reference. So raw in-memory `values`
+        get written to a real, untouched scratch range first -- two columns
+        past the sheet's current used area (a gap column, then the series'
+        own column(s)), found fresh via gotoEndOfUsedArea each call so
+        repeated add_chart_series_live calls on the same chart stagger
+        further right automatically rather than colliding -- then that range
+        is wired into a new chart2 DataSeries via XDataSink.setData(), same
+        mechanism doc creates read for get_chart_series_live/
+        set_chart_series_live above.
+
+        Scope limit: only the "values-y" role is populated (the primary
+        value role every chart type in _CHART_TYPE_SERVICES supports); a
+        values-x role for scatter/bubble charts is left for a follow-up,
+        same honest-cut precedent as create_chart_live's data-array branch.
+
+        `categories` is wired as its own Role="categories" labeled sequence
+        on the new series, not just written to cells -- an earlier version
+        of this method wrote the category cells but never attached them to
+        any data sequence, silently orphaning the values (caught by
+        independently reading the raw chart2 series back after this pass's
+        REST round trip, not by trusting this method's own return value).
+        """
+        sheet, charts, chart_table = self._find_chart_by_name(doc, chart_id)
+        chart_doc = self._get_chart_document(chart_table)
+        cs, ct = self._get_first_chart_type(chart_doc)
+        series_list = list(ct.getDataSeries())
+        if not values:
+            raise ValueError("values must be a non-empty list.")
+
+        used_cursor = sheet.createCursor()
+        used_cursor.gotoEndOfUsedArea(False)
+        used_addr = used_cursor.RangeAddress
+        values_col = used_addr.EndColumn + 2
+        start_row = 1 if label is not None else 0
+
+        if label is not None:
+            sheet.getCellByPosition(values_col, 0).setString(label)
+        for i, value in enumerate(values):
+            sheet.getCellByPosition(values_col, start_row + i).setValue(float(value))
+        if categories:
+            cats_col = values_col - 1
+            for i, category in enumerate(categories):
+                sheet.getCellByPosition(cats_col, start_row + i).setString(category)
+
+        end_row = start_row + len(values) - 1
+        values_range = sheet.getCellRangeByPosition(values_col, start_row, values_col, end_row)
+        values_range_str = self._range_address_to_a1(doc, values_range.RangeAddress)
+
+        data_provider = chart_doc.getDataProvider()
+        values_seq = data_provider.createDataSequenceByRangeRepresentation(values_range_str)
+        values_seq.setPropertyValue("Role", "values-y")
+        labeled_seq = self.smgr.createInstanceWithContext(
+            "com.sun.star.chart2.data.LabeledDataSequence", self.ctx)
+        labeled_seq.setValues(values_seq)
+        if label is not None:
+            label_range = sheet.getCellRangeByPosition(values_col, 0, values_col, 0)
+            label_seq = data_provider.createDataSequenceByRangeRepresentation(
+                self._range_address_to_a1(doc, label_range.RangeAddress))
+            label_seq.setPropertyValue("Role", "label")
+            labeled_seq.setLabel(label_seq)
+
+        data_sequences = [labeled_seq]
+        if categories:
+            cats_col = values_col - 1
+            cats_range = sheet.getCellRangeByPosition(cats_col, start_row, cats_col, end_row)
+            cats_range_str = self._range_address_to_a1(doc, cats_range.RangeAddress)
+            cats_seq = data_provider.createDataSequenceByRangeRepresentation(cats_range_str)
+            cats_seq.setPropertyValue("Role", "categories")
+            cats_labeled_seq = self.smgr.createInstanceWithContext(
+                "com.sun.star.chart2.data.LabeledDataSequence", self.ctx)
+            cats_labeled_seq.setValues(cats_seq)
+            data_sequences.append(cats_labeled_seq)
+
+        new_series = self.smgr.createInstanceWithContext("com.sun.star.chart2.DataSeries", self.ctx)
+        new_series.setData(tuple(data_sequences))
+        ct.setDataSeries(tuple(series_list + [new_series]))
+
+        return {"series_id": str(len(series_list)), "range": values_range_str}
 
     def remove_chart_series(self, doc: Any, chart_id: str, series_id: str) -> None:
         _, _, chart_table = self._find_chart_by_name(doc, chart_id)
@@ -5806,7 +5882,8 @@ class UNOBridge:
     # preset library. Widening this set (fades via interpolated Animate on
     # Opacity, motion paths via AnimateMotion, color emphasis via
     # AnimateColor) is future work, same honest-scope-limit precedent as
-    # add_chart_series_live/insert_embedded_object_live.
+    # insert_embedded_object_live (add_chart_series_live has since gone
+    # real -- see its own docstring above).
     _EFFECT_PRESETS = {
         "appear": {"attribute": "Visibility", "to": True},
         "disappear": {"attribute": "Visibility", "to": False},
@@ -7433,9 +7510,10 @@ class UNOBridge:
     # itself returned, across several variants tried (minimal property
     # subset, single-property-at-a-time isolation, explicit uno.Any
     # sequence typing). get_chapter_numbering_live (read-only) IS real.
-    # Same honest-scope-limit precedent as add_chart_series_live/
-    # add_animation_live/create_external_link_live -- a genuinely
-    # resistant write-side API, not a shortcut.
+    # Same honest-scope-limit precedent as insert_embedded_object_live --
+    # a genuinely resistant write-side API, not a shortcut (add_chart_
+    # series_live/add_animation_live/create_external_link_live have all
+    # since gone real).
 
     def _writer_page_style_family(self, doc: Any) -> Any:
         self._require_writer(doc, "page style resolution")

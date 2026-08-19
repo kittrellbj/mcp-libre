@@ -1,7 +1,7 @@
 # LibreOffice MCP Server
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.2-blue.svg)](#versioning)
+[![Version](https://img.shields.io/badge/version-2.0.3-blue.svg)](#versioning)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](#requirements)
 [![LibreOffice](https://img.shields.io/badge/LibreOffice-24.2%2B-18A303.svg)](#requirements)
 
@@ -204,7 +204,7 @@ python build-oxt-windows.py
 The extension package is created at:
 
 ```text
-build/libreoffice-mcp-extension-2.0.2.oxt
+build/libreoffice-mcp-extension-2.0.3.oxt
 ```
 
 The Windows builder creates a LibreOffice-compatible ZIP/OXT structure with normalized archive paths.
@@ -218,7 +218,7 @@ PowerShell example:
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
 & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension
-& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.2.oxt"
+& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.3.oxt"
 ```
 
 Removing an extension that is not already installed may report that no matching extension exists. That is harmless.
@@ -269,7 +269,7 @@ A convenient rebuild/reinstall command in PowerShell is:
 
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
-python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.2.oxt"
+python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.3.oxt"
 ```
 
 Then reopen LibreOffice and start the MCP server from the Tools menu.
@@ -395,7 +395,7 @@ Full write-up, including the empirical test that found the actual bug, in [`docs
 
 # Writer / Calc / Impress / Draw Automation via MCP
 
-The v2.0.0 catalog registers **398 MCP tools**: the 32-tool v1.0.0 compatibility baseline (always live, Writer-focused) plus 366 tools added since, organized by LibreOffice application area. 388 tools are live by default; 10 remain stub-only until implemented (enable them for development with `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS=1` — each returns a `NOT_IMPLEMENTED` error until finished).
+The v2.0.0 catalog registers **398 MCP tools**: the 32-tool v1.0.0 compatibility baseline (always live, Writer-focused) plus 366 tools added since, organized by LibreOffice application area. 389 tools are live by default; 9 remain stub-only until implemented (enable them for development with `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS=1` — each returns a `NOT_IMPLEMENTED` error until finished).
 
 | Area | Tools | Live by default | Stub-only |
 |---|---:|---:|---:|
@@ -404,8 +404,8 @@ The v2.0.0 catalog registers **398 MCP tools**: the 32-tool v1.0.0 compatibility
 | Calc (sheets, cells, ranges, external data) | 99 | 99 | 0 |
 | Impress (slides, animation, slideshow) | 41 | 38 | 3 |
 | Draw (pages, shapes, connectors) | 16 | 16 | 0 |
-| Shared services (charts, drawing objects, styles, undo/view/selection, document lifecycle, core runtime) | 111 | 106 | 5 |
-| **Total** | **398** | **388** | **10** |
+| Shared services (charts, drawing objects, styles, undo/view/selection, document lifecycle, core runtime) | 111 | 107 | 4 |
+| **Total** | **398** | **389** | **9** |
 
 <details>
 <summary><strong>v1.0.0 baseline — Document lifecycle</strong></summary>
@@ -538,7 +538,7 @@ See `plugin/pythonpath/tools/draw.py` for the full tool list.
 
 Charts, drawing objects/shapes, styles, undo/redo, view and selection state, document lifecycle (create/open/save/export across all four applications), and core runtime tools (server info, capability discovery, diagnostics).
 
-Stub-only: `add_chart_series_live`, `insert_embedded_object_live`, `activate_embedded_object_live`, `get_document_events_live`, `wait_for_document_event_live`.
+Stub-only: `insert_embedded_object_live`, `activate_embedded_object_live`, `get_document_events_live`, `wait_for_document_event_live`.
 
 See `plugin/pythonpath/tools/` for the full tool list.
 
@@ -670,7 +670,7 @@ These changes prevent a slow or abandoned client request from blocking the entir
 
 # Tooling Roadmap
 
-Most of the v1.0.0 roadmap is now implemented — see [Writer / Calc / Impress / Draw Automation via MCP](#writer--calc--impress--draw-automation-via-mcp) for the live catalog. 10 tools remain stub-only, opt-in behind `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS=1`, each returning `NOT_IMPLEMENTED` until finished. They split into two distinct groups — five are genuinely blocked, five are just unbuilt:
+Most of the v1.0.0 roadmap is now implemented — see [Writer / Calc / Impress / Draw Automation via MCP](#writer--calc--impress--draw-automation-via-mcp) for the live catalog. 9 tools remain stub-only, opt-in behind `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS=1`, each returning `NOT_IMPLEMENTED` until finished. They split into two distinct groups — five are genuinely blocked, four are just unbuilt:
 
 **Cannot implement due to a UNO API/environment limitation (5)** — live-verified against real LibreOffice, not a scheduling gap:
 
@@ -678,11 +678,11 @@ Most of the v1.0.0 roadmap is now implemented — see [Writer / Calc / Impress /
 - `mail_merge_live` — the real `com.sun.star.text.MailMerge` service needs a `DataSourceName` registered through `DatabaseContext`, which live-verified refuses to register an ad hoc `DataSource` without first persisting it to a real `.odb` file via `XStorable`. (`preview_mail_merge_live` works today via an unregistered ad hoc SDBC connection over a CSV folder.)
 - `next_slideshow_effect_live`, `previous_slideshow_effect_live`, `goto_slideshow_slide_live` — all three need a live `XSlideShowController`, confirmed via live verification to always be `None` in headless mode (no window manager to render a slideshow view to). (`start_slideshow_live`/`stop_slideshow_live` don't need the controller and work fine.)
 
-**Scope-limited (5)** — a real UNO mechanism exists, just not attempted yet. Calc's 3 external-link tools and Impress's 4 animation-mutation tools were finished and moved out of this list — see the Calc entry (built on `com.sun.star.sheet.XAreaLinks`) and the Impress entry (built on the generic `com.sun.star.animations` module) under [Writer / Calc / Impress / Draw Automation via MCP](#writer--calc--impress--draw-automation-via-mcp) above, both live-verified end to end:
+**Scope-limited (4)** — a real UNO mechanism exists, just not attempted yet. Calc's 3 external-link tools, Impress's 4 animation-mutation tools, and `add_chart_series_live` were finished and moved out of this list — see the Calc entry (built on `com.sun.star.sheet.XAreaLinks`), the Impress entry (built on the generic `com.sun.star.animations` module), and the Charts entry (built on `XDataProvider.createDataSequenceByRangeRepresentation`) under [Writer / Calc / Impress / Draw Automation via MCP](#writer--calc--impress--draw-automation-via-mcp) above, all live-verified end to end:
 
-- **Shared services**: `add_chart_series_live`, `insert_embedded_object_live`, `activate_embedded_object_live`, `get_document_events_live`, `wait_for_document_event_live`
+- **Shared services**: `insert_embedded_object_live`, `activate_embedded_object_live`, `get_document_events_live`, `wait_for_document_event_live`
 
-Beyond finishing those 5, longer-term goals include:
+Beyond finishing those 4, longer-term goals include:
 
 - Adopting the MCP spec's modern (2026-07-28+) transport era, if a real client requirement emerges (see [MCP JSON-RPC Transport](#mcp-json-rpc-transport))
 - A dedicated JSON-RPC busy/backpressure error code, rather than routing admission-timeout rejections through `mcp_jsonrpc.py`'s generic `INTERNAL_ERROR`
@@ -891,6 +891,18 @@ uv run pytest
 ---
 
 # Versioning
+
+## v2.0.3
+
+`add_chart_series_live` implemented for real (Calc charts), 1 of Part 2's 5 remaining shared-service scope-limited stubs (4 remain: `insert_embedded_object_live`, `activate_embedded_object_live`, `get_document_events_live`, `wait_for_document_event_live` -- see Tooling Roadmap).
+
+Live-verified this pass: chart2's public `XDataProvider` has no value-array constructor (confirmed against the interface reference), only `createDataSequenceByRangeRepresentation` from a range string. So raw in-memory `values`/`label`/`categories` get written to a real, untouched scratch range past the sheet's used area first (staggered fresh per call via `gotoEndOfUsedArea`, so repeated calls don't collide), then wired into a new chart2 `DataSeries` via `XDataSink.setData()` with `Role="values-y"`/`"label"`/`"categories"` data sequences. Scoped to the `values-y` role only -- a `values-x` role for scatter/bubble charts is left for a follow-up, same honest-cut precedent as `create_chart_live`'s data-array branch.
+
+One real bug caught and fixed before shipping: the first working version wrote `categories` to real sheet cells but never attached them to any chart2 data sequence, silently orphaning the values -- invisible from this tool's own success response, only caught by independently reading the raw `XDataSeries.getDataSequences()` back after a live REST round trip. Fixed by wiring a second `Role="categories"` labeled sequence onto the new series.
+
+- 389 live tools (was 388), 9 stub-only (was 10)
+- 453 automated tests passing (unchanged): `test_add_chart_series_live`/`test_add_chart_series_live_requires_values` replace the old `test_add_chart_series_live_not_implemented`; `charts.py` moved from a mixed 19/20 module into `IMPLEMENTED_MODULES` (all 20 tools now real)
+- Live-verified via a real build → install → launch → REST round trip (write source data, create a chart, add a series with label/values/categories, add a second series with no label to confirm column staggering, remove a series), plus an independent raw-UNO read of the resulting sheet cells and chart2 data sequences -- not just this tool's own response
 
 ## v2.0.2
 
