@@ -1,7 +1,7 @@
 # LibreOffice MCP Server
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)](#versioning)
+[![Version](https://img.shields.io/badge/version-2.0.1-blue.svg)](#versioning)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](#requirements)
 [![LibreOffice](https://img.shields.io/badge/LibreOffice-24.2%2B-18A303.svg)](#requirements)
 
@@ -204,7 +204,7 @@ python build-oxt-windows.py
 The extension package is created at:
 
 ```text
-build/libreoffice-mcp-extension-2.0.0.oxt
+build/libreoffice-mcp-extension-2.0.1.oxt
 ```
 
 The Windows builder creates a LibreOffice-compatible ZIP/OXT structure with normalized archive paths.
@@ -218,7 +218,7 @@ PowerShell example:
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
 & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension
-& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.0.oxt"
+& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.1.oxt"
 ```
 
 Removing an extension that is not already installed may report that no matching extension exists. That is harmless.
@@ -269,7 +269,7 @@ A convenient rebuild/reinstall command in PowerShell is:
 
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
-python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.0.oxt"
+python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.1.oxt"
 ```
 
 Then reopen LibreOffice and start the MCP server from the Tools menu.
@@ -892,6 +892,19 @@ uv run pytest
 ---
 
 # Versioning
+
+## v2.0.1
+
+Docs and tool-catalog updates on the v2.0.0 baseline; no version-source files were bumped for these three commits when they shipped, folded into this entry as a catch-up.
+
+Includes:
+
+- New "Project Stats" section in the README (test-run count, real-bug count, probe results, commit count), sourced from the project's own planning docs rather than invented
+- The 17 stub-only tools re-documented as two distinct groups: 5 genuinely blocked on a live-verified technical wall (`set_chapter_numbering_live`'s UNO `IllegalArgumentException`, `mail_merge_live`'s `DatabaseContext` registration requirement, and the `next/previous_slideshow_effect_live`/`goto_slideshow_slide_live` trio's headless-mode `XSlideShowController`), versus 12 scope-limited stubs with a real UNO mechanism just not yet attempted
+- `create_external_link_live`/`refresh_external_link_live`/`delete_external_link_live` implemented for real (Calc), built on `com.sun.star.sheet.XAreaLinks` rather than the read-only `ExternalDocLinks` cache `list_external_links_live` originally read; `list_external_links_live` now also reports `area_links` refresh state alongside the unchanged `formula_links`, fixing a gap between its documented purpose and what it actually read
+- 384 live tools (was 381), 14 stub-only (was 17), 42 real bugs found and fixed via live verification (was 41)
+- 451 automated tests passing (up from 449)
+- Standing policy from this release forward: every push that changes code or tool behavior bumps all version-source files and adds a dated entry here, rather than batching version bumps later
 
 ## v2.0.0
 
