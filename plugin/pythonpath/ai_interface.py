@@ -568,7 +568,10 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
         """Get server information."""
         return {
             "name": "LibreOffice MCP Extension",
-            "version": "1.0.0",
+            # Kept in sync manually with tools/core_runtime.py's
+            # EXTENSION_VERSION and mcp_jsonrpc.py's SERVER_INFO -- same
+            # manual-sync convention as plugin/description.xml.
+            "version": "2.0.0",
             "description": (
                 "LibreOffice-native HTTP tool bridge. POST /mcp is real MCP "
                 "JSON-RPC 2.0 (Streamable HTTP, single-JSON-response mode); "

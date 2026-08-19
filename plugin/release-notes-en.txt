@@ -1,3 +1,14 @@
+Version 2.0.0 - Full Tool Catalog, Concurrency Control, Protocol Conformance
+
+- Tool catalog expanded from the 32-tool v1.0.0 baseline to 398 registered MCP tools spanning Writer, Calc, Impress, Draw, and shared LibreOffice services (381 live by default; 17 remaining stubs are opt-in via MCP_LIBRE_ENABLE_SCAFFOLD_STUBS=1 and return NOT_IMPLEMENTED until finished)
+- Concurrency control: a process-wide UNO execution lock plus a bounded admission semaphore (MAX_CONCURRENT_TOOL_CALLS=4) protect the embedded HTTP server from PyUNO bridge corruption under concurrent tool calls; live-verified at 600/600 concurrent round trips with 0 errors
+- MCP transport protocol conformance: Mcp-Session-Id is now enforced (missing header on a non-initialize request is 400, an unknown/terminated session is 404, DELETE actually removes the session), and MCP-Protocol-Version is validated and negotiated per the spec on every request
+- Systematic PyUNO robustness sweep and centralized error-code/UNO->JSON conversion handling across the tool surface
+- 449 automated tests passing
+
+Breaking Changes:
+- None; the original 32 v1.0.0 tool names and behavior are preserved unconditionally
+
 Version 1.0.0 - Initial Release
 
 - LibreOffice-native HTTP tool bridge designed for MCP integration (custom REST API, not native MCP JSON-RPC)

@@ -4,7 +4,7 @@
 
 The LibreOffice MCP Extension is a LibreOffice-native HTTP tool bridge designed for MCP integration, enabling AI assistants to interact with LibreOffice documents in real-time through direct UNO API access. It exposes a custom REST API (`GET /tools`, `POST /execute`, `POST /tools/{tool_name}`), not native MCP JSON-RPC (`tools/list`, `tools/call`); pairing it with an MCP client currently requires an MCP-to-REST adapter. For an actual MCP server usable directly with Claude Desktop today, see the external Python server under `src/` (`src/libremcp.py`).
 
-> **Note on version numbers:** This extension (OXT) is versioned independently from the external Python MCP server package in `pyproject.toml`. The two `1.0.0` / `0.1.0` numbers are not meant to track each other.
+> **Note on version numbers:** This extension (OXT) is versioned independently from the external Python MCP server package in `pyproject.toml` -- the two numbers are not required to track each other. As of the 2.0.0 release both happen to read `2.0.0` (the OXT catalog grew from the 32-tool `1.0.0` baseline to 398 tools plus concurrency control and MCP transport protocol conformance, all of which is extension-side work; the package version was brought up to match for one coherent project version), but a future release is free to move them independently again.
 
 ## 🚀 Key Features
 
