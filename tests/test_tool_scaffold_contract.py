@@ -371,13 +371,15 @@ def test_implemented_chart_tools_are_marked_implemented():
         assert registry[name]["status"] == "stub", f"{name} should still be status='stub' (no real code path this pass, see module docstring)"
 
 
-# impress.py is also a mixed module: 34 of its 41 tools are real. The
-# remaining 7 stay status="stub" in two clusters -- add/update/delete/
-# reorder_animation_live (constructing/mutating a real XAnimationNode
-# preset tree wasn't exploration-tested this pass) and
-# next/previous_slideshow_effect_live/goto_slideshow_slide_live (all
-# three need a live XSlideShowController, confirmed always None headless
-# -- see impress.py's module docstring for both).
+# impress.py is also a mixed module: 38 of its 41 tools are real. The
+# remaining 3 stay status="stub" -- next/previous_slideshow_effect_live/
+# goto_slideshow_slide_live (all three need a live XSlideShowController,
+# confirmed always None headless -- see impress.py's module docstring).
+# add/update/delete/reorder_animation_live are now real too: constructing/
+# mutating a com.sun.star.animations.XAnimationNode tree via the generic
+# animations module, scoped to a small honest effect set (see
+# uno_bridge.py's _EFFECT_PRESETS docstring for why the rest of
+# LibreOffice's preset library isn't reachable from the public UNO API).
 IMPLEMENTED_IMPRESS_TOOL_NAMES = {
     "list_slides_live", "get_active_slide_live", "activate_slide_live", "insert_slide_live",
     "duplicate_slide_live", "delete_slide_live", "move_slide_live", "rename_slide_live",
@@ -386,6 +388,7 @@ IMPLEMENTED_IMPRESS_TOOL_NAMES = {
     "apply_master_page_live", "create_master_page_live", "delete_master_page_live",
     "get_speaker_notes_live", "set_speaker_notes_live", "get_slide_transition_live",
     "set_slide_transition_live", "list_animations_live",
+    "add_animation_live", "update_animation_live", "delete_animation_live", "reorder_animations_live",
     "set_shape_click_action_live", "get_presentation_settings_live", "set_presentation_settings_live",
     "list_custom_shows_live", "create_custom_show_live", "update_custom_show_live",
     "delete_custom_show_live", "start_slideshow_live", "stop_slideshow_live",
@@ -395,7 +398,7 @@ IMPLEMENTED_IMPRESS_TOOL_NAMES = {
 
 def test_implemented_impress_tools_are_marked_implemented():
     """Same guard as test_implemented_modules_tools_are_marked_implemented,
-    for the 34 individually-implemented tools in the mixed impress.py
+    for the 38 individually-implemented tools in the mixed impress.py
     module (see IMPLEMENTED_IMPRESS_TOOL_NAMES)."""
     registry = get_registry()
     for name in IMPLEMENTED_IMPRESS_TOOL_NAMES:

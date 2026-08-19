@@ -15,18 +15,27 @@ drawing_objects.py already share; `shape` params (set_shape_click_action_
 live) take the shape directly through the same `ObjectRegistry` those
 modules established.
 
-7 tools stay status="stub", in two clusters, both a genuine "not
+3 tools stay status="stub" (down from 7): next_slideshow_effect_live/
+previous_slideshow_effect_live/goto_slideshow_slide_live, a genuine "not
 exploration-tested this pass" scope limit rather than a shortcut (same
 precedent as drawing_objects.py's insert/activate_embedded_object_live
-and charts.py's add_chart_series_live):
+and charts.py's add_chart_series_live).
 
-- add_animation_live/update_animation_live/delete_animation_live/
-  reorder_animations_live: constructing or mutating a real
-  com.sun.star.animations.XAnimationNode preset tree (the Parallel/
-  Sequence container structure LibreOffice's own entrance/emphasis/exit
-  effects use) is genuinely complex and wasn't attempted this pass.
-  list_animations_live (read-only tree walk) IS real -- see
-  uno_bridge.py's docstring next to it.
+add_animation_live/update_animation_live/delete_animation_live/
+reorder_animations_live are now real: constructing/mutating a
+com.sun.star.animations.XAnimationNode tree via the generic animations
+module (AnimateSet wrapped in a ParallelTimeContainer, tagged with the
+requested trigger and appended to the slide's main sequence -- found by
+reading sd's own C++ source, sd/source/core/CustomAnimationEffect.cxx,
+since the public UNO API docs don't cover node construction). Scoped to
+a small, honest effect set (appear/disappear via AnimateSet's Visibility
+attribute) rather than LibreOffice's full preset library, which is
+built by internal C++ not reachable from the public UNO API at all --
+see uno_bridge.py's _EFFECT_PRESETS docstring. Click-advance runtime
+behavior isn't verifiable in headless mode (XSlideShowController is
+always None, same dead end as the 3 still-stubbed slideshow tools below)
+-- only tree construction is live-verified.
+
 - next_slideshow_effect_live/previous_slideshow_effect_live/
   goto_slideshow_slide_live: all three need a live
   com.sun.star.presentation.XSlideShowController
@@ -514,7 +523,30 @@ def list_animations_live(slide: Any) -> Dict[str, Any]:
     ctx = context.get_context()
     try:
         doc, resolved_id = _resolve_and_register(ctx)
-        animations = ctx.uno_bridge.list_animations(doc, slide)
+        object_registry = _get_object_registry(ctx, resolved_id)
+        nodes = ctx.uno_bridge.list_animations(doc, slide)
+        # Every animation_id is a registered (node, parent_node) pair, not
+        # a bare node -- delete/reorder_animations_live need the parent
+        # container to remove/reorder against (delete_animation_live's
+        # schema has no shape_id/slide to re-derive one from), and
+        # add_animation_live registers that exact same shape for the
+        # effect it creates. parent_lookup lets a child's parent_id
+        # resolve to the SAME id its parent gets as its own entry's
+        # animation_id (ObjectRegistry dedups by identity, so registering
+        # the identical (node, its_parent) tuple twice is safe).
+        parent_lookup = {node: parent_node for node, parent_node in nodes}
+
+        def _id_for(node: Any) -> Optional[str]:
+            if node is None:
+                return None
+            return object_registry.register_object((node, parent_lookup.get(node)))
+
+        animations = []
+        for node, parent_node in nodes:
+            entry = ctx.uno_bridge.describe_animation_node(node)
+            entry["animation_id"] = _id_for(node)
+            entry["parent_id"] = _id_for(parent_node)
+            animations.append(entry)
         return envelope.build_success(result={"animations": animations, "count": len(animations)}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
     except Exception as e:
         return _error_response(e, start)
@@ -526,16 +558,26 @@ def list_animations_live(slide: Any) -> Dict[str, Any]:
     purpose="Add entrance/emphasis/exit/motion animation to shape/text.",
     parameters=schema({
         "shape_id": {"type": "string"},
-        "effect": {"type": "string"},
-        "trigger": {"type": "string"},
+        "effect": {"type": "string", "description": "Supported: appear, disappear. See uno_bridge.py's _EFFECT_PRESETS for the honest-scope-limit note on why the rest of LibreOffice's preset library isn't reachable from the public UNO API."},
+        "trigger": {"type": "string", "description": "on_click (default), with_previous, after_previous."},
         "duration": {"type": "number"},
         "delay": {"type": "number"},
     }, required=["shape_id", "effect"]),
+    status="implemented",
 )
 def add_animation_live(shape_id: str, effect: str, trigger: Optional[str] = None,
                         duration: Optional[float] = None, delay: Optional[float] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("add_animation_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        object_registry = _get_object_registry(ctx, resolved_id)
+        shape = object_registry.resolve_object(shape_id)
+        wrapper, main_sequence = ctx.uno_bridge.add_animation(doc, shape, effect, trigger, duration, delay)
+        animation_id = object_registry.register_object((wrapper, main_sequence))
+        return envelope.build_success(result={"animation_id": animation_id}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -544,12 +586,20 @@ def add_animation_live(shape_id: str, effect: str, trigger: Optional[str] = None
     purpose="Update animation timing/effect/order.",
     parameters=schema({
         "animation_id": {"type": "string"},
-        "properties": {"type": "object"},
+        "properties": {"type": "object", "description": "Supported keys: duration, delay, trigger. Switching effect type isn't supported -- see uno_bridge.py's update_animation() docstring."},
     }, required=["animation_id", "properties"]),
+    status="implemented",
 )
 def update_animation_live(animation_id: str, properties: Dict[str, Any]) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("update_animation_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        wrapper, _main_sequence = _get_object_registry(ctx, resolved_id).resolve_object(animation_id)
+        applied = ctx.uno_bridge.update_animation(wrapper, properties)
+        return envelope.build_success(result={"applied": applied}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -557,10 +607,20 @@ def update_animation_live(animation_id: str, properties: Dict[str, Any]) -> Dict
     priority="P2",
     purpose="Remove animation.",
     parameters=schema({"animation_id": {"type": "string"}}, required=["animation_id"]),
+    status="implemented",
 )
 def delete_animation_live(animation_id: str) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("delete_animation_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        object_registry = _get_object_registry(ctx, resolved_id)
+        wrapper, main_sequence = object_registry.resolve_object(animation_id)
+        ctx.uno_bridge.delete_animation(wrapper, main_sequence)
+        object_registry.unregister_object(animation_id)
+        return envelope.build_success(result={"deleted": True}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -569,12 +629,21 @@ def delete_animation_live(animation_id: str) -> Dict[str, Any]:
     purpose="Set animation execution order.",
     parameters=schema({
         "slide": {"description": "Slide index or name."},
-        "animation_ids": {"type": "array", "items": {"type": "string"}},
+        "animation_ids": {"type": "array", "items": {"type": "string"}, "description": "Complete, exact current effect set for this slide's main sequence, in the desired order -- a partial or mismatched list is rejected, see uno_bridge.py's reorder_animations()."},
     }, required=["slide", "animation_ids"]),
+    status="implemented",
 )
 def reorder_animations_live(slide: Any, animation_ids: List[str]) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("reorder_animations_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        object_registry = _get_object_registry(ctx, resolved_id)
+        wrappers = [object_registry.resolve_object(aid)[0] for aid in animation_ids]
+        ctx.uno_bridge.reorder_animations(doc, slide, wrappers)
+        return envelope.build_success(result={"applied": ["order"]}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(

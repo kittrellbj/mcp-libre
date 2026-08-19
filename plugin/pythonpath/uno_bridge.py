@@ -8,7 +8,8 @@ enabling direct manipulation of LibreOffice documents.
 import builtins
 import uno
 import unohelper
-from com.sun.star.beans import PropertyValue
+from com.sun.star.beans import NamedValue, PropertyValue
+from com.sun.star.presentation import EffectNodeType
 from com.sun.star.sheet import CellFlags
 from com.sun.star.text.ControlCharacter import PARAGRAPH_BREAK
 from com.sun.star.util import NumberFormat
@@ -5777,56 +5778,296 @@ class UNOBridge:
             applied.append("duration")
         return applied
 
-    def list_animations(self, doc: Any, slide: Any) -> List[Dict[str, Any]]:
+    # EffectNodeType values LibreOffice's own UI writes into UserData's
+    # "node-type" entry (see describe_animation_node()'s docstring for how
+    # this was found) -- inverted here once for friendly-string display.
+    _EFFECT_NODE_TYPE_NAMES = {
+        EffectNodeType.ON_CLICK: "on_click",
+        EffectNodeType.WITH_PREVIOUS: "with_previous",
+        EffectNodeType.AFTER_PREVIOUS: "after_previous",
+        EffectNodeType.MAIN_SEQUENCE: "main_sequence",
+        EffectNodeType.TIMING_ROOT: "timing_root",
+        EffectNodeType.INTERACTIVE_SEQUENCE: "interactive_sequence",
+    }
+    _TRIGGER_NODE_TYPES = {
+        "on_click": EffectNodeType.ON_CLICK,
+        "with_previous": EffectNodeType.WITH_PREVIOUS,
+        "after_previous": EffectNodeType.AFTER_PREVIOUS,
+    }
+    # Scoped effect set: only what's live-verified so far. Real preset
+    # effects (LibreOffice ships hundreds, "Fade In"/"Wipe"/"Fly In"/etc.)
+    # are built by sd's internal C++ CustomAnimationPresets from a bundled
+    # XML template library (sd/source/core/CustomAnimationEffect.cxx,
+    # EffectSequenceHelper::append(CustomAnimationPresetPtr, ...)) that
+    # isn't reachable from the public UNO API at all -- only the generic
+    # animations module (AnimateSet/AnimateColor/AnimateMotion/Command +
+    # Parallel/SequenceTimeContainer) is. This is a real, hand-built
+    # substitute using that generic module directly, not a port of LO's
+    # preset library. Widening this set (fades via interpolated Animate on
+    # Opacity, motion paths via AnimateMotion, color emphasis via
+    # AnimateColor) is future work, same honest-scope-limit precedent as
+    # add_chart_series_live/insert_embedded_object_live.
+    _EFFECT_PRESETS = {
+        "appear": {"attribute": "Visibility", "to": True},
+        "disappear": {"attribute": "Visibility", "to": False},
+    }
+
+    def describe_animation_node(self, node: Any) -> Dict[str, Any]:
+        """Describe a single XAnimationNode: Begin/Duration/Fill are plain
+        XAnimationNode interface attributes on every node this pass has
+        seen (no XPropertySet in supportedInterfaces). "NodeType" is NOT
+        one of them, despite being an XAnimationNode-shaped name -- live-
+        verified (getattr raises AttributeError) against every node type
+        the generic animations module can build (AnimateSet,
+        Parallel/SequenceTimeContainer). LibreOffice's own UI stores that
+        semantic (ON_CLICK/WITH_PREVIOUS/AFTER_PREVIOUS/MAIN_SEQUENCE/...)
+        as a "node-type" NamedValue inside UserData instead --
+        CustomAnimationEffect::setNodeType() in sd/source/core/
+        CustomAnimationEffect.cxx does exactly this, confirmed by live-
+        reading a node LibreOffice itself auto-tagged MAIN_SEQUENCE (value
+        4) the first time this pass touched a slide's animation tree.
+        Read that instead of the never-present NodeType attribute."""
+        entry: Dict[str, Any] = {"node_type": node.getImplementationName()}
+        for attr in ("Begin", "Duration", "Fill"):
+            try:
+                entry[attr.lower()] = self._uno_value_to_plain(getattr(node, attr))
+            except AttributeError:
+                pass
+        try:
+            user_data = node.UserData
+        except AttributeError:
+            user_data = ()
+        for named_value in user_data:
+            if named_value.Name == "node-type":
+                trigger_value = named_value.Value
+                entry["trigger"] = self._EFFECT_NODE_TYPE_NAMES.get(trigger_value, trigger_value)
+                break
+        return entry
+
+    def list_animations(self, doc: Any, slide: Any) -> List[Any]:
         """Walks the real com.sun.star.animations.XAnimationNode tree
         (root is slide.AnimationNode, an XEnumerationAccess container --
         confirmed via introspection it does NOT support XIndexAccess, so
-        createEnumeration() is the only way to walk it). Begin/Duration/
-        Fill/NodeType are plain XAnimationNode interface attributes (no
-        XPropertySet in this node's supportedInterfaces), read the same
-        direct-attribute way shape.Position/chart_doc.HasLegend are
-        elsewhere in this file. Target (the animated shape/paragraph)
-        deliberately isn't resolved to a shape_id this pass -- it isn't a
-        plain value (a raw shape reference or a ParagraphTarget struct)
-        and reverse-resolving it through ObjectRegistry wasn't
-        exploration-tested here; add_animation_live and friends (which
-        would need to construct nodes, not just read them) stay stub for
-        the same reason, see tools/impress.py."""
+        createEnumeration() is the only way to walk it). Returns raw
+        (node, parent_node) pairs in walk order -- registering them into
+        the caller's ObjectRegistry is the tools-layer's job, same
+        division as list_shapes_live/get_shape_summary in
+        drawing_objects.py.
+
+        Known limitation, live-verified via a real MCP REST round trip
+        (add_animation_live an effect, then list_animations_live the same
+        slide): the animation_id this produces for that same effect is a
+        DIFFERENT registry entry than the one add_animation_live already
+        returned, not a deduped match -- animcore XAnimationNode proxies
+        don't compare equal across independently-obtained references in
+        PyUNO (unlike shape/document proxies elsewhere in this file,
+        confirmed working for those). Both ids still resolve to a working
+        handle for the real underlying node (confirmed: update_animation_
+        live succeeded through both), so this is a cosmetic
+        non-deduplication, not a correctness bug -- but don't rely on
+        ObjectRegistry identity-dedup to merge them, and see
+        reorder_animations()'s docstring for where this same fact forced
+        a different verification strategy (removeChild() as the
+        membership oracle, not a set()/== comparison).
+
+        Target (the animated shape/paragraph) deliberately isn't resolved
+        to a shape_id this pass -- it isn't a plain value (a raw shape
+        reference or a ParagraphTarget struct) and reverse-resolving it
+        through ObjectRegistry wasn't exploration-tested here."""
         page = self._resolve_slide(doc, slide)
-        result: List[Dict[str, Any]] = []
+        result: List[Any] = []
 
-        def describe(node: Any) -> Dict[str, Any]:
-            entry: Dict[str, Any] = {"node_type": node.getImplementationName()}
-            for attr in ("Begin", "Duration", "Fill", "NodeType"):
-                try:
-                    entry[attr.lower()] = self._uno_value_to_plain(getattr(node, attr))
-                except AttributeError:
-                    pass
-            return entry
-
-        def walk(node: Any, parent_id: Optional[str]) -> None:
-            my_id = str(len(result))
-            entry = describe(node)
-            entry["animation_id"] = my_id
-            entry["parent_id"] = parent_id
-            result.append(entry)
+        def walk(node: Any, parent_node: Optional[Any]) -> None:
+            result.append((node, parent_node))
             if hasattr(node, "createEnumeration"):
                 child_enum = node.createEnumeration()
                 while child_enum.hasMoreElements():
-                    walk(child_enum.nextElement(), my_id)
+                    walk(child_enum.nextElement(), node)
 
         walk(page.AnimationNode, None)
         return result
 
-    # add_animation_live/update_animation_live/delete_animation_live/
-    # reorder_animations_live have no bridge methods -- constructing or
-    # mutating XAnimationNode preset trees (AnimateSet/Command/etc.,
-    # wrapped in the specific Parallel/Sequence container structure
-    # LibreOffice's own entrance/emphasis/exit preset effects use) is
-    # genuinely complex and wasn't exploration-tested this pass; same
-    # honest-scope-limit reasoning as add_chart_series_live and
-    # insert_embedded_object_live before it. All 4 stay pure status="stub"
-    # NOT_IMPLEMENTED responses, see tools/impress.py.
+    def _find_or_create_main_sequence(self, root: Any) -> Any:
+        """Find root's (slide.AnimationNode's) direct child tagged
+        EffectNodeType.MAIN_SEQUENCE via the UserData mechanism described
+        on describe_animation_node(). Live-verified: a brand new slide's
+        root has zero children (no main sequence exists until something
+        needs one) -- LibreOffice itself lazily creates a properly-tagged
+        one, observed happening the first time this pass touched an
+        unrelated animation on the same slide. Mirror that instead of
+        depending on LibreOffice to have done it first: create + tag +
+        append one if none is found."""
+        child_enum = root.createEnumeration()
+        while child_enum.hasMoreElements():
+            child = child_enum.nextElement()
+            try:
+                user_data = child.UserData
+            except AttributeError:
+                continue
+            if any(nv.Name == "node-type" and nv.Value == EffectNodeType.MAIN_SEQUENCE for nv in user_data):
+                return child
+
+        main_sequence = self.smgr.createInstanceWithContext(
+            "com.sun.star.animations.SequenceTimeContainer", self.ctx)
+        node_type = NamedValue()
+        node_type.Name = "node-type"
+        node_type.Value = uno.Any("short", EffectNodeType.MAIN_SEQUENCE)
+        main_sequence.UserData = (node_type,)
+        root.appendChild(main_sequence)
+        return main_sequence
+
+    def add_animation(self, doc: Any, shape: Any, effect: str,
+                       trigger: Optional[str] = None, duration: Optional[float] = None,
+                       delay: Optional[float] = None) -> Any:
+        """Build a real com.sun.star.animations.AnimateSet effect, wrap it
+        in a ParallelTimeContainer tagged with the requested trigger's
+        EffectNodeType (via the UserData mechanism -- see
+        describe_animation_node()), and append it to the slide's main
+        sequence. Returns (wrapper, main_sequence) -- the caller registers
+        the pair as one opaque animation_id (see impress.py) so delete/
+        reorder_animations_live can remove/reorder against the actual
+        parent container without re-deriving it from a shape_id (delete_
+        animation_live's schema doesn't take one). Effect nodes are
+        created via self.smgr.createInstanceWithContext(), not
+        doc.createInstance() -- live-verified doc.createInstance() raises
+        ServiceNotRegisteredException for these; they're generic
+        animations-module services, not document-scoped ones (same
+        pattern as chart2.Title elsewhere in this file). Click-advance
+        runtime behavior (does the effect actually wait for a click during
+        a slideshow) is NOT verifiable in this environment -- headless
+        mode's XSlideShowController is always None, same documented dead
+        end as next/previous/goto_slideshow_effect_live in tools/
+        impress.py; only the tree construction itself is live-verified
+        here."""
+        preset = self._EFFECT_PRESETS.get(effect)
+        if preset is None:
+            raise ValueError(f"Unknown effect '{effect}'. Supported: {sorted(self._EFFECT_PRESETS)}")
+
+        node_type_value = self._TRIGGER_NODE_TYPES.get(trigger or "on_click")
+        if node_type_value is None:
+            raise ValueError(f"Unknown trigger '{trigger}'. Supported: {sorted(self._TRIGGER_NODE_TYPES)}")
+
+        self._require_impress(doc, "add_animation")
+        # shape.Parent is the owning SdDrawPage (live-verified) -- no
+        # add_animation_live schema param carries an explicit slide/index,
+        # so this is the only way to find the page a shape's effect
+        # belongs on.
+        page = shape.Parent
+
+        animate = self.smgr.createInstanceWithContext("com.sun.star.animations.AnimateSet", self.ctx)
+        animate.Target = shape
+        animate.AttributeName = preset["attribute"]
+        animate.To = preset["to"]
+        animate.Duration = float(duration) if duration is not None else 0.001
+
+        wrapper = self.smgr.createInstanceWithContext("com.sun.star.animations.ParallelTimeContainer", self.ctx)
+        wrapper.appendChild(animate)
+        wrapper.Begin = float(delay) if delay is not None else 0.0
+        node_type = NamedValue()
+        node_type.Name = "node-type"
+        node_type.Value = uno.Any("short", node_type_value)
+        wrapper.UserData = (node_type,)
+
+        main_sequence = self._find_or_create_main_sequence(page.AnimationNode)
+        main_sequence.appendChild(wrapper)
+        return wrapper, main_sequence
+
+    def update_animation(self, wrapper: Any, properties: Dict[str, Any]) -> List[str]:
+        """Update timing/trigger on an existing effect wrapper (the node
+        add_animation() returns/registers). Scoped to what a wrapper
+        container actually owns -- duration lives on the leaf AnimateSet,
+        not the wrapper, so it's reached via the wrapper's single child.
+        Switching to a different effect type isn't supported (would mean
+        rebuilding the AnimateSet from scratch); same scope-limit as
+        elsewhere in this pass."""
+        applied: List[str] = []
+        if "duration" in properties:
+            child_enum = wrapper.createEnumeration()
+            if child_enum.hasMoreElements():
+                child_enum.nextElement().Duration = float(properties["duration"])
+                applied.append("duration")
+        if "delay" in properties:
+            wrapper.Begin = float(properties["delay"])
+            applied.append("delay")
+        if "trigger" in properties:
+            node_type_value = self._TRIGGER_NODE_TYPES.get(properties["trigger"])
+            if node_type_value is None:
+                raise ValueError(f"Unknown trigger '{properties['trigger']}'. Supported: {sorted(self._TRIGGER_NODE_TYPES)}")
+            node_type = NamedValue()
+            node_type.Name = "node-type"
+            node_type.Value = uno.Any("short", node_type_value)
+            wrapper.UserData = (node_type,)
+            applied.append("trigger")
+        if not applied:
+            raise ValueError(f"No supported properties in {sorted(properties)}. Supported: duration, delay, trigger")
+        return applied
+
+    def delete_animation(self, wrapper: Any, main_sequence: Any) -> None:
+        """Remove an effect wrapper from its main sequence -- both come
+        from the (wrapper, main_sequence) pair add_animation() returns and
+        the caller registered as one animation_id, since
+        delete_animation_live's schema has no shape_id/slide to
+        re-derive a parent from."""
+        main_sequence.removeChild(wrapper)
+
+    def reorder_animations(self, doc: Any, slide: Any, wrappers: List[Any]) -> None:
+        """Set the slide main sequence's effect order to exactly `wrappers`
+        (in the given order). Requires `wrappers` to be the complete,
+        exact set of the main sequence's current children -- a partial or
+        mismatched list raises rather than silently reordering a subset,
+        since XTimeContainer has no atomic "replace all children"
+        operation and a partial reorder would leave an ambiguous mix of
+        moved and untouched effects.
+
+        Membership is verified via main_sequence.removeChild() actually
+        succeeding, NOT via comparing `wrappers` against a freshly
+        re-enumerated child list with `==`/set() -- live-verified this
+        pass that two independently-obtained animcore XAnimationNode
+        proxies for the exact same server-side effect do NOT compare
+        equal in PyUNO (unlike shape/document proxies elsewhere in this
+        file, which do; confirmed via a real MCP REST round trip:
+        add_animation_live's returned animation_id and the id
+        list_animations_live discovers for that same freshly-added effect
+        are different registry entries, though both resolve to a working
+        handle for the same real node). A set()-based pre-check against
+        that identity would always spuriously reject a fully valid,
+        complete reorder. Using the server's own removeChild() as the
+        membership oracle sidesteps the broken client-side identity
+        comparison entirely. If any removeChild() fails partway through
+        (a genuinely foreign/stale wrapper), whatever was already removed
+        is re-appended before raising, so a rejected reorder never loses a
+        node -- though on that failure path the restored nodes land at
+        the end in `wrappers` order, not necessarily their exact original
+        relative order (acceptable: this is the failure path, and no
+        effect is dropped)."""
+        page = self._resolve_slide(doc, slide)
+        main_sequence = self._find_or_create_main_sequence(page.AnimationNode)
+
+        original_count = 0
+        child_enum = main_sequence.createEnumeration()
+        while child_enum.hasMoreElements():
+            child_enum.nextElement()
+            original_count += 1
+
+        if len(wrappers) != original_count:
+            raise ValueError(
+                f"reorder_animations_live requires the complete current effect set "
+                f"({original_count} effects) in animation_ids -- got {len(wrappers)}.")
+
+        removed: List[Any] = []
+        try:
+            for wrapper in wrappers:
+                main_sequence.removeChild(wrapper)
+                removed.append(wrapper)
+        except Exception as e:
+            for wrapper in removed:
+                main_sequence.appendChild(wrapper)
+            raise ValueError(
+                f"reorder_animations_live: one of the given animation_ids is not "
+                f"a current member of this slide's main sequence ({e}).") from e
+
+        for wrapper in wrappers:
+            main_sequence.appendChild(wrapper)
 
     _CLICK_ACTIONS = {
         "none": "NONE", "previous_page": "PREVPAGE", "next_page": "NEXTPAGE",

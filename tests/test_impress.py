@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Unit tests for the 34 real (status="implemented") impress.py tools --
-the remaining 7 (add/update/delete/reorder_animation_live,
-next/previous_slideshow_effect_live, goto_slideshow_slide_live) stay pure
-NOT_IMPLEMENTED stubs (see impress.py's module docstring for why) and are
-covered by tests/test_tool_scaffold_contract.py's generic stub-shape
-contract test, not here.
+Unit tests for the 38 real (status="implemented") impress.py tools --
+the remaining 3 (next/previous_slideshow_effect_live,
+goto_slideshow_slide_live) stay pure NOT_IMPLEMENTED stubs (see
+impress.py's module docstring for why) and are covered by
+tests/test_tool_scaffold_contract.py's generic stub-shape contract test,
+not here.
 
 Uses a FakeUnoBridge modeling slides/masters/notes/transitions/
 animations/custom shows as plain dicts/lists, mirroring the real
@@ -41,10 +41,36 @@ class FakeShape:
     def __init__(self):
         self.on_click = None
         self.bookmark = None
+        self.Parent = None
 
 
 def _new_slide(name, layout=0, master="Default", hidden=False):
     return {"name": name, "layout": layout, "master": master, "hidden": hidden}
+
+
+class FakeAnimationEffect:
+    """Stand-in for a real ParallelTimeContainer wrapper node. Deliberately
+    NOT a plain dict -- ObjectRegistry registers (wrapper, main_sequence)
+    as one opaque animation_id, keyed by identity in a dict, and a dict
+    (or a tuple containing one) isn't hashable. Real UNO proxy objects are
+    hashable (see object_registry.py's docstring); this mirrors that with
+    plain identity-based hashing, same as any ordinary Python object."""
+
+    def __init__(self, shape, effect, trigger, duration, delay):
+        self.shape = shape
+        self.effect = effect
+        self.trigger = trigger
+        self.duration = duration
+        self.delay = delay
+
+
+class FakeMainSequence:
+    """Stand-in for the main sequence container -- a mutable list of
+    FakeAnimationEffect children, wrapped in an (identity-hashable) object
+    for the same reason FakeAnimationEffect isn't a plain dict."""
+
+    def __init__(self):
+        self.children = []
 
 
 class FakeUnoBridge:
@@ -62,6 +88,7 @@ class FakeUnoBridge:
         self.custom_shows = {}
         self.slideshow_started = False
         self.exported = []
+        self.animation_main_sequence = FakeMainSequence()
 
     def get_active_document(self):
         return self.active_document
@@ -199,6 +226,35 @@ class FakeUnoBridge:
     def list_animations(self, doc, slide):
         self._find(slide)
         return []
+
+    def add_animation(self, doc, shape, effect, trigger=None, duration=None, delay=None):
+        if effect not in ("appear", "disappear"):
+            raise ValueError(f"Unknown effect '{effect}'. Supported: ['appear', 'disappear']")
+        wrapper = FakeAnimationEffect(shape, effect, trigger or "on_click", duration, delay)
+        self.animation_main_sequence.children.append(wrapper)
+        return wrapper, self.animation_main_sequence
+
+    def update_animation(self, wrapper, properties):
+        applied = []
+        for key in ("duration", "delay", "trigger"):
+            if key in properties:
+                setattr(wrapper, key, properties[key])
+                applied.append(key)
+        if not applied:
+            raise ValueError(f"No supported properties in {sorted(properties)}. Supported: duration, delay, trigger")
+        return applied
+
+    def delete_animation(self, wrapper, main_sequence):
+        main_sequence.children.remove(wrapper)
+
+    def reorder_animations(self, doc, slide, wrappers):
+        self._find(slide)
+        current = self.animation_main_sequence.children
+        if len(wrappers) != len(current) or set(wrappers) != set(current):
+            raise ValueError(
+                f"reorder_animations_live requires the complete current effect set "
+                f"({len(current)} effects) in animation_ids -- got {len(wrappers)}, mismatched or partial.")
+        self.animation_main_sequence.children[:] = wrappers
 
     # -- click action --
 
@@ -476,12 +532,61 @@ def test_list_animations_live():
     assert result["result"]["count"] == 0
 
 
-def test_add_animation_live_not_implemented():
+def test_animation_lifecycle_live():
     context.reset()
-    _install(active_document=FakeDocument())
-    result = _handler("add_animation_live")(shape_id="whatever", effect="fade")
+    uno_bridge, document_registry, _ = _install(active_document=FakeDocument())
+    doc = uno_bridge.active_document
+    document_id = document_registry.register_document(doc)
+    shape = FakeShape()
+    shape_id = document_registry.get_object_registry(document_id).register_object(shape)
+
+    added = _handler("add_animation_live")(shape_id=shape_id, effect="appear", trigger="with_previous", duration=0.5)
+    assert added["success"] is True
+    animation_id = added["result"]["animation_id"]
+    assert animation_id
+
+    updated = _handler("update_animation_live")(animation_id=animation_id, properties={"delay": 1.0, "trigger": "on_click"})
+    assert updated["success"] is True
+    assert set(updated["result"]["applied"]) == {"delay", "trigger"}
+
+    reordered = _handler("reorder_animations_live")(slide="Slide 1", animation_ids=[animation_id])
+    assert reordered["success"] is True
+
+    deleted = _handler("delete_animation_live")(animation_id=animation_id)
+    assert deleted["success"] is True
+    assert uno_bridge.animation_main_sequence.children == []
+
+    # a stale animation_id is unregistered on delete -- reusing it is an error, not a silent no-op
+    stale = _handler("delete_animation_live")(animation_id=animation_id)
+    assert stale["success"] is False
+    assert stale["error"]["code"] == "OBJECT_NOT_FOUND"
+
+
+def test_add_animation_live_unknown_effect():
+    context.reset()
+    uno_bridge, document_registry, _ = _install(active_document=FakeDocument())
+    doc = uno_bridge.active_document
+    document_id = document_registry.register_document(doc)
+    shape = FakeShape()
+    shape_id = document_registry.get_object_registry(document_id).register_object(shape)
+    result = _handler("add_animation_live")(shape_id=shape_id, effect="fade")
     assert result["success"] is False
-    assert result["error"]["code"] == "NOT_IMPLEMENTED"
+
+
+def test_reorder_animations_live_rejects_partial_set():
+    context.reset()
+    uno_bridge, document_registry, _ = _install(active_document=FakeDocument())
+    doc = uno_bridge.active_document
+    document_id = document_registry.register_document(doc)
+    object_registry = document_registry.get_object_registry(document_id)
+    shape_a, shape_b = FakeShape(), FakeShape()
+    shape_a_id = object_registry.register_object(shape_a)
+    shape_b_id = object_registry.register_object(shape_b)
+    added_a = _handler("add_animation_live")(shape_id=shape_a_id, effect="appear")
+    _handler("add_animation_live")(shape_id=shape_b_id, effect="appear")
+
+    result = _handler("reorder_animations_live")(slide="Slide 1", animation_ids=[added_a["result"]["animation_id"]])
+    assert result["success"] is False
 
 
 # -- click action --
@@ -607,7 +712,9 @@ if __name__ == "__main__":
         test_get_and_set_speaker_notes_live,
         test_get_and_set_slide_transition_live,
         test_list_animations_live,
-        test_add_animation_live_not_implemented,
+        test_animation_lifecycle_live,
+        test_add_animation_live_unknown_effect,
+        test_reorder_animations_live_rejects_partial_set,
         test_set_shape_click_action_live,
         test_get_and_set_presentation_settings_live,
         test_custom_show_lifecycle_live,

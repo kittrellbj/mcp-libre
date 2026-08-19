@@ -1,7 +1,7 @@
 # LibreOffice MCP Server
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.1-blue.svg)](#versioning)
+[![Version](https://img.shields.io/badge/version-2.0.2-blue.svg)](#versioning)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](#requirements)
 [![LibreOffice](https://img.shields.io/badge/LibreOffice-24.2%2B-18A303.svg)](#requirements)
 
@@ -44,7 +44,7 @@ This fork focuses on making the native LibreOffice extension work cleanly on Win
 
 Version 2.0.0 grows the project from the v1.0.0 Windows native-extension baseline into a full LibreOffice automation surface for AI agents: the tool catalog expanded roughly twelvefold, the embedded HTTP server gained real concurrency safety, and the MCP transport itself was brought into spec conformance.
 
-- **398 registered MCP tools** across Writer, Calc, Impress, Draw, and shared LibreOffice services — up from the 32-tool v1.0.0 baseline. 384 are live by default (the original 32 plus 352 fully implemented since); 14 remain stub-only, opt-in, and return `NOT_IMPLEMENTED` until finished (see [Tooling Roadmap](#tooling-roadmap)).
+- **398 registered MCP tools** across Writer, Calc, Impress, Draw, and shared LibreOffice services — up from the 32-tool v1.0.0 baseline. 388 are live by default (the original 32 plus 356 fully implemented since); 10 remain stub-only, opt-in, and return `NOT_IMPLEMENTED` until finished (see [Tooling Roadmap](#tooling-roadmap)).
 - **Concurrency control**: a process-wide UNO execution lock plus a bounded admission semaphore protect the embedded HTTP server from PyUNO bridge corruption under concurrent tool calls. Live-verified at 600/600 concurrent round trips with 0 errors.
 - **MCP transport protocol conformance**: `Mcp-Session-Id` is now enforced end to end, and `MCP-Protocol-Version` is validated and negotiated per the MCP specification on every request.
 - **451 automated tests passing**, plus live install/launch/health-check probes run against a real LibreOffice process for everything that can't be unit-tested outside one.
@@ -84,7 +84,7 @@ Numbers pulled from the project's own history (`docs/MCP_TOOLING_SCAFFOLD_PLAN.m
 - **600/600** concurrent tool-call round trips succeeded with 0 errors in the concurrency-safety probe (2 threads × 300 iterations against two live Writer documents).
 - **15/15** MCP transport protocol-conformance checks passed live against a real running extension (session-id enforcement, protocol-version negotiation).
 - **51 commits** landed since the v1.0.0 baseline (85 commits total across the project's full history).
-- **398 registered MCP tools** across Writer (99), Calc (99), Impress (41), Draw (16), and shared services (111), plus the original 32 legacy tools — 384 live by default, 14 stub-only pending (see [Tooling Roadmap](#tooling-roadmap)).
+- **398 registered MCP tools** across Writer (99), Calc (99), Impress (41), Draw (16), and shared services (111), plus the original 32 legacy tools — 388 live by default, 10 stub-only pending (see [Tooling Roadmap](#tooling-roadmap)).
 
 ---
 
@@ -204,7 +204,7 @@ python build-oxt-windows.py
 The extension package is created at:
 
 ```text
-build/libreoffice-mcp-extension-2.0.1.oxt
+build/libreoffice-mcp-extension-2.0.2.oxt
 ```
 
 The Windows builder creates a LibreOffice-compatible ZIP/OXT structure with normalized archive paths.
@@ -218,7 +218,7 @@ PowerShell example:
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
 & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension
-& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.1.oxt"
+& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.2.oxt"
 ```
 
 Removing an extension that is not already installed may report that no matching extension exists. That is harmless.
@@ -269,7 +269,7 @@ A convenient rebuild/reinstall command in PowerShell is:
 
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
-python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.1.oxt"
+python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.2.oxt"
 ```
 
 Then reopen LibreOffice and start the MCP server from the Tools menu.
@@ -395,17 +395,17 @@ Full write-up, including the empirical test that found the actual bug, in [`docs
 
 # Writer / Calc / Impress / Draw Automation via MCP
 
-The v2.0.0 catalog registers **398 MCP tools**: the 32-tool v1.0.0 compatibility baseline (always live, Writer-focused) plus 366 tools added since, organized by LibreOffice application area. 384 tools are live by default; 14 remain stub-only until implemented (enable them for development with `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS=1` — each returns a `NOT_IMPLEMENTED` error until finished).
+The v2.0.0 catalog registers **398 MCP tools**: the 32-tool v1.0.0 compatibility baseline (always live, Writer-focused) plus 366 tools added since, organized by LibreOffice application area. 388 tools are live by default; 10 remain stub-only until implemented (enable them for development with `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS=1` — each returns a `NOT_IMPLEMENTED` error until finished).
 
 | Area | Tools | Live by default | Stub-only |
 |---|---:|---:|---:|
 | Writer (v1.0.0 baseline) | 32 | 32 | 0 |
 | Writer (layout, tables, text) | 99 | 97 | 2 |
 | Calc (sheets, cells, ranges, external data) | 99 | 99 | 0 |
-| Impress (slides, animation, slideshow) | 41 | 34 | 7 |
+| Impress (slides, animation, slideshow) | 41 | 38 | 3 |
 | Draw (pages, shapes, connectors) | 16 | 16 | 0 |
 | Shared services (charts, drawing objects, styles, undo/view/selection, document lifecycle, core runtime) | 111 | 106 | 5 |
-| **Total** | **398** | **384** | **14** |
+| **Total** | **398** | **388** | **10** |
 
 <details>
 <summary><strong>v1.0.0 baseline — Document lifecycle</strong></summary>
@@ -514,9 +514,9 @@ See `plugin/pythonpath/tools/calc_data.py`, `calc_page.py`, `calc_sheets.py` for
 <details>
 <summary><strong>v2.0.0 — Impress (41 tools: impress.py)</strong></summary>
 
-Slides, layouts, master slides, text boxes, images, shapes, tables, notes, transitions, slide ordering, presentation settings, export.
+Slides, layouts, master slides, text boxes, images, shapes, tables, notes, transitions, slide ordering, presentation settings, export, animations (`add_animation_live`/`update_animation_live`/`delete_animation_live`/`reorder_animations_live`, built on the generic `com.sun.star.animations` module — an `AnimateSet` effect wrapped in a `ParallelTimeContainer`, tagged with its trigger via LibreOffice's own `UserData`-based `node-type` mechanism, and appended to the slide's main sequence; scoped to a small honest effect set (`appear`/`disappear`), not LibreOffice's full preset library, which is internal C++ not reachable from the public UNO API at all — see [Tooling Roadmap](#tooling-roadmap)).
 
-Stub-only: `add_animation_live`, `update_animation_live`, `delete_animation_live`, `reorder_animations_live` (scope-limited, planned — see [Tooling Roadmap](#tooling-roadmap)); `next_slideshow_effect_live`, `previous_slideshow_effect_live`, `goto_slideshow_slide_live` (blocked — headless mode's `XSlideShowController` is always `None`, see [Tooling Roadmap](#tooling-roadmap)).
+Stub-only: `next_slideshow_effect_live`, `previous_slideshow_effect_live`, `goto_slideshow_slide_live` (blocked — headless mode's `XSlideShowController` is always `None`, see [Tooling Roadmap](#tooling-roadmap)).
 
 See `plugin/pythonpath/tools/impress.py` for the full tool list.
 
@@ -670,7 +670,7 @@ These changes prevent a slow or abandoned client request from blocking the entir
 
 # Tooling Roadmap
 
-Most of the v1.0.0 roadmap is now implemented — see [Writer / Calc / Impress / Draw Automation via MCP](#writer--calc--impress--draw-automation-via-mcp) for the live catalog. 14 tools remain stub-only, opt-in behind `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS=1`, each returning `NOT_IMPLEMENTED` until finished. They split into two distinct groups — five are genuinely blocked, nine are just unbuilt:
+Most of the v1.0.0 roadmap is now implemented — see [Writer / Calc / Impress / Draw Automation via MCP](#writer--calc--impress--draw-automation-via-mcp) for the live catalog. 10 tools remain stub-only, opt-in behind `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS=1`, each returning `NOT_IMPLEMENTED` until finished. They split into two distinct groups — five are genuinely blocked, five are just unbuilt:
 
 **Cannot implement due to a UNO API/environment limitation (5)** — live-verified against real LibreOffice, not a scheduling gap:
 
@@ -678,12 +678,11 @@ Most of the v1.0.0 roadmap is now implemented — see [Writer / Calc / Impress /
 - `mail_merge_live` — the real `com.sun.star.text.MailMerge` service needs a `DataSourceName` registered through `DatabaseContext`, which live-verified refuses to register an ad hoc `DataSource` without first persisting it to a real `.odb` file via `XStorable`. (`preview_mail_merge_live` works today via an unregistered ad hoc SDBC connection over a CSV folder.)
 - `next_slideshow_effect_live`, `previous_slideshow_effect_live`, `goto_slideshow_slide_live` — all three need a live `XSlideShowController`, confirmed via live verification to always be `None` in headless mode (no window manager to render a slideshow view to). (`start_slideshow_live`/`stop_slideshow_live` don't need the controller and work fine.)
 
-**Scope-limited (9)** — a real UNO mechanism exists, just not attempted yet. Calc's 3 external-link tools were finished and moved out of this list — see the Calc entry under [Writer / Calc / Impress / Draw Automation via MCP](#writer--calc--impress--draw-automation-via-mcp) above, built on `com.sun.star.sheet.XAreaLinks`, live-verified end to end:
+**Scope-limited (5)** — a real UNO mechanism exists, just not attempted yet. Calc's 3 external-link tools and Impress's 4 animation-mutation tools were finished and moved out of this list — see the Calc entry (built on `com.sun.star.sheet.XAreaLinks`) and the Impress entry (built on the generic `com.sun.star.animations` module) under [Writer / Calc / Impress / Draw Automation via MCP](#writer--calc--impress--draw-automation-via-mcp) above, both live-verified end to end:
 
-- **Impress**: `add_animation_live`, `update_animation_live`, `delete_animation_live`, `reorder_animations_live`
 - **Shared services**: `add_chart_series_live`, `insert_embedded_object_live`, `activate_embedded_object_live`, `get_document_events_live`, `wait_for_document_event_live`
 
-Beyond finishing those 9, longer-term goals include:
+Beyond finishing those 5, longer-term goals include:
 
 - Adopting the MCP spec's modern (2026-07-28+) transport era, if a real client requirement emerges (see [MCP JSON-RPC Transport](#mcp-json-rpc-transport))
 - A dedicated JSON-RPC busy/backpressure error code, rather than routing admission-timeout rejections through `mcp_jsonrpc.py`'s generic `INTERNAL_ERROR`
@@ -825,10 +824,10 @@ dispatch called: mcp:start_mcp_server
 Starting MCP server...
 MCP HTTP server started successfully
 UNO Bridge initialized successfully
-Registered 384 MCP tools
+Registered 388 MCP tools
 ```
 
-(384 by default — the 32-tool v1.0.0 baseline plus the 352 implemented v2.0.0 tools. Set `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS=1` before starting LibreOffice to also register the 14 remaining stub-only tools, for a total of 398.)
+(388 by default — the 32-tool v1.0.0 baseline plus the 356 implemented v2.0.0 tools. Set `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS=1` before starting LibreOffice to also register the 10 remaining stub-only tools, for a total of 398.)
 
 ## Tools menu appears but commands do nothing
 
@@ -883,7 +882,7 @@ For Windows native extension changes, verify at minimum:
 [ ] PDF export works
 ```
 
-Run the automated test suite (451 tests):
+Run the automated test suite (453 tests):
 
 ```bash
 uv run pytest
@@ -892,6 +891,23 @@ uv run pytest
 ---
 
 # Versioning
+
+## v2.0.2
+
+`add_animation_live`/`update_animation_live`/`delete_animation_live`/`reorder_animations_live` implemented for real (Impress), 4 of the 12 scope-limited stubs from this pass's earlier catch-up (5 remain queued: shared-services `add_chart_series_live`, `insert_embedded_object_live`, `activate_embedded_object_live`, `get_document_events_live`, `wait_for_document_event_live` -- see Tooling Roadmap).
+
+Built on the generic `com.sun.star.animations` module (`AnimateSet` wrapped in a `ParallelTimeContainer`, appended to the slide's main sequence), not LibreOffice's internal preset library (`sd/source/core/CustomAnimationEffect.cxx`'s `CustomAnimationPresets`, which loads from a bundled XML template database and isn't reachable from the public UNO API at all -- confirmed by reading LO's own C++ source, since the public API docs don't cover node construction). Scoped to a small honest effect set (`appear`/`disappear`) rather than attempting to port that preset library.
+
+Two real findings from live verification against the real MCP REST layer, not just raw UNO:
+
+- `NodeType` (`ON_CLICK`/`WITH_PREVIOUS`/`AFTER_PREVIOUS`/`MAIN_SEQUENCE`/`TIMING_ROOT`) is NOT a settable/gettable property on a generically-constructed animation node, despite being an `XAnimationNode`-shaped name -- LibreOffice's own UI stores it as a `"node-type"` `NamedValue` inside `UserData` instead (`CustomAnimationEffect::setNodeType()`). `list_animations_live`'s `NodeType` read (pre-existing, from the earlier read-only pass) never actually exercised this, since no live document it was tested against had a tagged node; now reads `UserData` instead, surfaced as `trigger` in each entry.
+- animcore `XAnimationNode` proxies don't compare equal across independently-obtained PyUNO references (unlike shape/document proxies elsewhere in this project, which do) -- `reorder_animations_live`'s original safety check (comparing a resolved node list against a freshly re-enumerated one via `set()`/`==`) could never pass even for a fully valid, complete reorder. Fixed by using the server's own `removeChild()` call as the membership oracle instead of client-side identity comparison, with a rollback path if a caller-supplied id turns out foreign. Same root cause also means `list_animations_live` and `add_animation_live` mint different (but both independently working) `animation_id`s for the same freshly-added effect -- a cosmetic non-deduplication, confirmed non-blocking via a live round trip, not a correctness bug.
+
+Click-advance runtime behavior (does an `on_click`-triggered effect actually wait for a click during a slideshow) is not verifiable in this environment -- headless mode's `XSlideShowController` is always `None`, the same documented dead end as `next_slideshow_effect_live`/`previous_slideshow_effect_live`/`goto_slideshow_slide_live`. Only tree construction and REST-layer plumbing are live-verified.
+
+- 388 live tools (was 384), 10 stub-only (was 14)
+- 453 automated tests passing (up from 451): `test_animation_lifecycle_live`, `test_add_animation_live_unknown_effect`, `test_reorder_animations_live_rejects_partial_set` replace the old `test_add_animation_live_not_implemented`
+- Live-verified via a real build → install → launch → REST round trip (insert a shape, add an effect, list it back, update it, reorder it, delete it, confirm removal), not just raw UNO probing
 
 ## v2.0.1
 
