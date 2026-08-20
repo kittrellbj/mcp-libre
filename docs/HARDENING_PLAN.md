@@ -442,6 +442,28 @@ concurrency control not yet started).
   for a live finding from that verification (an initial version wrote
   `categories` to cells but never wired them into any data sequence,
   caught by reading the raw chart2 series back independently).
+  `get_document_events_live`/`wait_for_document_event_live` and
+  `insert_embedded_object_live` (scoped to `object_type="formula"`) also
+  moved out of this list in a further follow-up pass (v2.0.4) --
+  real mechanism for the events pair is a single process-wide
+  `com.sun.star.document.XDocumentEventListener` registered against
+  `com.sun.star.frame.GlobalEventBroadcaster`, feeding a bounded,
+  seq-numbered buffer with a `threading.Condition`-based blocking wait;
+  for embedded-object insertion it's a `com.sun.star.drawing.OLE2Shape`
+  with its `CLSID` set before `page.add()`, using the one CLSID
+  (Math formula) trusted without live confirmation -- see
+  `uno_bridge.py`'s "-- Document events --" section and
+  `insert_embedded_object()`/`_EMBEDDED_OBJECT_CLSIDS` docstrings.
+  Code-complete and unit-tested (469/469), but **not yet live-verified**:
+  this pass's REST round trip against a real running instance is still
+  pending, since the extension's one live instance was held for a
+  separate overnight Writer-agent test and, checked directly afterward,
+  was carrying an unsaved `modified: true` document with no backing file
+  -- a rebuild/relaunch to live-verify would have destroyed it.
+  `activate_embedded_object_live` is the only one of the original 4
+  remaining in this list (P3, verb-based OLE activation, its own pass
+  once a live-verified `insert_embedded_object_live` object exists to
+  activate against).
 - **Error-code consistency:** one shared, validated envelope
   (`envelope.build_error()`/`build_success()`) across every real tool;
   `WRONG_DOCUMENT_TYPE` now correctly wired (was dead code catalog-wide

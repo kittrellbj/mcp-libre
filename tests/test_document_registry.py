@@ -265,6 +265,31 @@ def test_unregister_document_drops_its_object_registry():
     assert len(fresh_object_registry) == 0
 
 
+def test_find_document_id_returns_id_for_registered_document():
+    registry = DocumentRegistry(FakeUnoBridge())
+    doc = FakeDocument("Untitled 1")
+    document_id = registry.register_document(doc)
+    assert registry.find_document_id(doc) == document_id
+
+
+def test_find_document_id_returns_none_for_unregistered_document():
+    """The reverse-lookup case get_document_events_live/wait_for_document_
+    event_live need: a document a human opened directly in the LibreOffice
+    GUI, never passed to register_document(). Must return None, not
+    raise -- unlike resolve_document(), this is a read-only lookup."""
+    registry = DocumentRegistry(FakeUnoBridge())
+    never_registered = FakeDocument("Never registered")
+    assert registry.find_document_id(never_registered) is None
+
+
+def test_find_document_id_returns_none_after_unregister():
+    registry = DocumentRegistry(FakeUnoBridge())
+    doc = FakeDocument("Untitled 1")
+    document_id = registry.register_document(doc)
+    registry.unregister_document(document_id)
+    assert registry.find_document_id(doc) is None
+
+
 if __name__ == "__main__":
     tests = [
         test_register_then_resolve_returns_the_same_object,
@@ -285,6 +310,9 @@ if __name__ == "__main__":
         test_get_object_registry_returns_the_same_instance_for_the_same_document_id,
         test_get_object_registry_gives_different_documents_independent_registries,
         test_unregister_document_drops_its_object_registry,
+        test_find_document_id_returns_id_for_registered_document,
+        test_find_document_id_returns_none_for_unregistered_document,
+        test_find_document_id_returns_none_after_unregister,
     ]
     for test in tests:
         test()

@@ -273,29 +273,29 @@ def test_every_tool_has_a_valid_status():
 
 # Modules whose tools have real logic now, not NOT_IMPLEMENTED stub bodies.
 # Update this set (and nothing else) as more modules get *fully* implemented.
-IMPLEMENTED_MODULES = ("core_runtime", "document_lifecycle", "styles", "writer_text", "calc_sheets", "draw", "calc_page", "charts")
+IMPLEMENTED_MODULES = ("core_runtime", "document_lifecycle", "styles", "writer_text", "calc_sheets", "draw", "calc_page", "charts", "undo_view_selection")
 
-# undo_view_selection.py is a mixed module: 12 of its 14 tools (undo +
-# view/selection/locking) are real; the remaining 2 (document event
-# capture) are a separate follow-up pass and stay status="stub". Listed by
-# name rather than added to IMPLEMENTED_MODULES since that constant
-# asserts *every* tool in the module.
-IMPLEMENTED_TOOL_NAMES = {
-    "get_undo_state_live", "undo_live", "redo_live",
-    "begin_undo_context_live", "end_undo_context_live", "cancel_undo_context_live",
-    "get_view_state_live", "set_zoom_live", "get_selection_live", "clear_selection_live",
-    "lock_document_updates_live", "unlock_document_updates_live",
-}
+# undo_view_selection.py is now fully implemented (all 14 tools) -- moved
+# into IMPLEMENTED_MODULES above. get_document_events_live/wait_for_
+# document_event_live were the last 2, landing in a deliberately separate
+# pass from the other 12 (undo + view/selection/locking): event capture
+# needed a persistent com.sun.star.document.XDocumentEventListener
+# registered against the process-wide GlobalEventBroadcaster plus a
+# bounded, seq-numbered event buffer with its own lifecycle -- see
+# uno_bridge.py's "-- Document events --" section for the mechanism.
 
-# drawing_objects.py is also a mixed module: 29 of its 31 tools are real.
+# drawing_objects.py is also a mixed module: 30 of its 31 tools are real.
 # combine_shapes_live/split_shape_live/bind_shapes_live/unbind_shape_live
 # were re-enabled by the draw.py pass's dispatch-safety correction (the
 # original .uno:Combine crash turned out to be an external-test-script
 # artifact, not a real production risk -- see
-# docs/MCP_TOOLING_SCAFFOLD_PLAN.md's draw.py entry). The remaining 2
-# (insert_embedded_object_live/activate_embedded_object_live, both P3)
-# stay status="stub" -- that scope limit was never about dispatch
-# safety and is unaffected by the correction.
+# docs/MCP_TOOLING_SCAFFOLD_PLAN.md's draw.py entry). insert_embedded_
+# object_live is now real too, scoped to object_type="formula" (the one
+# CLSID trusted without a live round trip -- see uno_bridge.py's
+# _EMBEDDED_OBJECT_CLSIDS docstring). The remaining 1
+# (activate_embedded_object_live, P3) stays status="stub" -- verb-based
+# OLE activation wasn't exploration-tested this pass, unrelated to the
+# dispatch-crash risk the other three were re-enabled from.
 IMPLEMENTED_DRAWING_OBJECT_TOOL_NAMES = {
     "list_shapes_live", "get_shape_live", "insert_shape_live", "delete_shape_live",
     "duplicate_shape_live", "set_shape_geometry_live", "set_shape_style_live", "set_shape_text_live",
@@ -304,7 +304,7 @@ IMPLEMENTED_DRAWING_OBJECT_TOOL_NAMES = {
     "list_glue_points_live", "add_glue_point_live", "delete_glue_point_live", "insert_image_live",
     "replace_image_live", "set_image_properties_live", "export_shape_live", "list_embedded_objects_live",
     "delete_embedded_object_live", "combine_shapes_live", "split_shape_live", "bind_shapes_live",
-    "unbind_shape_live",
+    "unbind_shape_live", "insert_embedded_object_live",
 }
 
 
@@ -318,21 +318,9 @@ def test_implemented_modules_tools_are_marked_implemented():
             assert registry[name]["status"] == "implemented", f"{name} (in {module_name}) should be status='implemented'"
 
 
-def test_implemented_undo_tools_are_marked_implemented():
-    """Same guard as test_implemented_modules_tools_are_marked_implemented,
-    for the 12 individually-implemented tools in the mixed
-    undo_view_selection.py module (see IMPLEMENTED_TOOL_NAMES)."""
-    registry = get_registry()
-    for name in IMPLEMENTED_TOOL_NAMES:
-        assert registry[name]["status"] == "implemented", f"{name} should be status='implemented'"
-    still_stub = EXPECTED_BY_MODULE["undo_view_selection"] - IMPLEMENTED_TOOL_NAMES
-    for name in still_stub:
-        assert registry[name]["status"] == "stub", f"{name} should still be status='stub' (separate follow-up pass)"
-
-
 def test_implemented_drawing_object_tools_are_marked_implemented():
     """Same guard as test_implemented_modules_tools_are_marked_implemented,
-    for the 25 individually-implemented tools in the mixed
+    for the 30 individually-implemented tools in the mixed
     drawing_objects.py module (see IMPLEMENTED_DRAWING_OBJECT_TOOL_NAMES)."""
     registry = get_registry()
     for name in IMPLEMENTED_DRAWING_OBJECT_TOOL_NAMES:

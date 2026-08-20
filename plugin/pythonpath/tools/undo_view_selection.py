@@ -8,8 +8,8 @@ types where supported).
 UNO basis per spec: XUndoManagerSupplier/XUndoManager, XController/XFrame,
 document events, view data.
 
-12 of this module's 14 tools are real (status="implemented"), following
-the same pattern as core_runtime.py/document_lifecycle.py:
+All 14 of this module's tools are now real (status="implemented"),
+following the same pattern as core_runtime.py/document_lifecycle.py:
 tools.context.get_context() for live UNOBridge/DocumentRegistry/
 RuntimeState, _resolve_and_register/_error_response/_map_exception_to_code
 reused from document_lifecycle.py rather than re-derived here (single
@@ -19,14 +19,21 @@ source of truth for that mapping):
   - The 6 view/selection/locking tools: get_view_state_live, set_zoom_live,
     get_selection_live, clear_selection_live, lock_document_updates_live,
     unlock_document_updates_live.
-
-The remaining 2 tools (get_document_events_live,
-wait_for_document_event_live) are still NOT_IMPLEMENTED stubs --
-deliberately a separate follow-up pass: event capture needs a persistent
-listener registered against the document/desktop and a bounded event
-buffer with its own lifecycle, which is a different (and more complex)
-concern than the otherwise-synchronous UNO calls the rest of this module
-makes -- it deserves its own live-test cycle rather than being bundled in.
+  - The 2 event tools: get_document_events_live, wait_for_document_event_live
+    -- landed in a deliberately separate pass from the other 12 (this
+    module's own history has them as the last two stubs closed out): event
+    capture needs a persistent listener registered against the process-wide
+    com.sun.star.frame.GlobalEventBroadcaster singleton and a bounded event
+    buffer with its own lifecycle, a different (and more complex) concern
+    than the otherwise-synchronous UNO calls the rest of this module makes.
+    The real mechanism lives in uno_bridge.py (_DocumentEventCapture,
+    UNOBridge._ensure_document_event_capture/_record_document_event/
+    get_document_events/wait_for_document_event); this module only adds the
+    envelope plumbing plus best-effort document_id correlation via
+    DocumentRegistry.find_document_id (a captured event's source document
+    may have been opened directly in the LibreOffice GUI rather than
+    through open_document_live/create_document_live, in which case
+    document_id is reported as None rather than raised or dropped).
 
 Undo-context state (which named context is open, on which document, and
 its baseline undo-stack depth) is tracked on RuntimeState -- see
@@ -325,6 +332,58 @@ def clear_selection_live(document_id: Optional[str] = None) -> Dict[str, Any]:
         return _error_response(e, start, document_id=document_id)
 
 
+def _validate_event_types(event_types: Any, start: float, required: bool) -> Optional[Dict[str, Any]]:
+    """Return an INVALID_PARAMETER envelope if event_types is present but
+    malformed (not a list of strings), else None. `required` controls
+    whether None/omitted itself is an error -- wait_for_document_event_live
+    requires it, get_document_events_live treats it as "no filter"."""
+    if event_types is None:
+        if required:
+            return envelope.build_error(
+                "INVALID_PARAMETER", "event_types is required.", elapsed_ms=envelope.elapsed_ms_since(start),
+            )
+        return None
+    if not isinstance(event_types, list) or not all(isinstance(item, str) for item in event_types):
+        return envelope.build_error(
+            "INVALID_PARAMETER", f"event_types must be a list of strings, got {event_types!r}",
+            elapsed_ms=envelope.elapsed_ms_since(start),
+        )
+    return None
+
+
+def _validate_timeout_ms(timeout_ms: Any, start: float) -> Optional[Dict[str, Any]]:
+    if isinstance(timeout_ms, bool) or not isinstance(timeout_ms, int) or timeout_ms < 0:
+        return envelope.build_error(
+            "INVALID_PARAMETER", f"timeout_ms must be a non-negative integer, got {timeout_ms!r}",
+            elapsed_ms=envelope.elapsed_ms_since(start),
+        )
+    return None
+
+
+def _public_document_event(ctx, captured_event: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert an internal uno_bridge captured-event dict (which carries
+    the raw UNO `source` component so the tools layer can correlate it) to
+    the public envelope shape -- drops `source`, adds `document_id` via
+    DocumentRegistry.find_document_id (best-effort, None when the source
+    document was never registered through this extension)."""
+    source = captured_event.get("source")
+    document_id = None
+    if source is not None:
+        try:
+            document_id = ctx.document_registry.find_document_id(source)
+        except Exception:
+            # Best-effort only -- a correlation failure (e.g. a disposed
+            # proxy from a since-closed document) should never take down
+            # an otherwise-successful events read.
+            document_id = None
+    return {
+        "seq": captured_event["seq"],
+        "event_type": captured_event["event_type"],
+        "document_url": captured_event.get("document_url"),
+        "document_id": document_id,
+    }
+
+
 @register_tool(
     name="get_document_events_live",
     priority="P3",
@@ -333,10 +392,22 @@ def clear_selection_live(document_id: Optional[str] = None) -> Dict[str, Any]:
         "limit": {"type": "integer", "default": 100},
         "event_types": {"type": "array", "items": {"type": "string"}},
     }),
+    status="implemented",
 )
 def get_document_events_live(limit: int = 100, event_types: Optional[List[str]] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("get_document_events_live", start)
+    error = _validate_count(limit, start) or _validate_event_types(event_types, start, required=False)
+    if error is not None:
+        return error
+    ctx = context.get_context()
+    try:
+        captured = ctx.uno_bridge.get_document_events(limit=limit, event_types=event_types)
+        events = [_public_document_event(ctx, e) for e in captured]
+        return envelope.build_success(
+            result={"events": events, "count": len(events)}, elapsed_ms=envelope.elapsed_ms_since(start),
+        )
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -347,10 +418,26 @@ def get_document_events_live(limit: int = 100, event_types: Optional[List[str]] 
         "event_types": {"type": "array", "items": {"type": "string"}},
         "timeout_ms": {"type": "integer"},
     }, required=["event_types", "timeout_ms"]),
+    status="implemented",
 )
 def wait_for_document_event_live(event_types: List[str], timeout_ms: int) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("wait_for_document_event_live", start)
+    error = _validate_event_types(event_types, start, required=True) or _validate_timeout_ms(timeout_ms, start)
+    if error is not None:
+        return error
+    ctx = context.get_context()
+    try:
+        captured = ctx.uno_bridge.wait_for_document_event(event_types=event_types, timeout_ms=timeout_ms)
+        if captured is None:
+            return envelope.build_success(
+                result={"event": None, "timed_out": True}, elapsed_ms=envelope.elapsed_ms_since(start),
+            )
+        return envelope.build_success(
+            result={"event": _public_document_event(ctx, captured), "timed_out": False},
+            elapsed_ms=envelope.elapsed_ms_since(start),
+        )
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(

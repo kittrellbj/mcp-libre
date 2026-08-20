@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Unit tests for the 25 real (status="implemented") drawing_objects.py tools.
+Unit tests for the 30 real (status="implemented") drawing_objects.py tools.
 
 Uses a FakeUnoBridge modeling shapes as plain FakeShape objects in a
 single flat list (good enough to exercise the tool-layer logic --
@@ -52,6 +52,7 @@ class FakeShape:
         self.style = {}
         self.glue_points = []  # list of {"x", "y", "is_user_defined"}
         self.deleted = False
+        self.formula = None  # set by insert_embedded_object for object_type="formula"
 
 
 class FakeSelection:
@@ -303,6 +304,18 @@ class FakeUnoBridge:
 
     def list_embedded_objects(self, doc, container=None):
         return [s for s in self.shapes if s.shape_type == "ole"]
+
+    def insert_embedded_object(self, doc, object_type, container=None, position=None, size=None, data=None):
+        if object_type != "formula":
+            raise NotImplementedError(
+                f"insert_embedded_object_live is scoped to object_type='formula' this pass (got '{object_type}')."
+            )
+        shape = FakeShape("ole", (position or {}).get("x", 0), (position or {}).get("y", 0),
+                           (size or {}).get("width", 2000), (size or {}).get("height", 1000))
+        if data and data.get("formula") is not None:
+            shape.formula = str(data["formula"])
+        self.shapes.append(shape)
+        return shape
 
     def delete_embedded_object(self, doc, shape):
         self.delete_shape(doc, shape)
@@ -662,13 +675,40 @@ def test_list_and_delete_embedded_objects_live():
     assert len(uno_bridge.shapes) == 1
 
 
-def test_insert_and_activate_embedded_object_are_still_not_implemented():
+def test_insert_embedded_object_live_formula_creates_and_registers():
+    context.reset()
+    uno_bridge, _, _ = _install(active_document=FakeDocument())
+    result = _handler("insert_embedded_object_live")(object_type="formula", data={"formula": "a %OVER% b"})
+    assert result["success"] is True
+    assert result["result"]["type"] == "ole"
+    assert uno_bridge.shapes[0].formula == "a %OVER% b"
+    # Registered like every other shape -- resolvable by the shape_id the
+    # tool returned, same round trip get_shape_live already covers for
+    # other shape types.
+    shape_id = result["result"]["shape_id"]
+    fetched = _handler("get_shape_live")(shape_id=shape_id)
+    assert fetched["success"] is True
+
+
+def test_insert_embedded_object_live_unscoped_type_is_unsupported_capability():
+    """Scoped to object_type='formula' this pass -- any other type raises
+    a clear, named error rather than guessing a CLSID, and now that the
+    tool is status='implemented' that surfaces as UNSUPPORTED_CAPABILITY
+    (a real, well-formed call this build genuinely can't do), not the
+    generic scaffold-stub NOT_IMPLEMENTED code."""
     context.reset()
     _install(active_document=FakeDocument())
     result = _handler("insert_embedded_object_live")(object_type="chart")
+    assert result["success"] is False
+    assert result["error"]["code"] == "UNSUPPORTED_CAPABILITY"
+    assert "formula" in result["error"]["message"]
+
+
+def test_activate_embedded_object_live_is_still_not_implemented():
+    context.reset()
+    _install(active_document=FakeDocument())
+    result = _handler("activate_embedded_object_live")(object_id="a")
     assert result["success"] is False and result["error"]["code"] == "NOT_IMPLEMENTED"
-    result2 = _handler("activate_embedded_object_live")(object_id="a")
-    assert result2["success"] is False and result2["error"]["code"] == "NOT_IMPLEMENTED"
 
 
 if __name__ == "__main__":
@@ -702,7 +742,9 @@ if __name__ == "__main__":
         test_replace_image_live_on_non_image_shape_is_unsupported,
         test_export_shape_live,
         test_list_and_delete_embedded_objects_live,
-        test_insert_and_activate_embedded_object_are_still_not_implemented,
+        test_insert_embedded_object_live_formula_creates_and_registers,
+        test_insert_embedded_object_live_unscoped_type_is_unsupported_capability,
+        test_activate_embedded_object_live_is_still_not_implemented,
     ]
     for test in tests:
         test()

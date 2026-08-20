@@ -169,6 +169,46 @@ class FakeUnoBridge:
     def unlock_document_updates(self, doc):
         doc.lock_count -= 1
 
+    # -- document events --
+    #
+    # Models the real UNOBridge's seq-numbered bounded buffer closely
+    # enough to exercise the tools-layer logic (filtering, limit, timeout
+    # vs. found), without a real GlobalEventBroadcaster. push_event() is
+    # the test helper standing in for "a document event just fired".
+
+    def __init_events__(self):
+        # Called explicitly by tests rather than from FakeUnoBridge.__init__
+        # so plain undo/view tests above (which never touch events) don't
+        # need to know this state exists.
+        self._events = []
+        self._event_seq = 0
+
+    def push_event(self, event_type, source=None, document_url=None):
+        self._event_seq += 1
+        self._events.append({
+            "seq": self._event_seq, "event_type": event_type,
+            "document_url": document_url, "source": source,
+        })
+
+    def get_document_events(self, limit=100, event_types=None):
+        events = self._events
+        if event_types:
+            wanted = set(event_types)
+            events = [e for e in events if e["event_type"] in wanted]
+        return events[-limit:] if limit else []
+
+    def wait_for_document_event(self, event_types, timeout_ms):
+        # Fake is synchronous/non-blocking: only ever "finds" an event
+        # that was already pushed before the call, at or after whatever
+        # seq the test cares about -- real timing/blocking behavior is a
+        # live-verification concern, not a unit-test one (this fake can't
+        # simulate a concurrent event arriving mid-wait).
+        wanted = set(event_types)
+        for event in self._events:
+            if event["event_type"] in wanted:
+                return event
+        return None
+
 
 def _install(active_document=None):
     uno_bridge = FakeUnoBridge(active_document=active_document)
@@ -492,6 +532,135 @@ def test_lock_document_updates_live_no_active_document():
     assert result["error"]["code"] == "NO_ACTIVE_DOCUMENT"
 
 
+# -- get_document_events_live / wait_for_document_event_live --
+
+def test_get_document_events_live_reports_empty_buffer():
+    context.reset()
+    uno_bridge, _, _ = _install(active_document=FakeDocument())
+    uno_bridge.__init_events__()
+    result = _handler("get_document_events_live")()
+    assert result["success"] is True
+    assert result["result"] == {"events": [], "count": 0}
+
+
+def test_get_document_events_live_reports_captured_events():
+    context.reset()
+    uno_bridge, _, _ = _install(active_document=FakeDocument())
+    uno_bridge.__init_events__()
+    uno_bridge.push_event("OnLoad")
+    uno_bridge.push_event("OnSave")
+    result = _handler("get_document_events_live")()
+    assert result["success"] is True
+    assert result["result"]["count"] == 2
+    assert [e["event_type"] for e in result["result"]["events"]] == ["OnLoad", "OnSave"]
+    assert [e["seq"] for e in result["result"]["events"]] == [1, 2]
+
+
+def test_get_document_events_live_filters_by_event_types():
+    context.reset()
+    uno_bridge, _, _ = _install(active_document=FakeDocument())
+    uno_bridge.__init_events__()
+    uno_bridge.push_event("OnLoad")
+    uno_bridge.push_event("OnSave")
+    uno_bridge.push_event("OnSave")
+    result = _handler("get_document_events_live")(event_types=["OnSave"])
+    assert result["result"]["count"] == 2
+    assert all(e["event_type"] == "OnSave" for e in result["result"]["events"])
+
+
+def test_get_document_events_live_respects_limit():
+    context.reset()
+    uno_bridge, _, _ = _install(active_document=FakeDocument())
+    uno_bridge.__init_events__()
+    for _ in range(5):
+        uno_bridge.push_event("OnModifyChanged")
+    result = _handler("get_document_events_live")(limit=2)
+    assert result["result"]["count"] == 2
+    # The most recent 2, not the oldest 2.
+    assert [e["seq"] for e in result["result"]["events"]] == [4, 5]
+
+
+def test_get_document_events_live_rejects_non_positive_limit():
+    context.reset()
+    uno_bridge, _, _ = _install(active_document=FakeDocument())
+    uno_bridge.__init_events__()
+    result = _handler("get_document_events_live")(limit=0)
+    assert result["success"] is False
+    assert result["error"]["code"] == "INVALID_PARAMETER"
+
+
+def test_get_document_events_live_rejects_malformed_event_types():
+    context.reset()
+    uno_bridge, _, _ = _install(active_document=FakeDocument())
+    uno_bridge.__init_events__()
+    result = _handler("get_document_events_live")(event_types="OnSave")
+    assert result["success"] is False
+    assert result["error"]["code"] == "INVALID_PARAMETER"
+
+
+def test_get_document_events_live_correlates_registered_document_id():
+    context.reset()
+    uno_bridge, document_registry, _ = _install(active_document=FakeDocument())
+    uno_bridge.__init_events__()
+    other_doc = FakeDocument(title="Other")
+    document_id = document_registry.register_document(other_doc)
+    uno_bridge.push_event("OnSave", source=other_doc, document_url="file:///other.odt")
+    result = _handler("get_document_events_live")()
+    event = result["result"]["events"][0]
+    assert event["document_id"] == document_id
+    assert event["document_url"] == "file:///other.odt"
+
+
+def test_get_document_events_live_reports_null_document_id_for_unregistered_source():
+    context.reset()
+    uno_bridge, _, _ = _install(active_document=FakeDocument())
+    uno_bridge.__init_events__()
+    # A document opened directly in the LibreOffice GUI, never registered
+    # through open_document_live/create_document_live.
+    unregistered_doc = FakeDocument(title="Human-opened")
+    uno_bridge.push_event("OnLoad", source=unregistered_doc)
+    result = _handler("get_document_events_live")()
+    assert result["result"]["events"][0]["document_id"] is None
+
+
+def test_wait_for_document_event_live_finds_matching_event():
+    context.reset()
+    uno_bridge, _, _ = _install(active_document=FakeDocument())
+    uno_bridge.__init_events__()
+    uno_bridge.push_event("OnSave")
+    result = _handler("wait_for_document_event_live")(event_types=["OnSave"], timeout_ms=1000)
+    assert result["success"] is True
+    assert result["result"]["timed_out"] is False
+    assert result["result"]["event"]["event_type"] == "OnSave"
+
+
+def test_wait_for_document_event_live_times_out_cleanly():
+    context.reset()
+    uno_bridge, _, _ = _install(active_document=FakeDocument())
+    uno_bridge.__init_events__()
+    result = _handler("wait_for_document_event_live")(event_types=["OnSave"], timeout_ms=10)
+    assert result["success"] is True
+    assert result["result"] == {"event": None, "timed_out": True}
+
+
+def test_wait_for_document_event_live_requires_event_types():
+    context.reset()
+    uno_bridge, _, _ = _install(active_document=FakeDocument())
+    uno_bridge.__init_events__()
+    result = _handler("wait_for_document_event_live")(event_types=None, timeout_ms=1000)
+    assert result["success"] is False
+    assert result["error"]["code"] == "INVALID_PARAMETER"
+
+
+def test_wait_for_document_event_live_rejects_negative_timeout():
+    context.reset()
+    uno_bridge, _, _ = _install(active_document=FakeDocument())
+    uno_bridge.__init_events__()
+    result = _handler("wait_for_document_event_live")(event_types=["OnSave"], timeout_ms=-1)
+    assert result["success"] is False
+    assert result["error"]["code"] == "INVALID_PARAMETER"
+
+
 if __name__ == "__main__":
     tests = [
         test_get_undo_state_live_reports_empty_stack,
@@ -521,6 +690,18 @@ if __name__ == "__main__":
         test_clear_selection_live_unsupported_document_type,
         test_lock_then_unlock_document_updates_live,
         test_lock_document_updates_live_no_active_document,
+        test_get_document_events_live_reports_empty_buffer,
+        test_get_document_events_live_reports_captured_events,
+        test_get_document_events_live_filters_by_event_types,
+        test_get_document_events_live_respects_limit,
+        test_get_document_events_live_rejects_non_positive_limit,
+        test_get_document_events_live_rejects_malformed_event_types,
+        test_get_document_events_live_correlates_registered_document_id,
+        test_get_document_events_live_reports_null_document_id_for_unregistered_source,
+        test_wait_for_document_event_live_finds_matching_event,
+        test_wait_for_document_event_live_times_out_cleanly,
+        test_wait_for_document_event_live_requires_event_types,
+        test_wait_for_document_event_live_rejects_negative_timeout,
     ]
     for test in tests:
         test()

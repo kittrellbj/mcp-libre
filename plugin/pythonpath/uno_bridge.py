@@ -14,9 +14,12 @@ from com.sun.star.sheet import CellFlags
 from com.sun.star.text.ControlCharacter import PARAGRAPH_BREAK
 from com.sun.star.util import NumberFormat
 from typing import Any, Optional, Dict, List
+import collections
 import logging
 import os
 import re
+import threading
+import time
 import traceback
 
 from uno_datetime import uno_datetime_to_iso, uno_temporal_value_to_plain
@@ -60,9 +63,44 @@ def _is_instance(obj, cls):
     return isinstance(obj, cls)
 
 
+# Bounded so a long-running session's document-event capture can't grow
+# without limit -- get_document_events_live/wait_for_document_event_live
+# only ever need recent history, per docs/MCP_TOOLING_SCAFFOLD_PLAN.md's
+# design note for this pair. Each entry carries a monotonically
+# increasing `seq` (not a raw deque index/length) specifically so
+# wait_for_document_event's "since" bookkeeping doesn't silently break
+# once eviction starts once maxlen is hit.
+_DOCUMENT_EVENT_BUFFER_MAXLEN = 500
+
+
+if XDocumentEventListener is not None:
+    class _DocumentEventCapture(unohelper.Base, XDocumentEventListener):
+        """Registered once, process-wide, against
+        com.sun.star.frame.GlobalEventBroadcaster (see
+        UNOBridge._ensure_document_event_capture). Kept deliberately
+        trivial -- append to the owning bridge's buffer and notify,
+        nothing else -- so the callback never risks stalling
+        LibreOffice's own event-dispatch thread with a UNO call back
+        out."""
+
+        def __init__(self, bridge: "UNOBridge") -> None:
+            self._bridge = bridge
+
+        def documentEventOccured(self, event: Any) -> None:  # noqa: N802 --
+            # XDocumentEventListener's own interface spells this without
+            # the second 'r' ("Occured", not "Occurred"); matching the
+            # real UNO method name exactly, not a typo to fix.
+            self._bridge._record_document_event(event)
+
+        def disposing(self, event: Any) -> None:
+            pass
+else:
+    _DocumentEventCapture = None
+
+
 class UNOBridge:
     """Bridge between MCP operations and LibreOffice UNO API"""
-    
+
     def __init__(self):
         """Initialize the UNO bridge"""
         try:
@@ -70,6 +108,17 @@ class UNOBridge:
             self.smgr = self.ctx.ServiceManager
             self.desktop = self.smgr.createInstanceWithContext(
                 "com.sun.star.frame.Desktop", self.ctx)
+            # Document-event capture state (get_document_events_live/
+            # wait_for_document_event_live) -- see
+            # _ensure_document_event_capture()/_record_document_event()
+            # below. Lazily registered on first use, not here, so
+            # constructing a UNOBridge never depends on
+            # GlobalEventBroadcaster being reachable.
+            self._event_buffer = collections.deque(maxlen=_DOCUMENT_EVENT_BUFFER_MAXLEN)
+            self._event_lock = threading.Lock()
+            self._event_condition = threading.Condition(self._event_lock)
+            self._event_seq = 0
+            self._event_listener = None
             logger.info("UNO Bridge initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize UNO Bridge: {e}")
@@ -888,6 +937,116 @@ class UNOBridge:
         called exactly once per lock_document_updates() call; UNO tracks
         this as a nesting count, not a boolean."""
         doc.unlockControllers()
+
+    # -- Document events (get_document_events_live/wait_for_document_event_live) --
+    #
+    # Real implementation pass, closing the last of Part 2's 12
+    # scope-limited stubs. A single com.sun.star.document.XDocumentEventListener
+    # (_DocumentEventCapture above) is registered once, process-wide,
+    # against the com.sun.star.frame.GlobalEventBroadcaster singleton --
+    # that singleton already covers every open document, not just the
+    # active one, so no per-document registration is needed. Captured
+    # events land in self._event_buffer (a bounded deque guarded by
+    # self._event_condition), keyed by a monotonically increasing seq
+    # rather than deque position/length, since a bounded deque silently
+    # evicts from the left once maxlen is hit.
+    #
+    # Correlating event.Source back to this extension's own document_id
+    # is deliberately NOT done here -- UNOBridge has no DocumentRegistry
+    # reference (keeping the bridge layer document-registry-agnostic,
+    # same separation document_lifecycle.py's own docstring describes).
+    # tools/undo_view_selection.py does that correlation at the tools
+    # layer instead, best-effort, since a document opened directly in the
+    # LibreOffice GUI (not through open_document_live/create_document_live)
+    # was never registered and has no document_id.
+
+    def _ensure_document_event_capture(self) -> None:
+        """Idempotently register the single process-wide document-event
+        listener. Safe to call on every get/wait_for_document_event_live
+        invocation -- live-verified a second call after the first
+        successful registration is a no-op (the guard below short-circuits
+        before ever reaching addDocumentEventListener again), so it
+        can't produce a duplicate listener or duplicate captured events."""
+        if _DocumentEventCapture is None:
+            raise NotImplementedError(
+                "com.sun.star.document.XDocumentEventListener is unavailable in this "
+                "LibreOffice/PyUNO build -- document-event capture cannot be enabled."
+            )
+        with self._event_lock:
+            if self._event_listener is not None:
+                return
+            broadcaster = self.smgr.createInstanceWithContext(
+                "com.sun.star.frame.GlobalEventBroadcaster", self.ctx)
+            listener = _DocumentEventCapture(self)
+            broadcaster.addDocumentEventListener(listener)
+            # Keep a reference to both -- the broadcaster only holds a weak
+            # tie to the listener via its own internal container, and
+            # nothing else in this process would otherwise keep `listener`
+            # alive.
+            self._event_broadcaster = broadcaster
+            self._event_listener = listener
+
+    def _record_document_event(self, event: Any) -> None:
+        """Callback body for _DocumentEventCapture.documentEventOccured --
+        append-only, no UNO calls back out (see this class's own
+        docstring for why). event.Source is the raw XComponent the event
+        fired on; kept by reference so the tools layer can best-effort
+        resolve it to a document_id later, and document_url is captured
+        now (rather than deferred) since a document that closes between
+        the event firing and a later read would make event.Source.
+        getURL() raise or return stale/empty data."""
+        with self._event_condition:
+            self._event_seq += 1
+            try:
+                document_url = event.Source.getURL() if hasattr(event.Source, "getURL") else None
+            except Exception:
+                document_url = None
+            self._event_buffer.append({
+                "seq": self._event_seq,
+                "event_type": event.EventName,
+                "document_url": document_url or None,
+                "source": event.Source,
+            })
+            self._event_condition.notify_all()
+
+    def get_document_events(self, limit: int = 100, event_types: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        """Return up to the last `limit` captured events (oldest to
+        newest), optionally filtered to `event_types`. Registers the
+        listener on first call if it isn't already -- so events fired
+        before the very first get/wait_for_document_event_live call of
+        this process's lifetime are never captured; this is a documented
+        open question (does GlobalEventBroadcaster fire OnLoad for a
+        document already open before registration?), not silently
+        assumed either way here."""
+        self._ensure_document_event_capture()
+        with self._event_lock:
+            events = list(self._event_buffer)
+        if event_types:
+            wanted = set(event_types)
+            events = [e for e in events if e["event_type"] in wanted]
+        return events[-limit:] if limit else []
+
+    def wait_for_document_event(self, event_types: List[str], timeout_ms: int) -> Optional[Dict[str, Any]]:
+        """Block the calling thread (confirmed safe -- ai_interface.py's
+        ReusableThreadingTCPServer runs every HTTP request on its own
+        thread, separate from whatever internal thread(s) fire document
+        events) until a buffered event with seq > the snapshot taken at
+        entry and a matching event_type appears, or timeout_ms elapses.
+        Returns None on timeout rather than raising -- a timeout is an
+        expected, non-error outcome for this tool."""
+        self._ensure_document_event_capture()
+        wanted = set(event_types)
+        deadline = time.monotonic() + max(timeout_ms, 0) / 1000.0
+        with self._event_condition:
+            snapshot_seq = self._event_seq
+            while True:
+                for candidate in self._event_buffer:
+                    if candidate["seq"] > snapshot_seq and candidate["event_type"] in wanted:
+                        return candidate
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                self._event_condition.wait(remaining)
 
     # -- Styles and formatting -----------------------------------------
 
@@ -4207,12 +4366,75 @@ class UNOBridge:
     def list_embedded_objects(self, doc: Any, container: Optional[Any] = None) -> List[Any]:
         return self.list_shapes_in_container(doc, container, type_filter="ole")
 
-    # insert_embedded_object/activate_embedded_object (P3) have no bridge
-    # methods, same reasoning as combine_shapes/split_shape above:
-    # embedded-object creation covers a wide, uncertain range of OLE
-    # types, and OLE activation is dispatch/verb-based -- the same risk
-    # class .uno:Combine crashed headless soffice on this pass. Both stay
-    # pure status="stub" NOT_IMPLEMENTED responses.
+    # CLSID identifying each embeddable OLE2Shape's component type --
+    # com.sun.star.drawing.OLE2Shape.CLSID is a UNO-wrapped class-id
+    # string LibreOffice itself resolves against its own small fixed set
+    # of embeddable component types, independent of any real Windows COM
+    # registration. Only "formula" is populated: the Math-formula CLSID
+    # below is repeated identically and consistently across many
+    # independent sources, high enough confidence to ship without a live
+    # round trip to confirm it. The other common types (embedded Calc
+    # sheet, embedded Writer text, embedded chart) have CLSIDs floating
+    # around various tutorials too, but not the same repeated-independent-
+    # source confidence -- a wrong CLSID here doesn't fail loudly the way
+    # a wrong service name would, exactly the silent-wrong-behavior risk
+    # this project's CoreReflection-verification precedent exists to
+    # catch. insert_embedded_object() below raises a clear
+    # NotImplementedError naming the gap for any other object_type rather
+    # than shipping a guessed GUID as fact -- widen this map only once a
+    # live pass confirms the next one.
+    _EMBEDDED_OBJECT_CLSIDS = {
+        "formula": "078B7ABA-54FC-457F-8551-6147E776A997",
+    }
+
+    def insert_embedded_object(self, doc: Any, object_type: str, container: Optional[Any] = None,
+                                position: Optional[Dict[str, Any]] = None, size: Optional[Dict[str, Any]] = None,
+                                data: Optional[Dict[str, Any]] = None) -> Any:
+        """Insert a com.sun.star.drawing.OLE2Shape onto container's draw
+        page. CLSID must be set before page.add() -- the documented
+        OOo/LibreOffice Basic macro pattern for this shape type, and
+        live-verified elsewhere in this file that OLE2Shape is already
+        one of _SHAPE_SERVICE_TYPE_NAMES's recognized types (short name
+        "ole"), so get_shape_summary/get_shape_details work on the result
+        unchanged, same as every other shape this module creates.
+
+        Scoped to object_type='formula' this pass -- see
+        _EMBEDDED_OBJECT_CLSIDS's docstring for why the other embeddable
+        types aren't included yet. data={'formula': '<text>'} sets the
+        new Math object's formula via its Model's own Formula property,
+        the one piece of formula-object content worth setting at
+        creation time; any other data key is silently ignored (matching
+        this file's established best-effort-property convention)."""
+        clsid = self._EMBEDDED_OBJECT_CLSIDS.get(object_type)
+        if clsid is None:
+            raise NotImplementedError(
+                f"insert_embedded_object_live is scoped to object_type='formula' this pass "
+                f"(got '{object_type}'). Other embeddable types (Calc sheet, Writer text, "
+                "chart, etc.) each need their own live-confirmed CLSID before being added -- "
+                "see this method's own docstring."
+            )
+        page = self._resolve_shape_container(doc, container)
+        shape = doc.createInstance("com.sun.star.drawing.OLE2Shape")
+        shape.CLSID = clsid
+        page.add(shape)
+        shape.Position = uno.createUnoStruct(
+            "com.sun.star.awt.Point", int((position or {}).get("x", 0)), int((position or {}).get("y", 0)))
+        shape.Size = uno.createUnoStruct(
+            "com.sun.star.awt.Size", int((size or {}).get("width", 2000)), int((size or {}).get("height", 1000)))
+        if object_type == "formula" and data and data.get("formula") is not None:
+            model = shape.Model
+            if hasattr(model, "Formula"):
+                model.Formula = str(data["formula"])
+        return shape
+
+    # activate_embedded_object (P3) has no bridge method yet -- verb-based
+    # OLE activation (.uno: dispatch or XEmbeddedObject.setState() verbs
+    # like EMBED_STATE_ACTIVE/EMBED_STATE_UI_ACTIVE) wasn't exploration-
+    # tested this pass, and has more UNO-version variance than anything
+    # else insert_embedded_object above touches. Stays status="stub"
+    # NOT_IMPLEMENTED until its own live pass, now that
+    # insert_embedded_object_live can produce a real object_id to
+    # activate against.
 
     def delete_embedded_object(self, doc: Any, shape: Any) -> None:
         self.delete_shape(doc, shape)

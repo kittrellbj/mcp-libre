@@ -42,12 +42,19 @@ independent shapes afterward, so their ObjectRegistry entries are
 unregistered as part of the operation, the same way ungroup_shape_live
 already unregisters a consumed group's handle.
 
-insert_embedded_object_live and activate_embedded_object_live remain
-NOT_IMPLEMENTED -- that scope limit was never about dispatch safety
-(embedded-object creation covers a wide, uncertain range of OLE types;
-OLE activation wasn't exploration-tested this pass either), so it's
-unaffected by the correction above. Both are P3 (lowest priority) in
-the spec.
+insert_embedded_object_live is now real, scoped to object_type="formula"
+only -- the one CLSID (com.sun.star.drawing.OLE2Shape.CLSID) repeated
+identically across enough independent sources to trust without a live
+round trip; see uno_bridge.py's insert_embedded_object()/
+_EMBEDDED_OBJECT_CLSIDS docstrings for why the other embeddable types
+(Calc sheet, Writer text, chart) aren't included yet -- any other
+object_type raises a clear NotImplementedError naming the gap rather
+than guessing a GUID. activate_embedded_object_live remains
+NOT_IMPLEMENTED -- verb-based OLE activation wasn't exploration-tested
+this pass and has more UNO-version variance than anything else in this
+module; worth its own pass now that insert_embedded_object_live can
+produce a real object to activate against. Both are P3 (lowest
+priority) in the spec.
 """
 
 from typing import Any, Dict, List, Optional
@@ -765,7 +772,7 @@ def list_embedded_objects_live(container: Optional[str] = None) -> Dict[str, Any
 @register_tool(
     name="insert_embedded_object_live",
     priority="P3",
-    purpose="Insert an embedded object of a supported class/service.",
+    purpose="Insert an embedded object of a supported class/service. Scoped to object_type='formula' this pass.",
     parameters=schema({
         "object_type": {"type": "string"},
         "container": {"type": "string"},
@@ -773,12 +780,23 @@ def list_embedded_objects_live(container: Optional[str] = None) -> Dict[str, Any
         "size": {"type": "object"},
         "data": {"type": "object"},
     }, required=["object_type"]),
+    status="implemented",
 )
 def insert_embedded_object_live(object_type: str, container: Optional[str] = None,
                                  position: Optional[Dict[str, Any]] = None, size: Optional[Dict[str, Any]] = None,
                                  data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("insert_embedded_object_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        shape = ctx.uno_bridge.insert_embedded_object(doc, object_type, container, position, size, data)
+        shape_id = _get_object_registry(ctx, resolved_id).register_object(shape)
+        return envelope.build_success(
+            result=ctx.uno_bridge.get_shape_summary(shape, shape_id), document_id=resolved_id,
+            elapsed_ms=envelope.elapsed_ms_since(start),
+        )
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(

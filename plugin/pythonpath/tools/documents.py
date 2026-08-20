@@ -166,6 +166,23 @@ class DocumentRegistry:
             raise NoActiveDocumentError()
         return active
 
+    def find_document_id(self, uno_document: Any) -> Optional[str]:
+        """Best-effort reverse lookup: return the document_id already
+        registered for uno_document, or None if it was never registered
+        through this extension.
+
+        Unlike resolve_document(), this never raises and never mints a
+        new id -- read-only by design. Added for get_document_events_live/
+        wait_for_document_event_live: a captured document-event's
+        event.Source may be a document a human opened directly in the
+        LibreOffice GUI rather than through open_document_live/
+        create_document_live, which this registry was never told about.
+        Reporting document_id=None for that case (rather than raising or
+        silently registering it) is the intended behavior, not a gap.
+        """
+        with self._lock:
+            return self._ids_by_identity.get(uno_document)
+
     def unregister_document(self, document_id: str) -> None:
         """Drop a document_id from the registry.
 

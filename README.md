@@ -1,7 +1,7 @@
 # LibreOffice MCP Server
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.3-blue.svg)](#versioning)
+[![Version](https://img.shields.io/badge/version-2.0.4-blue.svg)](#versioning)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](#requirements)
 [![LibreOffice](https://img.shields.io/badge/LibreOffice-24.2%2B-18A303.svg)](#requirements)
 
@@ -44,7 +44,7 @@ This fork focuses on making the native LibreOffice extension work cleanly on Win
 
 Version 2.0.0 grows the project from the v1.0.0 Windows native-extension baseline into a full LibreOffice automation surface for AI agents: the tool catalog expanded roughly twelvefold, the embedded HTTP server gained real concurrency safety, and the MCP transport itself was brought into spec conformance.
 
-- **398 registered MCP tools** across Writer, Calc, Impress, Draw, and shared LibreOffice services — up from the 32-tool v1.0.0 baseline. 388 are live by default (the original 32 plus 356 fully implemented since); 10 remain stub-only, opt-in, and return `NOT_IMPLEMENTED` until finished (see [Tooling Roadmap](#tooling-roadmap)).
+- **398 registered MCP tools** across Writer, Calc, Impress, Draw, and shared LibreOffice services — up from the 32-tool v1.0.0 baseline. 392 are live by default (the original 32 plus 360 fully implemented since); 6 remain stub-only, opt-in, and return `NOT_IMPLEMENTED` until finished (see [Tooling Roadmap](#tooling-roadmap)).
 - **Concurrency control**: a process-wide UNO execution lock plus a bounded admission semaphore protect the embedded HTTP server from PyUNO bridge corruption under concurrent tool calls. Live-verified at 600/600 concurrent round trips with 0 errors.
 - **MCP transport protocol conformance**: `Mcp-Session-Id` is now enforced end to end, and `MCP-Protocol-Version` is validated and negotiated per the MCP specification on every request.
 - **451 automated tests passing**, plus live install/launch/health-check probes run against a real LibreOffice process for everything that can't be unit-tested outside one.
@@ -84,7 +84,7 @@ Numbers pulled from the project's own history (`docs/MCP_TOOLING_SCAFFOLD_PLAN.m
 - **600/600** concurrent tool-call round trips succeeded with 0 errors in the concurrency-safety probe (2 threads × 300 iterations against two live Writer documents).
 - **15/15** MCP transport protocol-conformance checks passed live against a real running extension (session-id enforcement, protocol-version negotiation).
 - **51 commits** landed since the v1.0.0 baseline (85 commits total across the project's full history).
-- **398 registered MCP tools** across Writer (99), Calc (99), Impress (41), Draw (16), and shared services (111), plus the original 32 legacy tools — 388 live by default, 10 stub-only pending (see [Tooling Roadmap](#tooling-roadmap)).
+- **398 registered MCP tools** across Writer (99), Calc (99), Impress (41), Draw (16), and shared services (111), plus the original 32 legacy tools — 392 live by default, 6 stub-only pending (see [Tooling Roadmap](#tooling-roadmap)).
 
 ---
 
@@ -204,7 +204,7 @@ python build-oxt-windows.py
 The extension package is created at:
 
 ```text
-build/libreoffice-mcp-extension-2.0.3.oxt
+build/libreoffice-mcp-extension-2.0.4.oxt
 ```
 
 The Windows builder creates a LibreOffice-compatible ZIP/OXT structure with normalized archive paths.
@@ -218,7 +218,7 @@ PowerShell example:
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
 & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension
-& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.3.oxt"
+& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.4.oxt"
 ```
 
 Removing an extension that is not already installed may report that no matching extension exists. That is harmless.
@@ -269,7 +269,7 @@ A convenient rebuild/reinstall command in PowerShell is:
 
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
-python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.3.oxt"
+python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.4.oxt"
 ```
 
 Then reopen LibreOffice and start the MCP server from the Tools menu.
@@ -395,7 +395,7 @@ Full write-up, including the empirical test that found the actual bug, in [`docs
 
 # Writer / Calc / Impress / Draw Automation via MCP
 
-The v2.0.0 catalog registers **398 MCP tools**: the 32-tool v1.0.0 compatibility baseline (always live, Writer-focused) plus 366 tools added since, organized by LibreOffice application area. 389 tools are live by default; 9 remain stub-only until implemented (enable them for development with `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS=1` — each returns a `NOT_IMPLEMENTED` error until finished).
+The v2.0.0 catalog registers **398 MCP tools**: the 32-tool v1.0.0 compatibility baseline (always live, Writer-focused) plus 366 tools added since, organized by LibreOffice application area. 392 tools are live by default; 6 remain stub-only until implemented (enable them for development with `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS=1` — each returns a `NOT_IMPLEMENTED` error until finished).
 
 | Area | Tools | Live by default | Stub-only |
 |---|---:|---:|---:|
@@ -404,8 +404,8 @@ The v2.0.0 catalog registers **398 MCP tools**: the 32-tool v1.0.0 compatibility
 | Calc (sheets, cells, ranges, external data) | 99 | 99 | 0 |
 | Impress (slides, animation, slideshow) | 41 | 38 | 3 |
 | Draw (pages, shapes, connectors) | 16 | 16 | 0 |
-| Shared services (charts, drawing objects, styles, undo/view/selection, document lifecycle, core runtime) | 111 | 107 | 4 |
-| **Total** | **398** | **389** | **9** |
+| Shared services (charts, drawing objects, styles, undo/view/selection, document lifecycle, core runtime) | 111 | 110 | 1 |
+| **Total** | **398** | **392** | **6** |
 
 <details>
 <summary><strong>v1.0.0 baseline — Document lifecycle</strong></summary>
@@ -670,7 +670,7 @@ These changes prevent a slow or abandoned client request from blocking the entir
 
 # Tooling Roadmap
 
-Most of the v1.0.0 roadmap is now implemented — see [Writer / Calc / Impress / Draw Automation via MCP](#writer--calc--impress--draw-automation-via-mcp) for the live catalog. 9 tools remain stub-only, opt-in behind `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS=1`, each returning `NOT_IMPLEMENTED` until finished. They split into two distinct groups — five are genuinely blocked, four are just unbuilt:
+Most of the v1.0.0 roadmap is now implemented — see [Writer / Calc / Impress / Draw Automation via MCP](#writer--calc--impress--draw-automation-via-mcp) for the live catalog. 6 tools remain stub-only, opt-in behind `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS=1`, each returning `NOT_IMPLEMENTED` until finished. They split into two distinct groups — five are genuinely blocked, one is just unbuilt:
 
 **Cannot implement due to a UNO API/environment limitation (5)** — live-verified against real LibreOffice, not a scheduling gap:
 
@@ -678,11 +678,11 @@ Most of the v1.0.0 roadmap is now implemented — see [Writer / Calc / Impress /
 - `mail_merge_live` — the real `com.sun.star.text.MailMerge` service needs a `DataSourceName` registered through `DatabaseContext`, which live-verified refuses to register an ad hoc `DataSource` without first persisting it to a real `.odb` file via `XStorable`. (`preview_mail_merge_live` works today via an unregistered ad hoc SDBC connection over a CSV folder.)
 - `next_slideshow_effect_live`, `previous_slideshow_effect_live`, `goto_slideshow_slide_live` — all three need a live `XSlideShowController`, confirmed via live verification to always be `None` in headless mode (no window manager to render a slideshow view to). (`start_slideshow_live`/`stop_slideshow_live` don't need the controller and work fine.)
 
-**Scope-limited (4)** — a real UNO mechanism exists, just not attempted yet. Calc's 3 external-link tools, Impress's 4 animation-mutation tools, and `add_chart_series_live` were finished and moved out of this list — see the Calc entry (built on `com.sun.star.sheet.XAreaLinks`), the Impress entry (built on the generic `com.sun.star.animations` module), and the Charts entry (built on `XDataProvider.createDataSequenceByRangeRepresentation`) under [Writer / Calc / Impress / Draw Automation via MCP](#writer--calc--impress--draw-automation-via-mcp) above, all live-verified end to end:
+**Scope-limited (1)** — a real UNO mechanism exists, just not attempted yet. Calc's 3 external-link tools, Impress's 4 animation-mutation tools, and `add_chart_series_live` were finished and live-verified end to end in earlier passes — see the Calc entry (built on `com.sun.star.sheet.XAreaLinks`), the Impress entry (built on the generic `com.sun.star.animations` module), and the Charts entry (built on `XDataProvider.createDataSequenceByRangeRepresentation`) under [Writer / Calc / Impress / Draw Automation via MCP](#writer--calc--impress--draw-automation-via-mcp) above. `insert_embedded_object_live` (scoped to `object_type="formula"`, built on `com.sun.star.drawing.OLE2Shape`) and the document-events pair `get_document_events_live`/`wait_for_document_event_live` (built on a process-wide `com.sun.star.document.XDocumentEventListener` registered against `GlobalEventBroadcaster`) also moved out of this list this pass — code complete and unit-tested, but their live-verification REST round trip against real LibreOffice is still pending (the extension's live instance was held for a separate overnight test at the time of this pass; see `docs/MCP_TOOLING_SCAFFOLD_PLAN.md`'s corresponding entries for status):
 
-- **Shared services**: `insert_embedded_object_live`, `activate_embedded_object_live`, `get_document_events_live`, `wait_for_document_event_live`
+- **Shared services**: `activate_embedded_object_live` — verb-based OLE activation wasn't exploration-tested this pass; needs its own live pass now that `insert_embedded_object_live` can produce a real object to activate against.
 
-Beyond finishing those 4, longer-term goals include:
+Beyond finishing that one, longer-term goals include:
 
 - Adopting the MCP spec's modern (2026-07-28+) transport era, if a real client requirement emerges (see [MCP JSON-RPC Transport](#mcp-json-rpc-transport))
 - A dedicated JSON-RPC busy/backpressure error code, rather than routing admission-timeout rejections through `mcp_jsonrpc.py`'s generic `INTERNAL_ERROR`
@@ -824,10 +824,10 @@ dispatch called: mcp:start_mcp_server
 Starting MCP server...
 MCP HTTP server started successfully
 UNO Bridge initialized successfully
-Registered 388 MCP tools
+Registered 392 MCP tools
 ```
 
-(388 by default — the 32-tool v1.0.0 baseline plus the 356 implemented v2.0.0 tools. Set `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS=1` before starting LibreOffice to also register the 10 remaining stub-only tools, for a total of 398.)
+(392 by default — the 32-tool v1.0.0 baseline plus the 360 implemented v2.0.0 tools. Set `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS=1` before starting LibreOffice to also register the 6 remaining stub-only tools, for a total of 398.)
 
 ## Tools menu appears but commands do nothing
 
@@ -891,6 +891,19 @@ uv run pytest
 ---
 
 # Versioning
+
+## v2.0.4
+
+3 of Part 2's last 4 shared-service scope-limited stubs implemented: the document-events pair (`get_document_events_live`/`wait_for_document_event_live`) and `insert_embedded_object_live` (scoped to `object_type="formula"`). 1 remains (`activate_embedded_object_live` -- see Tooling Roadmap).
+
+**Document events.** A single `com.sun.star.document.XDocumentEventListener` is registered once, process-wide, against the `com.sun.star.frame.GlobalEventBroadcaster` singleton -- already covers every open document, not just the active one, so no per-document wiring is needed. Captured events land in a bounded, seq-numbered buffer on the `UNOBridge` instance (a monotonically increasing `seq`, not a raw deque index/length, since a bounded deque silently evicts from the left once full). `get_document_events_live` reads and filters that buffer; `wait_for_document_event_live` blocks the calling request thread on a `threading.Condition` until a matching event lands or the deadline passes -- confirmed safe against `ai_interface.py`'s per-request-thread model (a blocking wait on one request thread can't stall another). `document_id` correlation for a captured event's source document is best-effort: a new read-only `DocumentRegistry.find_document_id()` looks up an already-registered document without ever minting a new id, so a document opened directly in the LibreOffice GUI (rather than through `open_document_live`/`create_document_live`) reports `document_id: null` instead of raising or being silently dropped.
+
+**`insert_embedded_object_live`.** Real mechanism is a `com.sun.star.drawing.OLE2Shape` added to the resolved container's draw page (the same `_resolve_shape_container()` every other shape tool in this module uses), with its `CLSID` property set before `page.add()` -- the documented OOo/LibreOffice Basic macro pattern for this shape type. Scoped to `object_type="formula"` only: that CLSID (`078B7ABA-54FC-457F-8551-6147E776A997`) is repeated identically across enough independent sources to trust without a live round trip, but the other embeddable types (Calc sheet, Writer text, chart) don't have the same repeated-independent-source confidence -- a wrong CLSID fails silently rather than loudly, exactly the risk this project's CoreReflection-verification precedent exists to catch. Any other `object_type` raises a clear `NotImplementedError` naming the gap (surfaces as `UNSUPPORTED_CAPABILITY`) rather than shipping a guessed GUID as fact.
+
+**Not yet live-verified, flagged rather than assumed:** all three tools above are code-complete and unit-tested (`uv run pytest`), but this pass's REST round trip against a real running LibreOffice instance is still pending -- the extension's one live instance was held for a separate overnight Writer-agent test at the time of this work (per this channel's own hold instruction) and, checked directly afterward, was carrying an unsaved, never-saved `modified: true` document with no backing file, which a rebuild/relaunch to live-verify would have destroyed. Every open design question the original design note flagged (does `GlobalEventBroadcaster` miss a document's own pre-registration `OnLoad`? what are the real `EventName` values seen in practice for a Writer session? does a second `UNOBridge` instance's registration attempt actually no-op cleanly?) is still open until that round trip runs -- flipped to `status="implemented"` on the strength of the unit-test coverage and the documented mechanism, matching this module's usual bar for code review, not as a substitute for the live pass once the instance is free again.
+
+- 392 live tools (was 389), 6 stub-only (was 9)
+- 469 automated tests passing (up from 453, net +16): 12 new in `test_undo_view_selection.py` for the document-events pair, 3 new in `test_document_registry.py` for `find_document_id()`, and `test_drawing_objects.py`'s old `test_insert_and_activate_embedded_object_are_still_not_implemented` split into 3 (a real formula-insert test, an unscoped-type-is-`UNSUPPORTED_CAPABILITY` test, and `activate_embedded_object_live`'s still-`NOT_IMPLEMENTED` test) -- offset by removing the now-obsolete mixed-module status-guard test for `undo_view_selection.py` (moved into `IMPLEMENTED_MODULES` outright, all 14 tools now real)
 
 ## v2.0.3
 
