@@ -459,18 +459,27 @@ concurrency control not yet started).
   was carrying an unsaved `modified: true` document with no backing file
   -- a rebuild/relaunch to live-verify would have destroyed it.
   `activate_embedded_object_live`, the last of the original 4, also
-  moved out of this list in a further follow-up pass (v2.0.5) -- drives
-  `XEmbeddedObject.changeState()` via the shape's own
-  `ExtendedControlOverEmbeddedObject` property, sourced from the
-  documented OOo/LibreOffice Basic macro pattern for verb-based OLE
-  activation (`EmbedStates` resolved through `uno.getConstantByName()`,
-  not hardcoded, matching the rest of this file's constants-group
-  lookups) -- see `uno_bridge.py`'s `activate_embedded_object()`
-  docstring. Code-complete and unit-tested (471/471), but **not yet
-  live-verified** for the same reason as the events pair/insert above:
-  the live instance was held for the entire duration of this pass too.
-  This closes out Part 2's 12 shared-service scope-limited stubs and
-  `drawing_objects.py`'s remaining tool.
+  moved out of this list (v2.0.5) -- drives `XEmbeddedObject.changeState()`
+  via the shape's own `ExtendedControlOverEmbeddedObject` property.
+  **Now live-verified (v2.0.6)**, once the held instance was free, and
+  scoped down by what that verification found: `LOADED`/`RUNNING` work
+  and are fast; `INPLACE_ACTIVE`/`UI_ACTIVE`/`ACTIVE` hang `changeState()`
+  -- and the entire soffice process, not just the call -- indefinitely
+  against a headless instance, confirmed reproducibly twice. Those three
+  now raise `UNSUPPORTED_CAPABILITY` naming the finding rather than being
+  attempted. The same live pass also fixed `insert_embedded_object_live`
+  for Writer (`com.sun.star.drawing.OLE2Shape` isn't on Writer's own
+  `createInstance()` factory -- confirmed `ServiceNotRegisteredException`
+  live; fixed via `com.sun.star.text.TextEmbeddedObject` +
+  `insertTextContent()` instead, plus two shared-code follow-on fixes in
+  `_shape_geometry()`/`delete_shape()`) and found, but did not fix,
+  a real limitation in `wait_for_document_event_live`: it blocks while
+  holding the process-wide `_UNO_EXECUTION_LOCK`, so it can't observe an
+  event triggered by another tool call through the same HTTP server --
+  see `docs/MCP_TOOLING_SCAFFOLD_PLAN.md`'s "Live-verification pass"
+  entry for the full evidence on all of the above. This closes out Part
+  2's 12 shared-service scope-limited stubs and `drawing_objects.py`'s
+  remaining tool, live-verified.
 - **Error-code consistency:** one shared, validated envelope
   (`envelope.build_error()`/`build_success()`) across every real tool;
   `WRONG_DOCUMENT_TYPE` now correctly wired (was dead code catalog-wide

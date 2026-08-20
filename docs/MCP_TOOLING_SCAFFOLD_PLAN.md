@@ -19,7 +19,7 @@ up exactly where it left off.
 | Writer - text, navigation, editing, search, review | 45 | 27 | 18 | **18/18 new tools Implemented** (`tools/writer_text.py`) -- real logic, live-verified; the 27 "(existing)" tools stay in `mcp_server.py`/`uno_bridge.py` under the original 32, not duplicated here |
 | Writer - page layout, publishing, styles, headers, fields, indexes | 43 | 0 | 43 | **42/43 Implemented** (`tools/writer_layout.py`) -- real logic, live-verified; `set_chapter_numbering_live` (P2) still stub -- `ChapterNumberingRules.replaceByIndex()` resists writes this build |
 | Writer - tables, sections, notes, content controls, mail merge | 38 | 0 | 38 | **37/38 Implemented** (`tools/writer_tables.py`) -- real logic, live-verified; `mail_merge_live` (P3) still stub -- `preview_mail_merge_live` (the real data-connection half) IS real |
-| Common drawing objects, images, shapes, embedded objects | 31 | 0 | 31 | **31/31 Implemented** (`tools/drawing_objects.py`) -- real logic; `insert_embedded_object_live` scoped to `object_type="formula"`, `activate_embedded_object_live` written and unit-tested but not yet live-round-tripped (see "Real implementation pass: mcp-libre Part 2 remaining stubs" below) |
+| Common drawing objects, images, shapes, embedded objects | 31 | 0 | 31 | **31/31 Implemented, live-verified** (`tools/drawing_objects.py`) -- `insert_embedded_object_live` scoped to `object_type="formula"`; `activate_embedded_object_live` scoped to `verb=LOADED\|RUNNING` after live-verifying `ACTIVE`/`UI_ACTIVE` hang the whole process headless (see "Live-verification pass: mcp-libre Part 2's newest 4 tools" below) |
 | Charts and data visualizations | 20 | 0 | 20 | **20/20 Implemented** (`tools/charts.py`) -- real logic, live-verified, Calc-native charts only |
 | Calc - sheets, cells, ranges, formulas, layout | 42 | 0 | 42 | **42/42 Implemented** (`tools/calc_sheets.py`) -- real logic, live-verified |
 | Calc - data management, analysis, pivots, validation, external data | 42 | 0 | 42 | **39/42 Implemented** (`tools/calc_data.py`) -- real logic, live-verified; create/refresh/delete_external_link (P2/P3) still stub -- no write-side ExternalDocLinks mechanism this pass |
@@ -2012,6 +2012,83 @@ on missing/drifted dependencies (`requests`, `mcp.shared.memory`,
 This closes out Part 2's 12 shared-service tools (all 12 now real) and,
 combined with the table above, `drawing_objects.py`'s full 31/31.
 
+## Live-verification pass: mcp-libre Part 2's newest 4 tools (v2.0.6)
+
+Follow-up to the entry above, once the held-open instance was free. Real
+bugs found live-verifying, all fixed and re-verified live post-fix on a
+rebuild -- same bar as every other pass in this doc.
+
+**`insert_embedded_object_live` was broken for Writer.**
+`com.sun.star.drawing.OLE2Shape` (used for every document type in the
+pass above) raises `com.sun.star.lang.ServiceNotRegisteredException`
+from Writer's own `createInstance()` -- confirmed live this service is
+genuinely absent from Writer's document-level shape factory (not a
+general "Writer can't createInstance drawing.\* shapes" problem:
+`RectangleShape`/`GraphicObjectShape`/etc. all createInstance fine on
+the same document). Confirmed live still correct as shipped for Calc.
+Fixed: Writer now uses `com.sun.star.text.TextEmbeddedObject` inserted
+via `text.insertTextContent()`, the type Writer's own
+`getAvailableServiceNames()` actually lists. Two follow-on findings,
+both fixed:
+- The new object's default `AnchorType` (`AT_PARAGRAPH`) doesn't support
+  `Position` -- not just refuses a `set`, raises
+  `UnknownPropertyException` on a plain **read** too. `_shape_geometry()`
+  (shared by every shape's summary/details, not just embedded objects)
+  now treats `x`/`y` as best-effort and omits them on failure, same
+  convention already used for `RotateAngle`/`ShearAngle`.
+- `delete_shape()` (shared, not embedded-object-specific) unconditionally
+  called `shape.getParent()`, which this object type doesn't implement
+  at all (`AttributeError`). Falls back to
+  `doc.getText().removeTextContent(shape)` when `getParent` is absent;
+  every other shape type's existing path is unchanged.
+
+**`activate_embedded_object_live`'s `ACTIVE`/`UI_ACTIVE` hang the whole
+process, not just the call.** Live-verified reproducibly (twice,
+independently, isolating the exact call): `changeState()` for either
+UI-opening verb never returns against this headless instance, and while
+stuck, every other tool call -- unrelated shape, unrelated document --
+times out too, until soffice is killed and relaunched. `LOADED`/`RUNNING`
+are confirmed safe and near-instant. Worse than this project's own
+headless precedent (slideshow-controller tools fail clean, returning
+`None`); this hangs with no caller-side recovery. Fixed: scoped to
+`LOADED`/`RUNNING` only (default changed `UI_ACTIVE` -> `RUNNING`);
+`INPLACE_ACTIVE`/`UI_ACTIVE`/`ACTIVE` now raise `UNSUPPORTED_CAPABILITY`
+naming the finding instead of attempting the call. Whether the UI verbs
+work in a GUI-visible session (this project's other documented usage
+mode) rather than headless is a real open question for a future pass.
+
+**Found, not fixed -- flagged for a decision:**
+`wait_for_document_event_live` blocks while holding `ai_interface.py`'s
+process-wide `_UNO_EXECUTION_LOCK` (every tool call's full duration, a
+deliberate, evidence-based design -- see the comment above that lock's
+definition: a per-mutation-only lock left 95/600 concurrency errors,
+only wrapping the full call reached 0/600). Live-verified this means it
+can never observe an event triggered by *another tool call through the
+same HTTP server* -- confirmed with two positive/negative pairs: an edit
+via the same HTTP path never got picked up (timed out at the full
+`timeout_ms` every time, the event landed in the buffer only
+afterward); the identical edit via a raw UNO connection bypassing that
+lock was picked up correctly in ~3s. Defeats the primary expected use
+case (one agent driving both the edit and the wait through this tool
+surface) while still working for events from outside it. Not fixed --
+carving an exception into a deliberately coarse, already-hardened lock
+for one blocking tool is a real concurrency-design decision, not a
+same-pass fix.
+
+**Testing:** 472/472 passing (up from 471): `test_drawing_objects.py`'s
+`test_activate_embedded_object_live_defaults_to_running`/`_accepts_case_
+insensitive_verb` replace the old UI_ACTIVE-default/`"active"`-verb
+assertions; new `test_activate_embedded_object_live_ui_opening_verb_is_
+unsupported_capability` covers all three now-blocked verbs.
+
+**Live-verified end to end on a fresh headless LibreOffice 26.2
+instance, independently checking real state after every call**,
+rebuilding/redeploying after each of the three fixes above: full
+insert -> list -> get -> activate(RUNNING) -> activate(LOADED) ->
+activate(UI_ACTIVE, confirmed clean `UNSUPPORTED_CAPABILITY`, no hang)
+-> delete -> confirmed-gone lifecycle on Writer;
+`insert_embedded_object_live` regression-checked clean on Calc post-fix.
+
 ## What was built
 
 **Shared plumbing (`plugin/pythonpath/tools/`):**
@@ -2103,13 +2180,19 @@ extension.
   implementation pass" sections above); the same approach applies to the
   rest, tool by tool.
 - **`DocumentRegistry`'s dispose-listener eviction** -- see above.
-- **`activate_embedded_object_live`** -- real body written (drives
-  `XEmbeddedObject.changeState()` via the shape's
-  `ExtendedControlOverEmbeddedObject` property), unit-tested against the
-  fake bridge, but not yet live-round-tripped against a real inserted
-  formula object -- see "Real implementation pass: mcp-libre Part 2
-  remaining stubs" below for what's confirmed vs. sourced from
-  documentation only.
+- **`activate_embedded_object_live`'s `INPLACE_ACTIVE`/`UI_ACTIVE`/`ACTIVE`
+  verbs** -- live-verified to hang `changeState()` (and the whole
+  process) indefinitely against a headless instance; raise
+  `UNSUPPORTED_CAPABILITY` rather than being implemented. `LOADED`/
+  `RUNNING` are real and live-verified. See "Live-verification pass:
+  mcp-libre Part 2's newest 4 tools" below.
+- **`wait_for_document_event_live` can't observe an event from another
+  tool call through the same HTTP server** -- live-verified: it blocks
+  while holding the process-wide `_UNO_EXECUTION_LOCK`, so a second tool
+  call meant to trigger the awaited event queues behind it instead of
+  running concurrently. Works only for events from outside the tool-call
+  path (e.g. a human editing in a GUI session). Not fixed this pass --
+  see "Live-verification pass: mcp-libre Part 2's newest 4 tools" below.
 - **The 308 remaining stub tools are still not wired into the live server
   by default** -- see the `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS` env var gate
   above. (The 58 implemented tools ARE always-on now, unconditionally.)

@@ -1,7 +1,7 @@
 # LibreOffice MCP Server
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.4-blue.svg)](#versioning)
+[![Version](https://img.shields.io/badge/version-2.0.6-blue.svg)](#versioning)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](#requirements)
 [![LibreOffice](https://img.shields.io/badge/LibreOffice-24.2%2B-18A303.svg)](#requirements)
 
@@ -204,7 +204,7 @@ python build-oxt-windows.py
 The extension package is created at:
 
 ```text
-build/libreoffice-mcp-extension-2.0.4.oxt
+build/libreoffice-mcp-extension-2.0.6.oxt
 ```
 
 The Windows builder creates a LibreOffice-compatible ZIP/OXT structure with normalized archive paths.
@@ -218,7 +218,7 @@ PowerShell example:
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
 & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension
-& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.4.oxt"
+& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.6.oxt"
 ```
 
 Removing an extension that is not already installed may report that no matching extension exists. That is harmless.
@@ -269,7 +269,7 @@ A convenient rebuild/reinstall command in PowerShell is:
 
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
-python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.4.oxt"
+python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.6.oxt"
 ```
 
 Then reopen LibreOffice and start the MCP server from the Tools menu.
@@ -538,7 +538,7 @@ See `plugin/pythonpath/tools/draw.py` for the full tool list.
 
 Charts, drawing objects/shapes, styles, undo/redo, view and selection state, document lifecycle (create/open/save/export across all four applications), and core runtime tools (server info, capability discovery, diagnostics).
 
-No stub-only tools remaining in this area (`activate_embedded_object_live`'s mechanism is written and unit-tested, but its live round trip is still pending — see [Versioning](#versioning)).
+No stub-only tools remaining in this area. `activate_embedded_object_live` is live-verified but scoped to `LOADED`/`RUNNING` — its `ACTIVE`/`UI_ACTIVE`/`INPLACE_ACTIVE` verbs are confirmed to hang the whole process in headless mode (v2.0.6, see [Versioning](#versioning)).
 
 See `plugin/pythonpath/tools/` for the full tool list.
 
@@ -676,7 +676,7 @@ Most of the v1.0.0 roadmap is now implemented — see [Writer / Calc / Impress /
 - `mail_merge_live` — the real `com.sun.star.text.MailMerge` service needs a `DataSourceName` registered through `DatabaseContext`, which live-verified refuses to register an ad hoc `DataSource` without first persisting it to a real `.odb` file via `XStorable`. (`preview_mail_merge_live` works today via an unregistered ad hoc SDBC connection over a CSV folder.)
 - `next_slideshow_effect_live`, `previous_slideshow_effect_live`, `goto_slideshow_slide_live` — all three need a live `XSlideShowController`, confirmed via live verification to always be `None` in headless mode (no window manager to render a slideshow view to). (`start_slideshow_live`/`stop_slideshow_live` don't need the controller and work fine.)
 
-Calc's 3 external-link tools, Impress's 4 animation-mutation tools, and `add_chart_series_live` were finished and live-verified end to end in earlier passes — see the Calc entry (built on `com.sun.star.sheet.XAreaLinks`), the Impress entry (built on the generic `com.sun.star.animations` module), and the Charts entry (built on `XDataProvider.createDataSequenceByRangeRepresentation`) under [Writer / Calc / Impress / Draw Automation via MCP](#writer--calc--impress--draw-automation-via-mcp) above. `insert_embedded_object_live` (scoped to `object_type="formula"`, built on `com.sun.star.drawing.OLE2Shape`), the document-events pair `get_document_events_live`/`wait_for_document_event_live` (built on a process-wide `com.sun.star.document.XDocumentEventListener` registered against `GlobalEventBroadcaster`), and `activate_embedded_object_live` (built on the shape's `ExtendedControlOverEmbeddedObject`/`XEmbeddedObject.changeState()`) also moved out of stub status — code complete and unit-tested, but their live-verification REST round trip against real LibreOffice is still pending (the extension's live instance was held for a separate overnight test throughout this whole run of passes; see `docs/MCP_TOOLING_SCAFFOLD_PLAN.md`'s corresponding entries for status).
+Calc's 3 external-link tools, Impress's 4 animation-mutation tools, and `add_chart_series_live` were finished and live-verified end to end in earlier passes — see the Calc entry (built on `com.sun.star.sheet.XAreaLinks`), the Impress entry (built on the generic `com.sun.star.animations` module), and the Charts entry (built on `XDataProvider.createDataSequenceByRangeRepresentation`) under [Writer / Calc / Impress / Draw Automation via MCP](#writer--calc--impress--draw-automation-via-mcp) above. The document-events pair `get_document_events_live`/`wait_for_document_event_live` (built on a process-wide `com.sun.star.document.XDocumentEventListener` registered against `GlobalEventBroadcaster`), `insert_embedded_object_live`, and `activate_embedded_object_live` also moved out of stub status and are now live-verified (v2.0.6, see [Versioning](#versioning)) — with two real, live-verified caveats worth knowing before relying on them: `wait_for_document_event_live` can't observe an event triggered by another tool call through this same HTTP server (only from outside it, e.g. a human editing in a GUI session — the process-wide concurrency lock serializes tool calls, so a blocked wait starves the very call that would trigger it), and `activate_embedded_object_live` is scoped to `LOADED`/`RUNNING` only — its `ACTIVE`/`UI_ACTIVE`/`INPLACE_ACTIVE` verbs are confirmed to hang the entire process in headless mode, not just the call.
 
 Beyond finishing those five, longer-term goals include:
 
@@ -887,6 +887,21 @@ uv run pytest
 ---
 
 # Versioning
+
+## v2.0.6
+
+Live-verification pass on v2.0.5's four newest tools (document-events pair, `insert_embedded_object_live`, `activate_embedded_object_live`), now that the extension's held-open instance was free. Real bugs found and fixed, all re-verified live post-fix on a rebuild — same bar as every other "Real implementation pass" in this changelog.
+
+**Bug 1 — `insert_embedded_object_live` was broken for Writer, the most common document type.** `com.sun.star.drawing.OLE2Shape` (the CLSID-bearing shape v2.0.5 used for every document type) raises `com.sun.star.lang.ServiceNotRegisteredException` from Writer's own `createInstance()` — confirmed live this is genuinely absent from Writer's document-level shape factory (not a general "Writer can't createInstance drawing.\* shapes" problem: `RectangleShape`/`GraphicObjectShape`/etc. all createInstance fine on the same document). Confirmed live still correct as originally shipped for Calc (creates cleanly, `Model.Formula` settable) — Impress/Draw share the same shape factory Calc uses so are expected, not individually live-verified this pass, to behave the same. Fixed: Writer now uses `com.sun.star.text.TextEmbeddedObject` inserted via `text.insertTextContent()` instead, the object type Writer's own `getAvailableServiceNames()` actually lists for embedding. Two smaller follow-on findings from live-verifying that fix, both fixed and re-verified:
+- The new object's default `AnchorType` (`AT_PARAGRAPH`) doesn't support `Position` at all — not just refusing a `set`, `com.sun.star.beans.UnknownPropertyException` on a plain **read** too. `_shape_geometry()` (shared by every shape's `get_shape_summary`/`get_shape_details`, not embedded-object-specific) now treats `x`/`y` as best-effort and omits them on failure, the same convention it already used for `RotateAngle`/`ShearAngle` — `width`/`height` stay required (confirmed live: unaffected by anchor type).
+- `delete_shape()` (shared by every `delete_shape_live`/`delete_embedded_object_live` call, not embedded-object-specific) unconditionally called `shape.getParent()`, which this object type doesn't implement at all (confirmed live: `AttributeError`, not an empty parent). Now falls back to `doc.getText().removeTextContent(shape)`, confirmed live this removes cleanly, when `getParent` isn't present — every other shape type keeps its existing `getParent()`/`page.remove()` path unchanged.
+
+**Bug 2 — `activate_embedded_object_live`'s `ACTIVE`/`UI_ACTIVE` verbs hang the entire process, not just the call.** Live-verified reproducibly (twice, independently, isolating the exact call): `changeState()` for either UI-opening verb never returns against this headless soffice instance, and while it's stuck, *every other tool call* — including ones unrelated to this shape or document — times out too, until soffice is killed and relaunched. `LOADED`/`RUNNING` were confirmed safe and near-instant. This is a materially worse failure mode than this project's existing headless-limitation precedent (`next/previous_slideshow_effect_live`/`goto_slideshow_slide_live` fail clean, returning `None`/an error) — a hang, not a clean error, with no way for a caller to recover short of an external process kill. Fixed: `activate_embedded_object_live` is now scoped to `LOADED`/`RUNNING` only (default changed from `UI_ACTIVE` to `RUNNING`); `INPLACE_ACTIVE`/`UI_ACTIVE`/`ACTIVE` now raise a named `UNSUPPORTED_CAPABILITY` error instead of attempting the call. Whether the UI-opening verbs work in this project's *other* documented usage mode (a GUI-visible session — "Start LibreOffice" above, `Tools → MCP Server → Start MCP Server`) rather than the headless mode this project's own dev-workflow/smoke-test scripts use, is a real open question for a future pass, not assumed either way here.
+
+**Also found, not fixed this pass — flagged for a decision, not silently patched:** `wait_for_document_event_live` blocks while holding `ai_interface.py`'s process-wide `_UNO_EXECUTION_LOCK` (every tool call's full duration, an intentional, evidence-based design from the concurrency-hardening pass — see the comment above `_UNO_EXECUTION_LOCK`'s definition). Live-verified this means it can never observe an event triggered by *another tool call through the same HTTP server* — that second call queues behind the lock and only executes after the wait times out. Confirmed with two positive/negative pairs: an edit issued via the same HTTP tool-call path never got picked up (timed out at the full `timeout_ms` every time, event landed in the buffer only afterward); the identical edit issued via a raw UNO connection bypassing that lock was picked up correctly in ~3 seconds. This defeats the primary expected use case (one agent driving both the edit and the wait through this same tool surface) while still working for events from outside it (a human editing directly in a GUI session). Not fixed here: the lock is deliberately coarse for a real, tested reason (a per-mutation-only lock left 95/600 concurrency errors; only wrapping the full call reached 0/600), and carving out an exception for one blocking tool is a genuine concurrency-design decision, not a same-pass fix.
+
+- 472 automated tests passing (up from 471, net +1): `test_drawing_objects.py`'s `test_activate_embedded_object_live_defaults_to_running`/`test_activate_embedded_object_live_accepts_case_insensitive_verb` replace the old UI_ACTIVE-default/`"active"`-verb assertions, plus one new `test_activate_embedded_object_live_ui_opening_verb_is_unsupported_capability` covering all three now-blocked verbs
+- Live-verified end to end on a fresh headless LibreOffice 26.2 instance, independently checking real document state after every call, rebuilding/redeploying after each of the three fixes above: full insert → list → get → activate(RUNNING) → activate(LOADED) → activate(UI_ACTIVE, confirmed clean `UNSUPPORTED_CAPABILITY`, no hang) → delete → confirmed gone lifecycle on Writer; `insert_embedded_object_live` regression-checked clean on Calc post-fix (still returns real `x`/`y`/`rotation`/`shear`, unaffected by the Writer-only branch)
 
 ## v2.0.5
 

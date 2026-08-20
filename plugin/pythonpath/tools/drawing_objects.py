@@ -42,28 +42,35 @@ independent shapes afterward, so their ObjectRegistry entries are
 unregistered as part of the operation, the same way ungroup_shape_live
 already unregisters a consumed group's handle.
 
-insert_embedded_object_live is now real, scoped to object_type="formula"
-only -- the one CLSID (com.sun.star.drawing.OLE2Shape.CLSID) repeated
-identically across enough independent sources to trust without a live
-round trip; see uno_bridge.py's insert_embedded_object()/
-_EMBEDDED_OBJECT_CLSIDS docstrings for why the other embeddable types
-(Calc sheet, Writer text, chart) aren't included yet -- any other
-object_type raises a clear NotImplementedError naming the gap rather
-than guessing a GUID.
+insert_embedded_object_live is real and live-verified, scoped to
+object_type="formula" only -- the one CLSID
+(com.sun.star.drawing.OLE2Shape.CLSID) repeated identically across
+enough independent sources to trust without a live round trip; see
+uno_bridge.py's insert_embedded_object()/_EMBEDDED_OBJECT_CLSIDS
+docstrings for why the other embeddable types (Calc sheet, Writer text,
+chart) aren't included yet -- any other object_type raises a clear
+NotImplementedError naming the gap rather than guessing a GUID. Live
+verification (v2.0.6) found this was genuinely broken for Writer as
+first written (com.sun.star.drawing.OLE2Shape isn't on Writer's own
+createInstance() factory) -- see insert_embedded_object()'s docstring
+for the fix and two shared-code follow-on fixes it needed
+(_shape_geometry()'s Position handling, delete_shape()'s getParent()
+fallback).
 
-activate_embedded_object_live is also now real: drives
+activate_embedded_object_live is also real and live-verified: drives
 XEmbeddedObject.changeState() via the shape's
 ExtendedControlOverEmbeddedObject property (see uno_bridge.py's
 activate_embedded_object() docstring for the documented macro pattern
-this follows and its sourcing). Unlike insert_embedded_object_live's
-formula CLSID, this mechanism has NOT been live-round-tripped against
-this project's own instance yet -- written and unit-tested against the
-fake bridge only, per the held-instance hold in effect while this pass
-was done (see docs/MCP_TOOLING_SCAFFOLD_PLAN.md and the mcp-libre buzz
-channel, 2026-08-19/20). Flip to a confirmed/live-verified footing on
-the next live pass: insert a formula object, activate it, confirm
-ExtendedControlOverEmbeddedObject/changeState() behave as documented.
-Both embedded-object tools are P3 (lowest priority) in the spec.
+this follows and its sourcing). Live verification (v2.0.6) found
+LOADED/RUNNING work and are fast; INPLACE_ACTIVE/UI_ACTIVE/ACTIVE hang
+changeState() -- and the entire soffice process, not just the call --
+indefinitely against a headless instance, confirmed reproducibly twice.
+Scoped to LOADED/RUNNING only as a result; the other three raise a
+named UNSUPPORTED_CAPABILITY instead of being attempted. Whether the
+UI-opening verbs work in a GUI-visible session (this project's other
+documented usage mode) rather than headless is a real open question for
+a future pass. Both embedded-object tools are P3 (lowest priority) in
+the spec.
 """
 
 from typing import Any, Dict, List, Optional
@@ -811,8 +818,10 @@ def insert_embedded_object_live(object_type: str, container: Optional[str] = Non
 @register_tool(
     name="activate_embedded_object_live",
     priority="P3",
-    purpose="Activate/open embedded object for editing where supported. verb is one of "
-            "LOADED/RUNNING/INPLACE_ACTIVE/UI_ACTIVE/ACTIVE (case-insensitive); defaults to UI_ACTIVE.",
+    purpose="Change an embedded object's activation state. verb is LOADED or RUNNING "
+            "(case-insensitive; defaults to RUNNING) -- INPLACE_ACTIVE/UI_ACTIVE/ACTIVE raise "
+            "UNSUPPORTED_CAPABILITY: live-verified these hang changeState() indefinitely "
+            "against a headless instance.",
     parameters=schema({
         "object_id": {"type": "string"},
         "verb": {"type": "string"},

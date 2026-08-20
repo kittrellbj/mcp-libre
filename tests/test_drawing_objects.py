@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Unit tests for the 31 real (status="implemented") drawing_objects.py tools
-(activate_embedded_object_live's own mechanism is written and unit-tested
-here, but not yet live-verified -- see the module docstring in
-tools/drawing_objects.py and uno_bridge.py's activate_embedded_object()
-for what's confirmed vs. sourced-from-documentation-only).
+Unit tests for the 31 real (status="implemented") drawing_objects.py tools.
+activate_embedded_object_live is now live-verified: LOADED/RUNNING work,
+INPLACE_ACTIVE/UI_ACTIVE/ACTIVE are scoped out after live-verifying they
+hang changeState() indefinitely against a headless instance (see
+uno_bridge.py's activate_embedded_object() docstring for the finding).
 
 Uses a FakeUnoBridge modeling shapes as plain FakeShape objects in a
 single flat list (good enough to exercise the tool-layer logic --
@@ -326,12 +326,17 @@ class FakeUnoBridge:
         self.delete_shape(doc, shape)
 
     # Mirrors uno_bridge.UNOBridge.activate_embedded_object's own
-    # validation (verb name check, default, "not an OLE object" guard)
-    # without the real ExtendedControlOverEmbeddedObject/changeState()
-    # UNO round trip -- that part is live-verification-only, same
-    # disclaimer as this file's own header (real UNO objects aren't
-    # something a fake can usefully model).
-    _EMBED_STATE_NAMES = ("LOADED", "RUNNING", "INPLACE_ACTIVE", "UI_ACTIVE", "ACTIVE")
+    # validation (verb name check, default, blocked-verb guard, "not an
+    # OLE object" guard) without the real ExtendedControlOverEmbeddedObject/
+    # changeState() UNO round trip -- that part is live-verification-only,
+    # same disclaimer as this file's own header (real UNO objects aren't
+    # something a fake can usefully model). LOADED/RUNNING are the only
+    # names accepted -- INPLACE_ACTIVE/UI_ACTIVE/ACTIVE are live-verified
+    # to hang changeState() indefinitely against a headless instance, so
+    # the real bridge raises NotImplementedError for them rather than
+    # attempting the call; mirrored here for the same reason.
+    _EMBED_STATE_NAMES = ("LOADED", "RUNNING")
+    _EMBED_STATE_NAMES_BLOCKED_HEADLESS = ("INPLACE_ACTIVE", "UI_ACTIVE", "ACTIVE")
 
     def activate_embedded_object(self, shape, verb=None):
         if shape.shape_type != "ole":
@@ -340,7 +345,12 @@ class FakeUnoBridge:
                 "OLE object (no CLSID set), or the embedded object's control interface "
                 "isn't available in this LibreOffice version."
             )
-        requested = (verb or "UI_ACTIVE").upper()
+        requested = (verb or "RUNNING").upper()
+        if requested in self._EMBED_STATE_NAMES_BLOCKED_HEADLESS:
+            raise NotImplementedError(
+                f"activate_embedded_object_live verb='{requested}' is not available -- "
+                "live-verified this hangs changeState() indefinitely against a headless instance."
+            )
         if requested not in self._EMBED_STATE_NAMES:
             raise ValueError(f"Unknown verb '{verb}', expected one of {self._EMBED_STATE_NAMES}")
         shape.activation_state = requested
@@ -730,15 +740,15 @@ def test_insert_embedded_object_live_unscoped_type_is_unsupported_capability():
     assert "formula" in result["error"]["message"]
 
 
-def test_activate_embedded_object_live_defaults_to_ui_active():
+def test_activate_embedded_object_live_defaults_to_running():
     context.reset()
     uno_bridge, _, _ = _install(active_document=FakeDocument())
     inserted = _handler("insert_embedded_object_live")(object_type="formula")
     object_id = inserted["result"]["shape_id"]
     result = _handler("activate_embedded_object_live")(object_id=object_id)
     assert result["success"] is True
-    assert result["result"]["state"] == "UI_ACTIVE"
-    assert uno_bridge.shapes[0].activation_state == "UI_ACTIVE"
+    assert result["result"]["state"] == "RUNNING"
+    assert uno_bridge.shapes[0].activation_state == "RUNNING"
 
 
 def test_activate_embedded_object_live_accepts_case_insensitive_verb():
@@ -746,9 +756,25 @@ def test_activate_embedded_object_live_accepts_case_insensitive_verb():
     _install(active_document=FakeDocument())
     inserted = _handler("insert_embedded_object_live")(object_type="formula")
     object_id = inserted["result"]["shape_id"]
-    result = _handler("activate_embedded_object_live")(object_id=object_id, verb="active")
+    result = _handler("activate_embedded_object_live")(object_id=object_id, verb="loaded")
     assert result["success"] is True
-    assert result["result"]["state"] == "ACTIVE"
+    assert result["result"]["state"] == "LOADED"
+
+
+def test_activate_embedded_object_live_ui_opening_verb_is_unsupported_capability():
+    """Live-verified (twice, independently) that INPLACE_ACTIVE/UI_ACTIVE/
+    ACTIVE hang changeState() indefinitely against a headless instance,
+    wedging the whole soffice process -- scoped out with a named error
+    rather than shipped as a hang risk. See uno_bridge.py's
+    activate_embedded_object() docstring for the finding."""
+    context.reset()
+    _install(active_document=FakeDocument())
+    inserted = _handler("insert_embedded_object_live")(object_type="formula")
+    object_id = inserted["result"]["shape_id"]
+    for verb in ("UI_ACTIVE", "active", "InPlace_Active"):
+        result = _handler("activate_embedded_object_live")(object_id=object_id, verb=verb)
+        assert result["success"] is False
+        assert result["error"]["code"] == "UNSUPPORTED_CAPABILITY"
 
 
 def test_activate_embedded_object_live_unknown_verb_is_invalid_parameter():
@@ -806,8 +832,9 @@ if __name__ == "__main__":
         test_list_and_delete_embedded_objects_live,
         test_insert_embedded_object_live_formula_creates_and_registers,
         test_insert_embedded_object_live_unscoped_type_is_unsupported_capability,
-        test_activate_embedded_object_live_defaults_to_ui_active,
+        test_activate_embedded_object_live_defaults_to_running,
         test_activate_embedded_object_live_accepts_case_insensitive_verb,
+        test_activate_embedded_object_live_ui_opening_verb_is_unsupported_capability,
         test_activate_embedded_object_live_unknown_verb_is_invalid_parameter,
         test_activate_embedded_object_live_non_ole_shape_is_invalid_parameter,
     ]

@@ -3836,6 +3836,14 @@ class UNOBridge:
 
     _SHAPE_SERVICE_TYPE_NAMES = (
         ("com.sun.star.drawing.OLE2Shape", "ole"),
+        # Writer's own embedded-object type -- confirmed live
+        # com.sun.star.drawing.OLE2Shape isn't creatable via Writer's
+        # document-level createInstance() (ServiceNotRegisteredException);
+        # Writer uses this text-content type instead (see
+        # insert_embedded_object()'s docstring). Classified the same
+        # short name "ole" so list_embedded_objects_live's type_filter
+        # and get_shape_summary/get_shape_details treat both the same.
+        ("com.sun.star.text.TextEmbeddedObject", "ole"),
         ("com.sun.star.drawing.GraphicObjectShape", "image"),
         ("com.sun.star.drawing.GroupShape", "group"),
         ("com.sun.star.drawing.ConnectorShape", "connector"),
@@ -3863,12 +3871,23 @@ class UNOBridge:
 
     @staticmethod
     def _shape_geometry(shape: Any) -> Dict[str, Any]:
-        position = shape.Position
+        """x/y are best-effort, not required -- live-verified a Writer
+        text-content object inserted via insertTextContent() (see
+        insert_embedded_object()) with its default AT_PARAGRAPH
+        AnchorType raises com.sun.star.beans.UnknownPropertyException
+        ("cannot get value Position") on a plain read, not just a set;
+        Size has no such restriction (confirmed live: reads/sets fine
+        regardless of anchor type), so width/height stay required. Same
+        try/except-and-omit convention this method already used for
+        RotateAngle/ShearAngle below."""
         size = shape.Size
-        geometry = {
-            "x": position.X, "y": position.Y,
-            "width": size.Width, "height": size.Height,
-        }
+        geometry = {"width": size.Width, "height": size.Height}
+        try:
+            position = shape.Position
+            geometry["x"] = position.X
+            geometry["y"] = position.Y
+        except Exception:
+            pass
         try:
             geometry["rotation"] = shape.RotateAngle
         except Exception:
@@ -3973,8 +3992,20 @@ class UNOBridge:
         return shape
 
     def delete_shape(self, doc: Any, shape: Any) -> None:
-        page = shape.getParent()
-        page.remove(shape)
+        if hasattr(shape, "getParent"):
+            page = shape.getParent()
+            page.remove(shape)
+        else:
+            # Writer text-content objects (e.g. a TextEmbeddedObject
+            # inserted via insertTextContent(), see
+            # insert_embedded_object()) don't implement XChild/
+            # getParent() at all -- confirmed live this is a genuine
+            # AttributeError, not just an empty/None parent, so it's not
+            # something a try/except around getParent() alone would
+            # distinguish from "shape not attached yet". Removed via
+            # XText.removeTextContent() instead, confirmed live this
+            # works cleanly for that object type.
+            doc.getText().removeTextContent(shape)
 
     def duplicate_shape(self, doc: Any, shape: Any, offset: Optional[Dict[str, Any]] = None) -> Any:
         """UNO has no direct 'clone shape' API -- create a new shape of
@@ -4390,13 +4421,40 @@ class UNOBridge:
     def insert_embedded_object(self, doc: Any, object_type: str, container: Optional[Any] = None,
                                 position: Optional[Dict[str, Any]] = None, size: Optional[Dict[str, Any]] = None,
                                 data: Optional[Dict[str, Any]] = None) -> Any:
-        """Insert a com.sun.star.drawing.OLE2Shape onto container's draw
-        page. CLSID must be set before page.add() -- the documented
-        OOo/LibreOffice Basic macro pattern for this shape type, and
-        live-verified elsewhere in this file that OLE2Shape is already
-        one of _SHAPE_SERVICE_TYPE_NAMES's recognized types (short name
-        "ole"), so get_shape_summary/get_shape_details work on the result
-        unchanged, same as every other shape this module creates.
+        """Insert an embedded OLE object, CLSID set to identify the
+        component type. Two different real mechanisms depending on
+        document type -- live-verified both, not assumed:
+
+        - Writer: `doc.createInstance("com.sun.star.drawing.OLE2Shape")`
+          raises `com.sun.star.lang.ServiceNotRegisteredException` --
+          confirmed live this service is genuinely not on Writer's own
+          document-level shape factory (unlike RectangleShape/
+          GraphicObjectShape/etc., which ARE, so this isn't a general
+          "Writer can't createInstance drawing.* shapes" problem). Writer
+          instead needs `com.sun.star.text.TextEmbeddedObject`, inserted
+          as text content via `text.insertTextContent()` at a cursor --
+          confirmed this still exposes CLSID, Size (it also implements
+          XShape), Model, and ExtendedControlOverEmbeddedObject the same
+          as OLE2Shape does elsewhere in this file, so nothing downstream
+          (get_shape_summary/activate_embedded_object) needs to know
+          which route created a given shape. Also added to
+          _SHAPE_SERVICE_TYPE_NAMES (short name "ole") so type
+          classification/list_embedded_objects_live's filter still finds
+          it. Position is the one exception: a freshly-inserted text-
+          content object's default AnchorType (AT_PARAGRAPH, confirmed
+          live) determines its position from where it landed in the text
+          flow -- setting Position directly raises
+          `com.sun.star.uno.RuntimeException` ("position cannot be
+          changed with this method"), confirmed live, so `position` is
+          silently not applied for Writer (Size still is). See
+          insert_embedded_object() below for where that's implemented.
+        - Calc/Impress/Draw: `com.sun.star.drawing.OLE2Shape` + `page.add()`
+          -- the original documented OOo/LibreOffice Basic macro pattern,
+          confirmed live still correct for Calc (creates cleanly, Model/
+          Formula settable); Impress/Draw share the same document-level
+          drawing-shape factory Calc uses so are expected, not
+          individually live-verified this pass, to behave the same --
+          flagging that honestly rather than assuming silently.
 
         Scoped to object_type='formula' this pass -- see
         _EMBEDDED_OBJECT_CLSIDS's docstring for why the other embeddable
@@ -4413,12 +4471,33 @@ class UNOBridge:
                 "chart, etc.) each need their own live-confirmed CLSID before being added -- "
                 "see this method's own docstring."
             )
-        page = self._resolve_shape_container(doc, container)
-        shape = doc.createInstance("com.sun.star.drawing.OLE2Shape")
-        shape.CLSID = clsid
-        page.add(shape)
-        shape.Position = uno.createUnoStruct(
-            "com.sun.star.awt.Point", int((position or {}).get("x", 0)), int((position or {}).get("y", 0)))
+        is_writer = self._get_document_type(doc) == "writer"
+        if is_writer:
+            shape = doc.createInstance("com.sun.star.text.TextEmbeddedObject")
+            shape.CLSID = clsid
+            text = doc.getText()
+            cursor = text.createTextCursorByRange(text.getEnd())
+            text.insertTextContent(cursor, shape, False)
+        else:
+            page = self._resolve_shape_container(doc, container)
+            shape = doc.createInstance("com.sun.star.drawing.OLE2Shape")
+            shape.CLSID = clsid
+            page.add(shape)
+        # Writer's default AnchorType for a freshly-inserted text-content
+        # object is AT_PARAGRAPH (confirmed live) -- position is
+        # determined by where it landed in the text flow, and setting
+        # Position directly raises com.sun.star.uno.RuntimeException
+        # ("position cannot be changed with this method"), confirmed
+        # live. Size has no such restriction (confirmed live: sets fine
+        # regardless of anchor type). Skipping Position for Writer only;
+        # every other insert_*_live tool in this module that supports
+        # Writer (insert_image_live) exposes its own `anchor` parameter
+        # for exactly this reason -- adding one here, and a matching
+        # AT_PAGE/AT_CHARACTER-anchored path that DOES accept Position,
+        # is future scope, not attempted this pass.
+        if not is_writer:
+            shape.Position = uno.createUnoStruct(
+                "com.sun.star.awt.Point", int((position or {}).get("x", 0)), int((position or {}).get("y", 0)))
         shape.Size = uno.createUnoStruct(
             "com.sun.star.awt.Size", int((size or {}).get("width", 2000)), int((size or {}).get("height", 1000)))
         if object_type == "formula" and data and data.get("formula") is not None:
@@ -4432,45 +4511,65 @@ class UNOBridge:
     # embedded OLE object's activation state (Apache OpenOffice Community
     # Forum "Activate Math OLE without window?" thread, corroborated by
     # the XEmbeddedObjectSupplier2/XEmbeddedObject IDL reference at
-    # api.libreoffice.org) -- NOT yet confirmed against this project's own
-    # held-open instance:
+    # api.libreoffice.org):
     #
     #   oXEO = oShape.ExtendedControlOverEmbeddedObject   ' -> XEmbeddedObject
     #   iCurrentState = oXEO.CurrentState
     #   oXEO.changeState(com.sun.star.embed.EmbedStates.UI_ACTIVE)
     #
-    # ExtendedControlOverEmbeddedObject is a property on OLE2Shape (void
-    # if the shape has no CLSID / isn't an embedded object), separate
-    # from the shape's own Model property insert_embedded_object() above
-    # already uses for direct content edits (e.g. a formula's Formula
-    # string) -- Model gives the embedded document's own component,
-    # ExtendedControlOverEmbeddedObject gives the *lifecycle* control
-    # object (com.sun.star.embed.XEmbeddedObject: changeState()/
-    # getCurrentState()) that drives verb-based activation independent of
-    # what the embedded content is. EmbedStates is a UNO constants group,
-    # not an enum -- resolved through uno.getConstantByName() the same
-    # way every other constants-group lookup in this file already works
-    # (e.g. NumberingType, ReferenceFieldSource above), so no numeric
-    # value is hardcoded/guessed here for either direction of the lookup.
+    # ExtendedControlOverEmbeddedObject is a property on the embedded
+    # object shape (void if the shape has no CLSID / isn't an embedded
+    # object), separate from the shape's own Model property
+    # insert_embedded_object() above already uses for direct content
+    # edits (e.g. a formula's Formula string) -- Model gives the embedded
+    # document's own component, ExtendedControlOverEmbeddedObject gives
+    # the *lifecycle* control object (com.sun.star.embed.XEmbeddedObject:
+    # changeState()/getCurrentState()) that drives verb-based activation
+    # independent of what the embedded content is. EmbedStates is a UNO
+    # constants group, not an enum -- resolved through
+    # uno.getConstantByName() the same way every other constants-group
+    # lookup in this file already works (e.g. NumberingType,
+    # ReferenceFieldSource above), so no numeric value is hardcoded/
+    # guessed here for either direction of the lookup.
     #
-    # UNO-version variance flagged in this method's own design note
-    # (docs/MCP_TOOLING_SCAFFOLD_PLAN.md) is about whether
-    # ExtendedControlOverEmbeddedObject is populated/behaves identically
-    # across LibreOffice versions -- that's exactly what the next live
-    # pass against a real inserted formula object needs to confirm before
-    # this is trusted the way insert_embedded_object's CLSID is.
-    _EMBED_STATE_NAMES = ("LOADED", "RUNNING", "INPLACE_ACTIVE", "UI_ACTIVE", "ACTIVE")
+    # Live-verified against a real inserted formula object, and the
+    # result is why _EMBED_STATE_NAMES below is scoped to 2 of the 4
+    # documented states, not all 4: LOADED and RUNNING both change state
+    # and read back correctly, near-instantly. ACTIVE and UI_ACTIVE --
+    # the two verbs that open an in-place/UI editing view -- each hung
+    # `changeState()` indefinitely against this headless soffice
+    # instance, reproducibly (confirmed twice, independently, isolating
+    # the exact call), wedging the ENTIRE process: every other tool call
+    # (including ones with no relation to this shape or this document)
+    # timed out until soffice was killed and relaunched. Not a clean
+    # error the caller could recover from -- this project's own headless-
+    # mode precedent (next/previous_slideshow_effect_live/
+    # goto_slideshow_slide_live -- XSlideShowController confirmed always
+    # None headless) fails clean; this one doesn't. Given the severity, a
+    # UI-opening verb request raises a clear, named error instead of
+    # attempting the call -- see this method's docstring. This project's
+    # own documented deployment mode is exactly the environment this
+    # failed in (README's own dev-workflow/smoke-test scripts launch
+    # headless); whether ACTIVE/UI_ACTIVE work in a real GUI-visible
+    # session (this project's *other* documented usage: Tools -> MCP
+    # Server -> Start MCP Server from an open window) is a real open
+    # question for the next live pass, not assumed either way here.
+    _EMBED_STATE_NAMES = ("LOADED", "RUNNING")
+    _EMBED_STATE_NAMES_BLOCKED_HEADLESS = ("INPLACE_ACTIVE", "UI_ACTIVE", "ACTIVE")
 
     def activate_embedded_object(self, shape: Any, verb: Optional[str] = None) -> str:
-        """Drive an embedded OLE2Shape's activation state via
+        """Drive an embedded OLE object's activation state via
         XEmbeddedObject.changeState(). verb names one of
-        _EMBED_STATE_NAMES (case-insensitive); defaults to "UI_ACTIVE",
-        the state the documented macro pattern above uses to open an
-        embedded object for interactive editing (the common "activate"
-        case -- e.g. double-clicking a formula to edit it in place).
-        Returns the resulting state's name, read back from
-        getCurrentState() rather than assumed, in case LibreOffice
-        settles on a different state than requested."""
+        _EMBED_STATE_NAMES (case-insensitive; defaults to "RUNNING", the
+        least surprising of the two confirmed-safe states -- LOADED
+        actively unloads a running object's UI state, RUNNING is the
+        closer match to "activate"'s everyday meaning of "make it live"
+        without opening a UI). Raises NotImplementedError, naming the
+        live-verified hang, for INPLACE_ACTIVE/UI_ACTIVE/ACTIVE -- see
+        this class's own comment above for the finding. Returns the
+        resulting state's name, read back from getCurrentState() rather
+        than assumed, in case LibreOffice settles on a different state
+        than requested."""
         control = getattr(shape, "ExtendedControlOverEmbeddedObject", None)
         if control is None:
             raise ValueError(
@@ -4478,7 +4577,15 @@ class UNOBridge:
                 "OLE object (no CLSID set), or the embedded object's control interface "
                 "isn't available in this LibreOffice version."
             )
-        requested = (verb or "UI_ACTIVE").upper()
+        requested = (verb or "RUNNING").upper()
+        if requested in self._EMBED_STATE_NAMES_BLOCKED_HEADLESS:
+            raise NotImplementedError(
+                f"activate_embedded_object_live verb='{requested}' is not available -- "
+                "live-verified this hangs changeState() indefinitely (and wedges the whole "
+                "soffice process, not just this call) against a headless instance. Scoped "
+                f"to {self._EMBED_STATE_NAMES} until a GUI-visible-session live pass confirms "
+                "whether this is headless-specific -- see activate_embedded_object()'s docstring."
+            )
         if requested not in self._EMBED_STATE_NAMES:
             raise ValueError(
                 f"Unknown verb '{verb}', expected one of {self._EMBED_STATE_NAMES}"
