@@ -4427,14 +4427,69 @@ class UNOBridge:
                 model.Formula = str(data["formula"])
         return shape
 
-    # activate_embedded_object (P3) has no bridge method yet -- verb-based
-    # OLE activation (.uno: dispatch or XEmbeddedObject.setState() verbs
-    # like EMBED_STATE_ACTIVE/EMBED_STATE_UI_ACTIVE) wasn't exploration-
-    # tested this pass, and has more UNO-version variance than anything
-    # else insert_embedded_object above touches. Stays status="stub"
-    # NOT_IMPLEMENTED until its own live pass, now that
-    # insert_embedded_object_live can produce a real object_id to
-    # activate against.
+    # Mechanism for activate_embedded_object below, sourced from the
+    # documented OOo/LibreOffice Basic macro pattern for driving an
+    # embedded OLE object's activation state (Apache OpenOffice Community
+    # Forum "Activate Math OLE without window?" thread, corroborated by
+    # the XEmbeddedObjectSupplier2/XEmbeddedObject IDL reference at
+    # api.libreoffice.org) -- NOT yet confirmed against this project's own
+    # held-open instance:
+    #
+    #   oXEO = oShape.ExtendedControlOverEmbeddedObject   ' -> XEmbeddedObject
+    #   iCurrentState = oXEO.CurrentState
+    #   oXEO.changeState(com.sun.star.embed.EmbedStates.UI_ACTIVE)
+    #
+    # ExtendedControlOverEmbeddedObject is a property on OLE2Shape (void
+    # if the shape has no CLSID / isn't an embedded object), separate
+    # from the shape's own Model property insert_embedded_object() above
+    # already uses for direct content edits (e.g. a formula's Formula
+    # string) -- Model gives the embedded document's own component,
+    # ExtendedControlOverEmbeddedObject gives the *lifecycle* control
+    # object (com.sun.star.embed.XEmbeddedObject: changeState()/
+    # getCurrentState()) that drives verb-based activation independent of
+    # what the embedded content is. EmbedStates is a UNO constants group,
+    # not an enum -- resolved through uno.getConstantByName() the same
+    # way every other constants-group lookup in this file already works
+    # (e.g. NumberingType, ReferenceFieldSource above), so no numeric
+    # value is hardcoded/guessed here for either direction of the lookup.
+    #
+    # UNO-version variance flagged in this method's own design note
+    # (docs/MCP_TOOLING_SCAFFOLD_PLAN.md) is about whether
+    # ExtendedControlOverEmbeddedObject is populated/behaves identically
+    # across LibreOffice versions -- that's exactly what the next live
+    # pass against a real inserted formula object needs to confirm before
+    # this is trusted the way insert_embedded_object's CLSID is.
+    _EMBED_STATE_NAMES = ("LOADED", "RUNNING", "INPLACE_ACTIVE", "UI_ACTIVE", "ACTIVE")
+
+    def activate_embedded_object(self, shape: Any, verb: Optional[str] = None) -> str:
+        """Drive an embedded OLE2Shape's activation state via
+        XEmbeddedObject.changeState(). verb names one of
+        _EMBED_STATE_NAMES (case-insensitive); defaults to "UI_ACTIVE",
+        the state the documented macro pattern above uses to open an
+        embedded object for interactive editing (the common "activate"
+        case -- e.g. double-clicking a formula to edit it in place).
+        Returns the resulting state's name, read back from
+        getCurrentState() rather than assumed, in case LibreOffice
+        settles on a different state than requested."""
+        control = getattr(shape, "ExtendedControlOverEmbeddedObject", None)
+        if control is None:
+            raise ValueError(
+                "Shape has no ExtendedControlOverEmbeddedObject -- not an embedded "
+                "OLE object (no CLSID set), or the embedded object's control interface "
+                "isn't available in this LibreOffice version."
+            )
+        requested = (verb or "UI_ACTIVE").upper()
+        if requested not in self._EMBED_STATE_NAMES:
+            raise ValueError(
+                f"Unknown verb '{verb}', expected one of {self._EMBED_STATE_NAMES}"
+            )
+        state = uno.getConstantByName(f"com.sun.star.embed.EmbedStates.{requested}")
+        control.changeState(state)
+        current = control.getCurrentState()
+        for name in self._EMBED_STATE_NAMES:
+            if uno.getConstantByName(f"com.sun.star.embed.EmbedStates.{name}") == current:
+                return name
+        return str(current)
 
     def delete_embedded_object(self, doc: Any, shape: Any) -> None:
         self.delete_shape(doc, shape)

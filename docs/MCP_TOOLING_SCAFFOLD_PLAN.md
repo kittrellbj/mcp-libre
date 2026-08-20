@@ -19,7 +19,7 @@ up exactly where it left off.
 | Writer - text, navigation, editing, search, review | 45 | 27 | 18 | **18/18 new tools Implemented** (`tools/writer_text.py`) -- real logic, live-verified; the 27 "(existing)" tools stay in `mcp_server.py`/`uno_bridge.py` under the original 32, not duplicated here |
 | Writer - page layout, publishing, styles, headers, fields, indexes | 43 | 0 | 43 | **42/43 Implemented** (`tools/writer_layout.py`) -- real logic, live-verified; `set_chapter_numbering_live` (P2) still stub -- `ChapterNumberingRules.replaceByIndex()` resists writes this build |
 | Writer - tables, sections, notes, content controls, mail merge | 38 | 0 | 38 | **37/38 Implemented** (`tools/writer_tables.py`) -- real logic, live-verified; `mail_merge_live` (P3) still stub -- `preview_mail_merge_live` (the real data-connection half) IS real |
-| Common drawing objects, images, shapes, embedded objects | 31 | 0 | 31 | **29/31 Implemented** (`tools/drawing_objects.py`) -- real logic, live-verified; only insert/activate_embedded_object (P3) still stub (uncertain OLE scope, not dispatch risk -- combine/split/bind/unbind re-enabled once the dispatch-safety finding was corrected) |
+| Common drawing objects, images, shapes, embedded objects | 31 | 0 | 31 | **31/31 Implemented** (`tools/drawing_objects.py`) -- real logic; `insert_embedded_object_live` scoped to `object_type="formula"`, `activate_embedded_object_live` written and unit-tested but not yet live-round-tripped (see "Real implementation pass: mcp-libre Part 2 remaining stubs" below) |
 | Charts and data visualizations | 20 | 0 | 20 | **20/20 Implemented** (`tools/charts.py`) -- real logic, live-verified, Calc-native charts only |
 | Calc - sheets, cells, ranges, formulas, layout | 42 | 0 | 42 | **42/42 Implemented** (`tools/calc_sheets.py`) -- real logic, live-verified |
 | Calc - data management, analysis, pivots, validation, external data | 42 | 0 | 42 | **39/42 Implemented** (`tools/calc_data.py`) -- real logic, live-verified; create/refresh/delete_external_link (P2/P3) still stub -- no write-side ExternalDocLinks mechanism this pass |
@@ -1933,6 +1933,85 @@ test_tool_scaffold_contract.py`. 433/433 passing under `pytest` across
 the full relevant suite. This closes out the four-scaffold assignment
 (calc_data.py, calc_page.py, writer_layout.py, writer_tables.py).
 
+## Real implementation pass: mcp-libre Part 2 remaining stubs (document events, insert/activate_embedded_object)
+
+Closes out the last 4 of Part 2's 12 shared-service scope-limited stubs,
+across two commits while the live instance was held for another agent's
+overnight Writer-session test (see the mcp-libre buzz channel,
+2026-08-19/20): `05f1bb3` landed `get_document_events_live`/
+`wait_for_document_event_live`/`insert_embedded_object_live`;
+`activate_embedded_object_live` followed once the hold lifted enough to
+proceed on source (still pending its own live round trip -- see below).
+
+**`get_document_events_live`/`wait_for_document_event_live`:** a single
+`com.sun.star.document.XDocumentEventListener` is registered once,
+process-wide, against `com.sun.star.frame.GlobalEventBroadcaster` --
+already covers every open document, not just the active one. Captured
+events land in a bounded, seq-numbered `deque` on `UNOBridge` (a
+monotonic `seq` counter rather than raw index/length, since a bounded
+deque evicts from the left once full and index-based "since" bookkeeping
+would silently break under load). `wait_for_document_event_live` blocks
+the request thread on a `threading.Condition` until a matching event
+lands or the deadline passes -- safe against `ai_interface.py`'s
+per-request-thread `ReusableThreadingTCPServer` model, confirmed nothing
+else needs that thread. `document_id` correlation to a captured event is
+best-effort via a new read-only `DocumentRegistry.find_document_id()`
+(never mints a new id, so a document opened directly in the LibreOffice
+GUI -- exactly the kind of document the overnight session held open --
+reports `document_id: null` instead of raising). See
+`uno_bridge.py`'s "-- Document events --" section for the mechanism.
+
+**`insert_embedded_object_live`:** a `com.sun.star.drawing.OLE2Shape`
+added to the resolved container's draw page, `CLSID` set before
+`page.add()` (the documented OOo/LibreOffice Basic macro pattern).
+Scoped to `object_type="formula"` -- that CLSID is repeated identically
+across enough independent sources to trust without a live round trip;
+any other `object_type` raises a clear `NotImplementedError` naming the
+gap rather than shipping a guessed GUID. See `uno_bridge.py`'s
+`_EMBEDDED_OBJECT_CLSIDS` docstring.
+
+**`activate_embedded_object_live`:** drives
+`XEmbeddedObject.changeState()` via the shape's own
+`ExtendedControlOverEmbeddedObject` property (`getattr` returns `None`/
+void if the shape has no CLSID), sourced from the documented OOo/
+LibreOffice Basic macro pattern (`oXEO = oShape.
+ExtendedControlOverEmbeddedObject; oXEO.changeState(com.sun.star.embed.
+EmbedStates.UI_ACTIVE)`, corroborated independently by the
+`XEmbeddedObjectSupplier2`/`XEmbeddedObject` IDL reference). `verb`
+accepts one of `LOADED`/`RUNNING`/`INPLACE_ACTIVE`/`UI_ACTIVE`/`ACTIVE`
+(case-insensitive; unknown values are a named `INVALID_PARAMETER`, not a
+crash), defaulting to `UI_ACTIVE` -- the state the documented pattern
+uses to open an embedded object for interactive editing. `EmbedStates`
+is a UNO constants group, not an enum, resolved through
+`uno.getConstantByName()` in both directions (request and the read-back
+`getCurrentState()`) rather than hardcoding any numeric value, matching
+this file's established convention for every other constants-group
+lookup. **Not yet live-round-tripped** against this project's own
+instance -- the live instance was off-limits for the whole of this pass
+(held for another agent's overnight Writer session); the next live pass
+needs to insert a real formula object, activate it, and confirm
+`ExtendedControlOverEmbeddedObject`/`changeState()` behave as documented
+before this is trusted the way `insert_embedded_object_live`'s CLSID is.
+See `uno_bridge.py`'s `activate_embedded_object()` docstring.
+
+**Testing:** `tests/test_undo_view_selection.py` covers the document-events
+pair (from `05f1bb3`); `tests/test_drawing_objects.py` gained 4 new tests
+for `activate_embedded_object_live` (default verb, case-insensitive verb,
+unknown-verb `INVALID_PARAMETER`, non-OLE-shape `INVALID_PARAMETER`)
+replacing its old still-stub assertion, and its 1 no-longer-needed
+per-module status guard was removed from `tests/
+test_tool_scaffold_contract.py` now that `drawing_objects.py` is fully
+implemented (moved into `IMPLEMENTED_MODULES`, same as `charts.py`/
+`undo_view_selection.py` before it). 471/471 passing under `uv run
+pytest` (scoped to the maintained `tools/`-facing suite -- three
+pre-existing, unrelated legacy files under `plugin/test_plugin.py`/
+`tests/test_client.py`/`tests/test_insert_fix.py` fail to even collect
+on missing/drifted dependencies (`requests`, `mcp.shared.memory`,
+`mcp.server.fastmcp`) predating this pass; not touched here).
+
+This closes out Part 2's 12 shared-service tools (all 12 now real) and,
+combined with the table above, `drawing_objects.py`'s full 31/31.
+
 ## What was built
 
 **Shared plumbing (`plugin/pythonpath/tools/`):**
@@ -2024,10 +2103,13 @@ extension.
   implementation pass" sections above); the same approach applies to the
   rest, tool by tool.
 - **`DocumentRegistry`'s dispose-listener eviction** -- see above.
-- **`get_document_events_live`/`wait_for_document_event_live`** -- still
-  stub; deliberately deferred to their own pass (persistent listener
-  lifecycle/concurrency, a different concern from the rest of
-  `undo_view_selection.py`).
+- **`activate_embedded_object_live`** -- real body written (drives
+  `XEmbeddedObject.changeState()` via the shape's
+  `ExtendedControlOverEmbeddedObject` property), unit-tested against the
+  fake bridge, but not yet live-round-tripped against a real inserted
+  formula object -- see "Real implementation pass: mcp-libre Part 2
+  remaining stubs" below for what's confirmed vs. sourced from
+  documentation only.
 - **The 308 remaining stub tools are still not wired into the live server
   by default** -- see the `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS` env var gate
   above. (The 58 implemented tools ARE always-on now, unconditionally.)
@@ -2085,10 +2167,9 @@ Not a blocker: `tools/` stays additive and reversible either way.
 4. ~~Implement `styles.py`'s 12 tools for real~~ -- done, live-verified,
    see "Real implementation pass: styles and formatting tools" above.
    All of Phase A is now real except the document-events pair.
-5. Implement `get_document_events_live`/`wait_for_document_event_live` --
-   the deliberately-deferred pair from step 3, needs a persistent
-   listener with its own lifecycle/concurrency design, not just another
-   synchronous UNO call. The only real-implementation gap left in Phase A.
+5. ~~Implement `get_document_events_live`/`wait_for_document_event_live`~~
+   -- done, see "Real implementation pass: mcp-libre Part 2 remaining
+   stubs" below. Phase A is now fully real.
 6. Wire `mcp_server.py`'s HTTP layer (`ai_interface.py`) to surface
    `NOT_IMPLEMENTED` responses distinctly (e.g. HTTP 501) so a client can
    tell "not implemented yet" apart from a real runtime error while these

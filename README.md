@@ -84,7 +84,7 @@ Numbers pulled from the project's own history (`docs/MCP_TOOLING_SCAFFOLD_PLAN.m
 - **600/600** concurrent tool-call round trips succeeded with 0 errors in the concurrency-safety probe (2 threads × 300 iterations against two live Writer documents).
 - **15/15** MCP transport protocol-conformance checks passed live against a real running extension (session-id enforcement, protocol-version negotiation).
 - **51 commits** landed since the v1.0.0 baseline (85 commits total across the project's full history).
-- **398 registered MCP tools** across Writer (99), Calc (99), Impress (41), Draw (16), and shared services (111), plus the original 32 legacy tools — 392 live by default, 6 stub-only pending (see [Tooling Roadmap](#tooling-roadmap)).
+- **398 registered MCP tools** across Writer (99), Calc (99), Impress (41), Draw (16), and shared services (111), plus the original 32 legacy tools — 393 live by default, 5 stub-only pending (see [Tooling Roadmap](#tooling-roadmap)).
 
 ---
 
@@ -395,7 +395,7 @@ Full write-up, including the empirical test that found the actual bug, in [`docs
 
 # Writer / Calc / Impress / Draw Automation via MCP
 
-The v2.0.0 catalog registers **398 MCP tools**: the 32-tool v1.0.0 compatibility baseline (always live, Writer-focused) plus 366 tools added since, organized by LibreOffice application area. 392 tools are live by default; 6 remain stub-only until implemented (enable them for development with `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS=1` — each returns a `NOT_IMPLEMENTED` error until finished).
+The v2.0.0 catalog registers **398 MCP tools**: the 32-tool v1.0.0 compatibility baseline (always live, Writer-focused) plus 366 tools added since, organized by LibreOffice application area. 393 tools are live by default; 5 remain stub-only until implemented (enable them for development with `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS=1` — each returns a `NOT_IMPLEMENTED` error until finished).
 
 | Area | Tools | Live by default | Stub-only |
 |---|---:|---:|---:|
@@ -404,8 +404,8 @@ The v2.0.0 catalog registers **398 MCP tools**: the 32-tool v1.0.0 compatibility
 | Calc (sheets, cells, ranges, external data) | 99 | 99 | 0 |
 | Impress (slides, animation, slideshow) | 41 | 38 | 3 |
 | Draw (pages, shapes, connectors) | 16 | 16 | 0 |
-| Shared services (charts, drawing objects, styles, undo/view/selection, document lifecycle, core runtime) | 111 | 110 | 1 |
-| **Total** | **398** | **392** | **6** |
+| Shared services (charts, drawing objects, styles, undo/view/selection, document lifecycle, core runtime) | 111 | 111 | 0 |
+| **Total** | **398** | **393** | **5** |
 
 <details>
 <summary><strong>v1.0.0 baseline — Document lifecycle</strong></summary>
@@ -538,7 +538,7 @@ See `plugin/pythonpath/tools/draw.py` for the full tool list.
 
 Charts, drawing objects/shapes, styles, undo/redo, view and selection state, document lifecycle (create/open/save/export across all four applications), and core runtime tools (server info, capability discovery, diagnostics).
 
-Stub-only: `insert_embedded_object_live`, `activate_embedded_object_live`, `get_document_events_live`, `wait_for_document_event_live`.
+No stub-only tools remaining in this area (`activate_embedded_object_live`'s mechanism is written and unit-tested, but its live round trip is still pending — see [Versioning](#versioning)).
 
 See `plugin/pythonpath/tools/` for the full tool list.
 
@@ -670,19 +670,15 @@ These changes prevent a slow or abandoned client request from blocking the entir
 
 # Tooling Roadmap
 
-Most of the v1.0.0 roadmap is now implemented — see [Writer / Calc / Impress / Draw Automation via MCP](#writer--calc--impress--draw-automation-via-mcp) for the live catalog. 6 tools remain stub-only, opt-in behind `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS=1`, each returning `NOT_IMPLEMENTED` until finished. They split into two distinct groups — five are genuinely blocked, one is just unbuilt:
-
-**Cannot implement due to a UNO API/environment limitation (5)** — live-verified against real LibreOffice, not a scheduling gap:
+Most of the v1.0.0 roadmap is now implemented — see [Writer / Calc / Impress / Draw Automation via MCP](#writer--calc--impress--draw-automation-via-mcp) for the live catalog. 5 tools remain stub-only, opt-in behind `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS=1`, each returning `NOT_IMPLEMENTED` until finished — all five are genuinely blocked, live-verified against real LibreOffice, not a scheduling gap:
 
 - `set_chapter_numbering_live` — `ChapterNumberingRules.replaceByIndex()` raises `IllegalArgumentException` even when passed back the exact unmodified sequence `getByIndex()` returned. A real UNO API limitation, not a usage bug on our side. (`get_chapter_numbering_live`, read-only, works fine.)
 - `mail_merge_live` — the real `com.sun.star.text.MailMerge` service needs a `DataSourceName` registered through `DatabaseContext`, which live-verified refuses to register an ad hoc `DataSource` without first persisting it to a real `.odb` file via `XStorable`. (`preview_mail_merge_live` works today via an unregistered ad hoc SDBC connection over a CSV folder.)
 - `next_slideshow_effect_live`, `previous_slideshow_effect_live`, `goto_slideshow_slide_live` — all three need a live `XSlideShowController`, confirmed via live verification to always be `None` in headless mode (no window manager to render a slideshow view to). (`start_slideshow_live`/`stop_slideshow_live` don't need the controller and work fine.)
 
-**Scope-limited (1)** — a real UNO mechanism exists, just not attempted yet. Calc's 3 external-link tools, Impress's 4 animation-mutation tools, and `add_chart_series_live` were finished and live-verified end to end in earlier passes — see the Calc entry (built on `com.sun.star.sheet.XAreaLinks`), the Impress entry (built on the generic `com.sun.star.animations` module), and the Charts entry (built on `XDataProvider.createDataSequenceByRangeRepresentation`) under [Writer / Calc / Impress / Draw Automation via MCP](#writer--calc--impress--draw-automation-via-mcp) above. `insert_embedded_object_live` (scoped to `object_type="formula"`, built on `com.sun.star.drawing.OLE2Shape`) and the document-events pair `get_document_events_live`/`wait_for_document_event_live` (built on a process-wide `com.sun.star.document.XDocumentEventListener` registered against `GlobalEventBroadcaster`) also moved out of this list this pass — code complete and unit-tested, but their live-verification REST round trip against real LibreOffice is still pending (the extension's live instance was held for a separate overnight test at the time of this pass; see `docs/MCP_TOOLING_SCAFFOLD_PLAN.md`'s corresponding entries for status):
+Calc's 3 external-link tools, Impress's 4 animation-mutation tools, and `add_chart_series_live` were finished and live-verified end to end in earlier passes — see the Calc entry (built on `com.sun.star.sheet.XAreaLinks`), the Impress entry (built on the generic `com.sun.star.animations` module), and the Charts entry (built on `XDataProvider.createDataSequenceByRangeRepresentation`) under [Writer / Calc / Impress / Draw Automation via MCP](#writer--calc--impress--draw-automation-via-mcp) above. `insert_embedded_object_live` (scoped to `object_type="formula"`, built on `com.sun.star.drawing.OLE2Shape`), the document-events pair `get_document_events_live`/`wait_for_document_event_live` (built on a process-wide `com.sun.star.document.XDocumentEventListener` registered against `GlobalEventBroadcaster`), and `activate_embedded_object_live` (built on the shape's `ExtendedControlOverEmbeddedObject`/`XEmbeddedObject.changeState()`) also moved out of stub status — code complete and unit-tested, but their live-verification REST round trip against real LibreOffice is still pending (the extension's live instance was held for a separate overnight test throughout this whole run of passes; see `docs/MCP_TOOLING_SCAFFOLD_PLAN.md`'s corresponding entries for status).
 
-- **Shared services**: `activate_embedded_object_live` — verb-based OLE activation wasn't exploration-tested this pass; needs its own live pass now that `insert_embedded_object_live` can produce a real object to activate against.
-
-Beyond finishing that one, longer-term goals include:
+Beyond finishing those five, longer-term goals include:
 
 - Adopting the MCP spec's modern (2026-07-28+) transport era, if a real client requirement emerges (see [MCP JSON-RPC Transport](#mcp-json-rpc-transport))
 - A dedicated JSON-RPC busy/backpressure error code, rather than routing admission-timeout rejections through `mcp_jsonrpc.py`'s generic `INTERNAL_ERROR`
@@ -882,7 +878,7 @@ For Windows native extension changes, verify at minimum:
 [ ] PDF export works
 ```
 
-Run the automated test suite (453 tests):
+Run the automated test suite (471 tests):
 
 ```bash
 uv run pytest
@@ -891,6 +887,17 @@ uv run pytest
 ---
 
 # Versioning
+
+## v2.0.5
+
+`activate_embedded_object_live` implemented for real, the last of Part 2's 12 shared-service scope-limited stubs. `drawing_objects.py` is now 31/31 fully implemented.
+
+Drives `XEmbeddedObject.changeState()` via the shape's own `ExtendedControlOverEmbeddedObject` property (void/`None` if the shape has no CLSID), sourced from the documented OOo/LibreOffice Basic macro pattern (`oXEO = oShape.ExtendedControlOverEmbeddedObject; oXEO.changeState(com.sun.star.embed.EmbedStates.UI_ACTIVE)`), corroborated independently against the `XEmbeddedObjectSupplier2`/`XEmbeddedObject` IDL reference. `verb` accepts one of `LOADED`/`RUNNING`/`INPLACE_ACTIVE`/`UI_ACTIVE`/`ACTIVE` (case-insensitive; an unknown value is a named `INVALID_PARAMETER`, not a crash), defaulting to `UI_ACTIVE` — the state the documented pattern uses to open an embedded object for interactive editing. `EmbedStates` is a UNO constants group, not an enum, resolved through `uno.getConstantByName()` in both directions (the request, and the read-back `getCurrentState()`) rather than hardcoding a numeric value, matching this file's established convention for every other constants-group lookup.
+
+**Not yet live-verified, flagged rather than assumed:** same footing as `insert_embedded_object_live`/the document-events pair in v2.0.4 — code-complete and unit-tested against a fake bridge, but the live REST round trip against a real running LibreOffice instance is still pending. The extension's one live instance was held for another agent's overnight Writer-agent test for the entire duration of this pass (per this channel's own hold instruction, lifted for source work only, not live verification); the next live pass needs to insert a real formula object, activate it, and confirm `ExtendedControlOverEmbeddedObject`/`changeState()` behave as documented before this is trusted the way `insert_embedded_object_live`'s CLSID is.
+
+- 393 live tools (was 392), 5 stub-only (was 6)
+- 471 automated tests passing (up from 469, net +2): 4 new tests in `test_drawing_objects.py` (default verb, case-insensitive verb, unknown-verb `INVALID_PARAMETER`, non-OLE-shape `INVALID_PARAMETER`) replace the old still-`NOT_IMPLEMENTED` assertion, offset by removing `test_tool_scaffold_contract.py`'s now-obsolete `drawing_objects.py` mixed-module status-guard test (moved into `IMPLEMENTED_MODULES` outright, same as `charts.py`/`undo_view_selection.py` before it)
 
 ## v2.0.4
 

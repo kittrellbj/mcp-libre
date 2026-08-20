@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """
-Unit tests for the 30 real (status="implemented") drawing_objects.py tools.
+Unit tests for the 31 real (status="implemented") drawing_objects.py tools
+(activate_embedded_object_live's own mechanism is written and unit-tested
+here, but not yet live-verified -- see the module docstring in
+tools/drawing_objects.py and uno_bridge.py's activate_embedded_object()
+for what's confirmed vs. sourced-from-documentation-only).
 
 Uses a FakeUnoBridge modeling shapes as plain FakeShape objects in a
 single flat list (good enough to exercise the tool-layer logic --
@@ -53,6 +57,7 @@ class FakeShape:
         self.glue_points = []  # list of {"x", "y", "is_user_defined"}
         self.deleted = False
         self.formula = None  # set by insert_embedded_object for object_type="formula"
+        self.activation_state = None  # set by activate_embedded_object; None until first activated
 
 
 class FakeSelection:
@@ -319,6 +324,27 @@ class FakeUnoBridge:
 
     def delete_embedded_object(self, doc, shape):
         self.delete_shape(doc, shape)
+
+    # Mirrors uno_bridge.UNOBridge.activate_embedded_object's own
+    # validation (verb name check, default, "not an OLE object" guard)
+    # without the real ExtendedControlOverEmbeddedObject/changeState()
+    # UNO round trip -- that part is live-verification-only, same
+    # disclaimer as this file's own header (real UNO objects aren't
+    # something a fake can usefully model).
+    _EMBED_STATE_NAMES = ("LOADED", "RUNNING", "INPLACE_ACTIVE", "UI_ACTIVE", "ACTIVE")
+
+    def activate_embedded_object(self, shape, verb=None):
+        if shape.shape_type != "ole":
+            raise ValueError(
+                "Shape has no ExtendedControlOverEmbeddedObject -- not an embedded "
+                "OLE object (no CLSID set), or the embedded object's control interface "
+                "isn't available in this LibreOffice version."
+            )
+        requested = (verb or "UI_ACTIVE").upper()
+        if requested not in self._EMBED_STATE_NAMES:
+            raise ValueError(f"Unknown verb '{verb}', expected one of {self._EMBED_STATE_NAMES}")
+        shape.activation_state = requested
+        return requested
 
 
 def _install(active_document=None, shapes=None):
@@ -704,11 +730,47 @@ def test_insert_embedded_object_live_unscoped_type_is_unsupported_capability():
     assert "formula" in result["error"]["message"]
 
 
-def test_activate_embedded_object_live_is_still_not_implemented():
+def test_activate_embedded_object_live_defaults_to_ui_active():
+    context.reset()
+    uno_bridge, _, _ = _install(active_document=FakeDocument())
+    inserted = _handler("insert_embedded_object_live")(object_type="formula")
+    object_id = inserted["result"]["shape_id"]
+    result = _handler("activate_embedded_object_live")(object_id=object_id)
+    assert result["success"] is True
+    assert result["result"]["state"] == "UI_ACTIVE"
+    assert uno_bridge.shapes[0].activation_state == "UI_ACTIVE"
+
+
+def test_activate_embedded_object_live_accepts_case_insensitive_verb():
     context.reset()
     _install(active_document=FakeDocument())
-    result = _handler("activate_embedded_object_live")(object_id="a")
-    assert result["success"] is False and result["error"]["code"] == "NOT_IMPLEMENTED"
+    inserted = _handler("insert_embedded_object_live")(object_type="formula")
+    object_id = inserted["result"]["shape_id"]
+    result = _handler("activate_embedded_object_live")(object_id=object_id, verb="active")
+    assert result["success"] is True
+    assert result["result"]["state"] == "ACTIVE"
+
+
+def test_activate_embedded_object_live_unknown_verb_is_invalid_parameter():
+    context.reset()
+    _install(active_document=FakeDocument())
+    inserted = _handler("insert_embedded_object_live")(object_type="formula")
+    object_id = inserted["result"]["shape_id"]
+    result = _handler("activate_embedded_object_live")(object_id=object_id, verb="bogus")
+    assert result["success"] is False
+    assert result["error"]["code"] == "INVALID_PARAMETER"
+
+
+def test_activate_embedded_object_live_non_ole_shape_is_invalid_parameter():
+    """A plain shape (no CLSID, never went through insert_embedded_object)
+    has no ExtendedControlOverEmbeddedObject -- surfaces as a named error,
+    not a crash."""
+    context.reset()
+    uno_bridge, _, _ = _install(active_document=FakeDocument(), shapes=[FakeShape("rectangle")])
+    shape_id = _handler("list_shapes_live")()["result"]["shapes"][0]["shape_id"]
+    result = _handler("activate_embedded_object_live")(object_id=shape_id)
+    assert result["success"] is False
+    assert result["error"]["code"] == "INVALID_PARAMETER"
 
 
 if __name__ == "__main__":
@@ -744,7 +806,10 @@ if __name__ == "__main__":
         test_list_and_delete_embedded_objects_live,
         test_insert_embedded_object_live_formula_creates_and_registers,
         test_insert_embedded_object_live_unscoped_type_is_unsupported_capability,
-        test_activate_embedded_object_live_is_still_not_implemented,
+        test_activate_embedded_object_live_defaults_to_ui_active,
+        test_activate_embedded_object_live_accepts_case_insensitive_verb,
+        test_activate_embedded_object_live_unknown_verb_is_invalid_parameter,
+        test_activate_embedded_object_live_non_ole_shape_is_invalid_parameter,
     ]
     for test in tests:
         test()

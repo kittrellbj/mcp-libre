@@ -49,12 +49,21 @@ round trip; see uno_bridge.py's insert_embedded_object()/
 _EMBEDDED_OBJECT_CLSIDS docstrings for why the other embeddable types
 (Calc sheet, Writer text, chart) aren't included yet -- any other
 object_type raises a clear NotImplementedError naming the gap rather
-than guessing a GUID. activate_embedded_object_live remains
-NOT_IMPLEMENTED -- verb-based OLE activation wasn't exploration-tested
-this pass and has more UNO-version variance than anything else in this
-module; worth its own pass now that insert_embedded_object_live can
-produce a real object to activate against. Both are P3 (lowest
-priority) in the spec.
+than guessing a GUID.
+
+activate_embedded_object_live is also now real: drives
+XEmbeddedObject.changeState() via the shape's
+ExtendedControlOverEmbeddedObject property (see uno_bridge.py's
+activate_embedded_object() docstring for the documented macro pattern
+this follows and its sourcing). Unlike insert_embedded_object_live's
+formula CLSID, this mechanism has NOT been live-round-tripped against
+this project's own instance yet -- written and unit-tested against the
+fake bridge only, per the held-instance hold in effect while this pass
+was done (see docs/MCP_TOOLING_SCAFFOLD_PLAN.md and the mcp-libre buzz
+channel, 2026-08-19/20). Flip to a confirmed/live-verified footing on
+the next live pass: insert a formula object, activate it, confirm
+ExtendedControlOverEmbeddedObject/changeState() behave as documented.
+Both embedded-object tools are P3 (lowest priority) in the spec.
 """
 
 from typing import Any, Dict, List, Optional
@@ -802,15 +811,25 @@ def insert_embedded_object_live(object_type: str, container: Optional[str] = Non
 @register_tool(
     name="activate_embedded_object_live",
     priority="P3",
-    purpose="Activate/open embedded object for editing where supported.",
+    purpose="Activate/open embedded object for editing where supported. verb is one of "
+            "LOADED/RUNNING/INPLACE_ACTIVE/UI_ACTIVE/ACTIVE (case-insensitive); defaults to UI_ACTIVE.",
     parameters=schema({
         "object_id": {"type": "string"},
         "verb": {"type": "string"},
     }, required=["object_id"]),
+    status="implemented",
 )
 def activate_embedded_object_live(object_id: str, verb: Optional[str] = None) -> Dict[str, Any]:
     start = envelope.start_timer()
-    return envelope.build_not_implemented("activate_embedded_object_live", start)
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        object_registry = _get_object_registry(ctx, resolved_id)
+        shape = object_registry.resolve_object(object_id)
+        state = ctx.uno_bridge.activate_embedded_object(shape, verb)
+        return envelope.build_success(result={"object_id": object_id, "state": state}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(

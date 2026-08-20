@@ -273,7 +273,7 @@ def test_every_tool_has_a_valid_status():
 
 # Modules whose tools have real logic now, not NOT_IMPLEMENTED stub bodies.
 # Update this set (and nothing else) as more modules get *fully* implemented.
-IMPLEMENTED_MODULES = ("core_runtime", "document_lifecycle", "styles", "writer_text", "calc_sheets", "draw", "calc_page", "charts", "undo_view_selection")
+IMPLEMENTED_MODULES = ("core_runtime", "document_lifecycle", "styles", "writer_text", "calc_sheets", "draw", "calc_page", "charts", "undo_view_selection", "drawing_objects")
 
 # undo_view_selection.py is now fully implemented (all 14 tools) -- moved
 # into IMPLEMENTED_MODULES above. get_document_events_live/wait_for_
@@ -284,28 +284,24 @@ IMPLEMENTED_MODULES = ("core_runtime", "document_lifecycle", "styles", "writer_t
 # bounded, seq-numbered event buffer with its own lifecycle -- see
 # uno_bridge.py's "-- Document events --" section for the mechanism.
 
-# drawing_objects.py is also a mixed module: 30 of its 31 tools are real.
-# combine_shapes_live/split_shape_live/bind_shapes_live/unbind_shape_live
-# were re-enabled by the draw.py pass's dispatch-safety correction (the
-# original .uno:Combine crash turned out to be an external-test-script
-# artifact, not a real production risk -- see
-# docs/MCP_TOOLING_SCAFFOLD_PLAN.md's draw.py entry). insert_embedded_
-# object_live is now real too, scoped to object_type="formula" (the one
-# CLSID trusted without a live round trip -- see uno_bridge.py's
-# _EMBEDDED_OBJECT_CLSIDS docstring). The remaining 1
-# (activate_embedded_object_live, P3) stays status="stub" -- verb-based
-# OLE activation wasn't exploration-tested this pass, unrelated to the
-# dispatch-crash risk the other three were re-enabled from.
-IMPLEMENTED_DRAWING_OBJECT_TOOL_NAMES = {
-    "list_shapes_live", "get_shape_live", "insert_shape_live", "delete_shape_live",
-    "duplicate_shape_live", "set_shape_geometry_live", "set_shape_style_live", "set_shape_text_live",
-    "format_shape_text_live", "set_shape_alt_text_live", "set_shape_z_order_live", "align_shapes_live",
-    "distribute_shapes_live", "group_shapes_live", "ungroup_shape_live", "insert_connector_live",
-    "list_glue_points_live", "add_glue_point_live", "delete_glue_point_live", "insert_image_live",
-    "replace_image_live", "set_image_properties_live", "export_shape_live", "list_embedded_objects_live",
-    "delete_embedded_object_live", "combine_shapes_live", "split_shape_live", "bind_shapes_live",
-    "unbind_shape_live", "insert_embedded_object_live",
-}
+# drawing_objects.py is now fully implemented (all 31 tools) -- moved into
+# IMPLEMENTED_MODULES above. combine_shapes_live/split_shape_live/
+# bind_shapes_live/unbind_shape_live were re-enabled by the draw.py pass's
+# dispatch-safety correction (the original .uno:Combine crash turned out
+# to be an external-test-script artifact, not a real production risk --
+# see docs/MCP_TOOLING_SCAFFOLD_PLAN.md's draw.py entry). insert_embedded_
+# object_live is real, scoped to object_type="formula" (the one CLSID
+# trusted without a live round trip -- see uno_bridge.py's
+# _EMBEDDED_OBJECT_CLSIDS docstring). activate_embedded_object_live is
+# the last one in: drives XEmbeddedObject.changeState() via the shape's
+# ExtendedControlOverEmbeddedObject property (see uno_bridge.py's
+# activate_embedded_object() docstring for the documented macro pattern
+# this follows) -- written and unit-tested against the fake bridge, but
+# NOT yet live-round-tripped against a real inserted formula object (the
+# live instance was held for another agent's overnight session throughout
+# this pass -- see the mcp-libre buzz channel, 2026-08-19/20). Next live
+# pass: insert a formula object, activate it, confirm
+# ExtendedControlOverEmbeddedObject/changeState() behave as documented.
 
 
 def test_implemented_modules_tools_are_marked_implemented():
@@ -316,18 +312,6 @@ def test_implemented_modules_tools_are_marked_implemented():
     for module_name in IMPLEMENTED_MODULES:
         for name in EXPECTED_BY_MODULE[module_name]:
             assert registry[name]["status"] == "implemented", f"{name} (in {module_name}) should be status='implemented'"
-
-
-def test_implemented_drawing_object_tools_are_marked_implemented():
-    """Same guard as test_implemented_modules_tools_are_marked_implemented,
-    for the 30 individually-implemented tools in the mixed
-    drawing_objects.py module (see IMPLEMENTED_DRAWING_OBJECT_TOOL_NAMES)."""
-    registry = get_registry()
-    for name in IMPLEMENTED_DRAWING_OBJECT_TOOL_NAMES:
-        assert registry[name]["status"] == "implemented", f"{name} should be status='implemented'"
-    still_stub = EXPECTED_BY_MODULE["drawing_objects"] - IMPLEMENTED_DRAWING_OBJECT_TOOL_NAMES
-    for name in still_stub:
-        assert registry[name]["status"] == "stub", f"{name} should still be status='stub' (dispatch-crash risk, see module docstring)"
 
 
 # charts.py is now fully implemented (all 20 tools) -- moved into
@@ -539,7 +523,6 @@ if __name__ == "__main__":
         test_every_tool_has_a_valid_status,
         test_implemented_modules_tools_are_marked_implemented,
         test_implemented_undo_tools_are_marked_implemented,
-        test_implemented_drawing_object_tools_are_marked_implemented,
         test_implemented_impress_tools_are_marked_implemented,
         test_implemented_calc_data_tools_are_marked_implemented,
         test_implemented_writer_layout_tools_are_marked_implemented,

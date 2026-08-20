@@ -408,17 +408,15 @@ concurrency control not yet started).
   `draw.py`, `writer_layout.py`, `writer_tables.py`), plus the original
   32 legacy tools, all against real headless LibreOffice 26.2 -- no
   scaffolded modules left. A short list of individual tools stay
-  documented stubs, never silently claimed working, split into two
-  distinct groups: 5 are genuinely blocked on a UNO API/environment
-  limitation (`set_chapter_numbering_live` -- `ChapterNumberingRules.
+  documented stubs, never silently claimed working: 5 remain, all
+  genuinely blocked on a UNO API/environment limitation
+  (`set_chapter_numbering_live` -- `ChapterNumberingRules.
   replaceByIndex()` raises `IllegalArgumentException` on an unmodified
   round-trip; `mail_merge_live` -- `MailMerge` needs a `DataSourceName`
   registered through `DatabaseContext`, which refuses to register an ad
   hoc `DataSource` without a persisted `.odb`; the 3 slideshow-effect
   tools in `impress.py` -- headless mode's `XSlideShowController` is
-  always `None`), the other 4 are unattempted-but-plausible scope
-  limits, not blocked (`insert/activate_embedded_object_live`, plus
-  document-events) -- see each module's own section in
+  always `None`) -- see each module's own section in
   `docs/MCP_TOOLING_SCAFFOLD_PLAN.md` for why. `create/refresh/delete_external_link_live` (Calc) moved out of
   this list in a follow-up pass -- real UNO mechanism turned out to be
   `com.sun.star.sheet.XAreaLinks` (`doc.AreaLinks`), a genuinely separate,
@@ -460,10 +458,19 @@ concurrency control not yet started).
   separate overnight Writer-agent test and, checked directly afterward,
   was carrying an unsaved `modified: true` document with no backing file
   -- a rebuild/relaunch to live-verify would have destroyed it.
-  `activate_embedded_object_live` is the only one of the original 4
-  remaining in this list (P3, verb-based OLE activation, its own pass
-  once a live-verified `insert_embedded_object_live` object exists to
-  activate against).
+  `activate_embedded_object_live`, the last of the original 4, also
+  moved out of this list in a further follow-up pass (v2.0.5) -- drives
+  `XEmbeddedObject.changeState()` via the shape's own
+  `ExtendedControlOverEmbeddedObject` property, sourced from the
+  documented OOo/LibreOffice Basic macro pattern for verb-based OLE
+  activation (`EmbedStates` resolved through `uno.getConstantByName()`,
+  not hardcoded, matching the rest of this file's constants-group
+  lookups) -- see `uno_bridge.py`'s `activate_embedded_object()`
+  docstring. Code-complete and unit-tested (471/471), but **not yet
+  live-verified** for the same reason as the events pair/insert above:
+  the live instance was held for the entire duration of this pass too.
+  This closes out Part 2's 12 shared-service scope-limited stubs and
+  `drawing_objects.py`'s remaining tool.
 - **Error-code consistency:** one shared, validated envelope
   (`envelope.build_error()`/`build_success()`) across every real tool;
   `WRONG_DOCUMENT_TYPE` now correctly wired (was dead code catalog-wide
