@@ -183,26 +183,42 @@ class UNOBridge:
     def create_document(self, doc_type: str = "writer") -> Any:
         """
         Create new document using UNO API
-        
+
         Args:
             doc_type: Type of document ('writer', 'calc', 'impress', 'draw')
-            
+
         Returns:
             Document object
+
+        BUG #2 fix (live-verified): loadComponentFromURL() creating a new
+        top-level frame does NOT make desktop.getCurrentComponent() see it
+        in this headless server -- confirmed directly: a fresh
+        private:factory/swriter load left getCurrentComponent() at None
+        (or a prior document) every time, with no window manager present
+        to fire the focus/activate event an interactive session gets for
+        free. That's the mechanism behind "session gets permanently stuck
+        after the last open document is closed" -- create_document_live
+        reported success but get_active_document_live still saw
+        NO_ACTIVE_DOCUMENT. Fixed by explicitly activating the new
+        document's own frame (the same activate_document() helper
+        activate_document_live already uses) before returning it, so the
+        new document is unconditionally the active one regardless of
+        whatever had focus before.
         """
         try:
             url_map = {
                 "writer": "private:factory/swriter",
-                "calc": "private:factory/scalc", 
+                "calc": "private:factory/scalc",
                 "impress": "private:factory/simpress",
                 "draw": "private:factory/sdraw"
             }
-            
+
             url = url_map.get(doc_type, "private:factory/swriter")
             doc = self.desktop.loadComponentFromURL(url, "_blank", 0, ())
+            self.activate_document(doc)
             logger.info(f"Created new {doc_type} document")
             return doc
-            
+
         except Exception as e:
             logger.error(f"Failed to create document: {e}")
             raise
@@ -476,6 +492,15 @@ class UNOBridge:
         doc = self.desktop.loadComponentFromURL(url, "_blank", 0, tuple(props))
         if doc is None:
             raise RuntimeError(f"LibreOffice returned no document for {file_path} (unsupported format or filter?)")
+        if not hidden:
+            # Same BUG #2 mechanism as create_document(): a non-hidden load
+            # doesn't become getCurrentComponent()'s answer on its own in
+            # this headless server. Skip for hidden=True -- there's no
+            # foreground concept for a document the caller explicitly asked
+            # to stay off-screen, and activating it would silently steal
+            # "active document" status from whatever the caller is actually
+            # working on.
+            self.activate_document(doc)
         logger.info(f"Opened document from {file_path}")
         return doc
 
@@ -488,6 +513,7 @@ class UNOBridge:
         doc = self.desktop.loadComponentFromURL(url, "_blank", 0, props)
         if doc is None:
             raise RuntimeError(f"LibreOffice returned no document for template {template_path}")
+        self.activate_document(doc)  # BUG #2 fix, same mechanism as create_document()
         logger.info(f"Created document from template {template_path} (as_template={as_template})")
         return doc
 
@@ -1346,11 +1372,57 @@ class UNOBridge:
         new_doc = self.desktop.loadComponentFromURL(url, "_blank", 0, ())
         if new_doc is None:
             raise RuntimeError(f"LibreOffice returned no document reloading {url}")
+        self.activate_document(new_doc)  # BUG #2 fix, same mechanism as create_document()
         return new_doc
+
+    @staticmethod
+    def _stale_lock_file(doc: Any, file_path: str) -> Optional[str]:
+        """Return the path of a LibreOffice lock marker for file_path if one
+        exists on disk and it isn't doc's own (a document that already has
+        file_path as its stored location legitimately holds that lock
+        itself), else None.
+
+        BUG #6 finding (from the original report, not independently
+        reproduced this pass -- see save_as_document()'s docstring): a
+        stale `.~lock.<name>#` file left behind by a crashed/killed prior
+        soffice process, combined with a pre-existing file at the same
+        output path, was reported to make storeAsURL() silently serialize
+        a different (near-empty, stale-frame) document instead of the live
+        one being saved -- success=true, wrong bytes on disk. The lock
+        marker's own naming convention (`.~lock.<basename>#`, same
+        directory) is LibreOffice's own, not this project's."""
+        directory, name = os.path.split(file_path)
+        lock_path = os.path.join(directory, f".~lock.{name}#")
+        if not os.path.exists(lock_path):
+            return None
+        try:
+            if doc.hasLocation() and doc.getURL() == uno.systemPathToFileUrl(file_path):
+                return None  # doc's own legitimate self-lock, not a stale one
+        except Exception:
+            pass
+        return lock_path
 
     def save_as_document(self, doc: Any, file_path: str, filter_name: Optional[str] = None,
                           filter_options: Optional[Dict[str, Any]] = None, overwrite: bool = False) -> None:
-        """Explicit Save As: changes the document's own stored location, unlike save_copy_document()."""
+        """Explicit Save As: changes the document's own stored location, unlike save_copy_document().
+
+        BUG #6 fix: refuses when a stale LibreOffice lock marker exists
+        for file_path, regardless of `overwrite` -- overwrite only ever
+        meant "yes, replace the file's bytes," never "yes, save through
+        whatever stale frame LibreOffice may have attached because a lock
+        file suggests another session already has this path open." The
+        original report's own manual workaround (kill soffice, delete
+        every .~lock.* AND the old output file before starting) is the
+        exact condition this now enforces instead of leaving as tribal
+        knowledge in a log file -- see docs/HARDENING_PLAN.md."""
+        lock_path = self._stale_lock_file(doc, file_path)
+        if lock_path:
+            raise FileExistsError(
+                f"A LibreOffice lock file exists for {file_path} ({lock_path}). Saving through a stale "
+                f"lock has been reported to silently write the wrong document's content. Confirm no other "
+                f"session actually holds this file, delete the lock file, then retry -- overwrite=true does "
+                f"not address this."
+            )
         if not overwrite and os.path.exists(file_path):
             raise FileExistsError(f"{file_path} already exists; pass overwrite=true to replace it.")
         url = uno.systemPathToFileUrl(file_path)
@@ -1365,7 +1437,19 @@ class UNOBridge:
 
     def save_copy_document(self, doc: Any, file_path: str, filter_name: Optional[str] = None,
                             overwrite: bool = False) -> None:
-        """Store a copy without changing the document's own stored location."""
+        """Store a copy without changing the document's own stored location.
+
+        BUG #6 fix: same stale-lock refusal as save_as_document() -- see
+        its docstring. storeToURL() shares the same "reads a stale
+        attached frame instead of the live document" risk mechanism."""
+        lock_path = self._stale_lock_file(doc, file_path)
+        if lock_path:
+            raise FileExistsError(
+                f"A LibreOffice lock file exists for {file_path} ({lock_path}). Saving through a stale "
+                f"lock has been reported to silently write the wrong document's content. Confirm no other "
+                f"session actually holds this file, delete the lock file, then retry -- overwrite=true does "
+                f"not address this."
+            )
         if not overwrite and os.path.exists(file_path):
             raise FileExistsError(f"{file_path} already exists; pass overwrite=true to replace it.")
         url = uno.systemPathToFileUrl(file_path)
@@ -3299,6 +3383,26 @@ class UNOBridge:
         or end (position="after"), then insertString()+insertControlCharacter()
         (or the reverse order for "after") so the paragraph break lands on
         the correct side of the new text.
+
+        BUG #5 fix (live-verified): when at_paragraph is omitted, the
+        anchor resolves through _current_paragraph_index(doc), which reads
+        the VIEW cursor's position -- but the actual edit above happens
+        through a SEPARATE text cursor (text_obj.createTextCursorByRange()),
+        which never touches the view cursor. Under batch_execute_live
+        (every op runs back-to-back with no idle time between server-side
+        calls), the view cursor never moved, so every batched
+        at_paragraph=None call in a row resolved the identical anchor and
+        piled up in reverse -- confirmed against the reported symptom:
+        insert_table()/insert_image() don't have this bug because, when
+        their own *_position is omitted, they insert directly through
+        controller.getViewCursor() itself (the same object being written
+        through), so it moves as a side effect of the insert. Fixed the
+        same way here: explicitly resync the view cursor to the inserted
+        range afterward, so the next omitted-position call (batched or
+        not) resolves relative to what was just inserted instead of a
+        stale position. Best-effort (doesn't fail an otherwise-successful
+        insert if repositioning itself raises) -- worst case reverts to
+        the pre-fix anchor behavior for the next call, not data loss.
         """
         self._require_writer(doc, "insert_paragraph")
         position = position or "after"
@@ -3317,6 +3421,10 @@ class UNOBridge:
             text_obj.insertControlCharacter(cursor, PARAGRAPH_BREAK, False)
             text_obj.insertString(cursor, text, False)
             new_paragraph_number = anchor_n + 1
+        try:
+            self._get_controller(doc).getViewCursor().gotoRange(cursor, False)
+        except Exception:
+            pass  # best-effort -- see BUG #5 fix note above
         return {"inserted_paragraph": new_paragraph_number, "text": text}
 
     def append_paragraph(self, doc: Any, text: str = "", style_name: Optional[str] = None) -> Dict[str, Any]:
@@ -7935,6 +8043,21 @@ class UNOBridge:
         result["column_count"] = columns.ColumnCount
         return result
 
+    # BUG #1 fix (live-verified): the enum type is com.sun.star.style.
+    # PageStyleLayout, not com.sun.star.text.PageStyleLayout -- the wrong
+    # namespace is exactly why the old uno.Enum("com.sun.star.text.
+    # PageStyleLayout", ...) call raised "enum com.sun.star.text.
+    # PageStyleLayout is unknown" (a real type of that name simply doesn't
+    # exist), not the member-name issue the original report guessed at.
+    # Read back live off a real running document rather than trusted from
+    # the report or set_mirror.py's own comment (which had LEFT/RIGHT
+    # swapped): ALL=0, LEFT=1, RIGHT=2, MIRRORED=3. Assigning the raw int
+    # sidesteps constructing a uno.Enum by name entirely -- setPropertyValue
+    # auto-converts an int to the enum type, the same mechanism set_mirror.py's
+    # workaround and update_page_style_live's raw-int path already rely on.
+    _PAGE_STYLE_LAYOUT_ALL = 0
+    _PAGE_STYLE_LAYOUT_MIRRORED = 3
+
     def set_page_layout(self, doc: Any, width: float, height: float, unit: str, orientation: Optional[str] = None,
                          margins: Optional[Dict[str, Any]] = None, mirrored: Optional[bool] = None,
                          gutter: Optional[float] = None, page_style: Optional[str] = None) -> List[str]:
@@ -7953,7 +8076,7 @@ class UNOBridge:
                     setattr(style, prop_name, int(margins[key] * factor))
                     applied.append(f"margins.{key}")
         if mirrored is not None:
-            style.PageStyleLayout = uno.Enum("com.sun.star.text.PageStyleLayout", "MIRRORED" if mirrored else "ALL")
+            style.PageStyleLayout = self._PAGE_STYLE_LAYOUT_MIRRORED if mirrored else self._PAGE_STYLE_LAYOUT_ALL
             applied.append("mirrored")
         if gutter is not None:
             style.GutterMargin = int(gutter * factor)
@@ -8066,13 +8189,22 @@ class UNOBridge:
         """Splits the target paragraph at its start (matching split_
         paragraph's own insertControlCharacter(PARAGRAPH_BREAK) idiom),
         then marks the resulting new paragraph BreakType=PAGE_BEFORE
-        (+PageDescName/PageNumberOffset if given)."""
+        (+PageDescName/PageNumberOffset if given).
+
+        BUG #5 fix: same view-cursor resync as insert_paragraph() -- see
+        its docstring. at_position=None resolves through the view cursor
+        but the actual edit uses a separate text cursor that never moves
+        it, so this is batch-unsafe the same way insert_heading() was."""
         self._require_writer(doc, "insert_page_break")
         n = at_position if at_position is not None else self._current_paragraph_index(doc)
         anchor_para = self._get_paragraph_object(doc, n)
         text_obj = doc.getText()
         cursor = text_obj.createTextCursorByRange(anchor_para.getStart())
         text_obj.insertControlCharacter(cursor, PARAGRAPH_BREAK, False)
+        try:
+            self._get_controller(doc).getViewCursor().gotoRange(cursor, False)
+        except Exception:
+            pass  # best-effort -- see BUG #5 fix note above
         new_para = self._get_paragraph_object(doc, n + 1)
         new_para.BreakType = uno.Enum("com.sun.star.style.BreakType", "PAGE_BEFORE")
         if page_style is not None:

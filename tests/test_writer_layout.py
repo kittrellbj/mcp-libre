@@ -70,6 +70,7 @@ class FakeUnoBridge:
         self.chapter_levels = [{"level": i + 1, "Prefix": "", "Suffix": ""} for i in range(10)]
         self.line_numbering = {"enabled": False, "interval": 1, "restart_each_page": False}
         self.deleted_fields_kept_text = []
+        self.paragraph_count = 0
 
     def get_active_document(self):
         return self.active_document
@@ -281,6 +282,14 @@ class FakeUnoBridge:
 
     def update_index(self, index):
         index.updated = True
+
+    def get_paragraph_count(self, doc=None):
+        """Stand-in for update_index_live's BUG #4 fail-loud guard (see
+        writer_layout.py) -- this fake doesn't model real body content, so
+        a fixed count that reads the same before and after update_index()
+        is enough to exercise the plumbing without asserting real UNO
+        paragraph-enumeration mechanics (live-verified instead)."""
+        return {"success": True, "count": self.paragraph_count}
 
     def delete_index(self, doc, index, keep_content=False):
         index.disposed = True
@@ -524,6 +533,33 @@ def test_toc_lifecycle_live():
     deleted = _handler("delete_index_live")(index_id=index_id)
     assert deleted["success"] is True
     assert _handler("list_document_indexes_live")()["result"]["count"] == 0
+
+
+def test_update_index_live_refuses_on_paragraph_count_drop():
+    """BUG #4 fail-loud guard: update_index_live must never report success
+    when the document's paragraph count drops across the index refresh --
+    see writer_layout.py's update_index_live docstring for the live
+    investigation this guards against regardless of root cause."""
+    context.reset()
+    uno_bridge, _, _ = _install(active_document=FakeDocument())
+    uno_bridge.paragraph_count = 50
+    inserted = _handler("insert_toc_live")(title="Contents")
+    index_id = inserted["result"]["index_id"]
+
+    # Simulate the reported symptom: content present when the index was
+    # created, gone (or apparently gone) by the time update_index() returns.
+    original_update_index = uno_bridge.update_index
+
+    def _update_index_and_drop(index):
+        original_update_index(index)
+        uno_bridge.paragraph_count = 5
+
+    uno_bridge.update_index = _update_index_and_drop
+
+    result = _handler("update_index_live")(index_id=index_id)
+    assert result["success"] is False
+    assert result["error"]["code"] == "UNO_EXCEPTION"
+    assert "50" in result["error"]["message"] and "5" in result["error"]["message"]
 
 
 def test_insert_alphabetical_index_live():

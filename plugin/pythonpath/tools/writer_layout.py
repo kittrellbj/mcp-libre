@@ -899,13 +899,58 @@ def insert_toc_live(at_position: Optional[int] = None, title: Optional[str] = No
     status="implemented",
 )
 def update_index_live(index_id: str) -> Dict[str, Any]:
+    """BUG #4 finding (live-verified): a bare index.update() was reported
+    to silently revert the whole document to an earlier state, with
+    success=true and no error -- reran both of the original report's own
+    repro scripts (repro_toc_large.py, repro_save.py) against a session
+    with BUG #2's fix applied (explicit frame activation on every
+    document-creating call, see uno_bridge.create_document()'s docstring),
+    compounding state across both runs (2 stray TOC indexes, 363
+    paragraphs incl. an image, 2 update_index_live calls) -- neither
+    reproduced any reversion; the saved file matched the live count
+    exactly. That points at BUG #2's same root cause (desktop.
+    getCurrentComponent() drifting to a stale document across separate
+    calls in headless mode) rather than a defect in index.update() itself:
+    a later stats/count call re-resolving "the active document" from
+    scratch could silently land on an older, smaller document than the one
+    just built, and report ITS paragraph count -- indistinguishable from
+    data loss to a caller, but nothing was actually deleted.
+
+    Not willing to bet the whole fix on having reproduced the exact
+    multi-hour, multi-session drift Brian's original run hit (the log
+    itself flagged a second suspect, a possible second soffice instance,
+    never fully pinned) -- so this also adds the fail-loud guard Buddy's
+    standing decision asked for regardless of mechanism: paragraph count
+    is read directly off the SAME resolved `doc` object before and after
+    index.update() (not re-resolved via "the active document", which is
+    exactly the unstable path under suspicion), and a drop refuses to
+    report success. Real index refreshes only ever add/update generated
+    entries, never remove body paragraphs, so any decrease is by
+    definition either the reversion bug or something equally wrong -- a
+    caller must never see success=true either way.
+    """
     start = envelope.start_timer()
     ctx = context.get_context()
     try:
         doc, resolved_id = _resolve_and_register(ctx)
         index = _get_object_registry(ctx, resolved_id).resolve_object(index_id)
+        before = ctx.uno_bridge.get_paragraph_count(doc)
+        if not before.get("success"):
+            raise RuntimeError(f"update_index_live: could not read paragraph count before update: {before.get('error')}")
         ctx.uno_bridge.update_index(index)
-        return envelope.build_success(result={"updated": index_id}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+        after = ctx.uno_bridge.get_paragraph_count(doc)
+        if not after.get("success"):
+            raise RuntimeError(f"update_index_live: could not read paragraph count after update: {after.get('error')}")
+        before_count, after_count = before["count"], after["count"]
+        if after_count < before_count:
+            raise RuntimeError(
+                f"update_index_live: paragraph count dropped from {before_count} to {after_count} "
+                f"while refreshing index {index_id!r} -- refusing to report success on a document "
+                f"that may have reverted to an earlier state."
+            )
+        return envelope.build_success(
+            result={"updated": index_id, "paragraph_count_before": before_count, "paragraph_count_after": after_count},
+            document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
     except Exception as e:
         return _error_response(e, start)
 
