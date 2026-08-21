@@ -1,7 +1,7 @@
 # LibreOffice MCP Server
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.9-blue.svg)](#versioning)
+[![Version](https://img.shields.io/badge/version-2.0.10-blue.svg)](#versioning)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](#requirements)
 [![LibreOffice](https://img.shields.io/badge/LibreOffice-24.2%2B-18A303.svg)](#requirements)
 
@@ -204,7 +204,7 @@ python build-oxt-windows.py
 The extension package is created at:
 
 ```text
-build/libreoffice-mcp-extension-2.0.9.oxt
+build/libreoffice-mcp-extension-2.0.10.oxt
 ```
 
 The Windows builder creates a LibreOffice-compatible ZIP/OXT structure with normalized archive paths.
@@ -218,7 +218,7 @@ PowerShell example:
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
 & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension
-& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.9.oxt"
+& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.10.oxt"
 ```
 
 Removing an extension that is not already installed may report that no matching extension exists. That is harmless.
@@ -269,7 +269,7 @@ A convenient rebuild/reinstall command in PowerShell is:
 
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
-python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.9.oxt"
+python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.10.oxt"
 ```
 
 Then reopen LibreOffice and start the MCP server from the Tools menu.
@@ -887,6 +887,48 @@ uv run pytest
 ---
 
 # Versioning
+
+## v2.0.10
+
+Step 4 of the 2026-08-19 typeset-run remediation: implemented Morgan's
+capped-wait decision for `wait_for_document_event_live`
+(`docs/EVENT_WAIT_CONCURRENCY_DECISION.md`) exactly as specified —
+`uno_bridge.py`'s `wait_for_document_event()` clamps its actual wait to
+`min(timeout_ms, _MAX_WAIT_LOCK_HOLD_MS)`. The cap (500ms) is measured,
+not guessed, per the decision's explicit ask: `edit-latency-probe-
+windows.py`, 100 real HTTP round trips of the typeset-run's dominant
+call shape (`append_paragraph_live`/`insert_heading_live`) against a
+real headless LibreOffice instance — min 5.0ms, median 29.1ms, p95
+44.8ms, max 62.7ms. (First measurement attempt returned a suspicious
+uniform ~2000ms per call — traced to `urllib.request` resolving
+`"localhost"` adding a large, constant connection delay on this Windows
+box, unrelated to any server-side work; switching to `127.0.0.1`
+dropped every sample ~40x to the real numbers above.)
+
+**Re-verified with the same positive/negative pair per Morgan's
+instruction — and the result diverges from what the decision doc
+predicted.** New probe, `event-wait-concurrency-probe-windows.py`. The
+cap mechanics work exactly as specified (every wait call now holds the
+lock for ~500ms max, confirmed live, never the full requested
+`timeout_ms`), and the negative control (an event from outside this
+tool's own lock) is still correctly observed, no regression. But the
+positive pair — the tool's own primary use case, one agent's edit and
+wait through the same HTTP surface — still fails, even across 8 poll
+attempts, for a cap-independent reason: a diagnostic read confirms the
+edit's event genuinely fires and is captured, it's just never seen as
+"new" by any wait call's per-call snapshot, because the wait and the
+edit fully serialize on the same lock with no overlap window where a
+wait call could be both past-snapshot and still-blocked when the event
+lands. This holds for any positive cap size, not specifically 500ms.
+
+Corrected the tool's own `purpose` string and docstring (written before
+this evidence existed) to state this plainly rather than leave an
+overclaim standing. Full mechanism, evidence, and the open question
+routed back to Morgan: `docs/HARDENING_PLAN.md`'s "Phase 5" section.
+
+- 474 automated tests passing (no count change — no fakes-based
+  regression test possible, same UNO-only constraint as the rest of this
+  remediation).
 
 ## v2.0.9
 

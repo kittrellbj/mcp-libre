@@ -72,6 +72,47 @@ def _is_instance(obj, cls):
 # once eviction starts once maxlen is hit.
 _DOCUMENT_EVENT_BUFFER_MAXLEN = 500
 
+# Per docs/EVENT_WAIT_CONCURRENCY_DECISION.md: wait_for_document_event()
+# holds ai_interface.py's process-wide _UNO_EXECUTION_LOCK for its full
+# wait duration (that lock wraps the entire tool-execution sequence, not
+# just mutations -- see the comment above its definition), so an
+# uncapped wait starves any OTHER concurrent tool call queued behind it
+# for up to the full requested timeout_ms. Clamped instead of carving an
+# exception into that lock (disproportionate risk to a correctness-
+# critical, already-hardened primitive for one P3 tool -- see the
+# decision doc's alternatives section).
+#
+# 500ms, derived from measurement, not guessed: edit-latency-probe-
+# windows.py ran 100 real HTTP round trips of append_paragraph_live/
+# insert_heading_live (the typeset-run's dominant call shape) against a
+# real headless LibreOffice instance -- min 5.0ms, median 29.1ms, p95
+# 44.8ms, max 62.7ms, each already including its own full
+# _UNO_EXECUTION_LOCK hold. 500ms gives roughly 8x headroom over the
+# measured max for heavier, unmeasured call shapes this pass didn't
+# probe (image/table inserts, saves) while keeping the worst case a
+# single wait call can cost a queued OTHER call an order of magnitude
+# below the original 2000ms placeholder.
+#
+# IMPORTANT, live-verified 2026-08-21 (event-wait-concurrency-probe-
+# windows.py, both directions): this cap does NOT restore the tool's
+# advertised primary use case ("one agent edits, same agent waits"). A
+# same-HTTP-path edit and a wait call fully serialize on this one lock --
+# the edit can only run in the gap between one wait call ending and the
+# next starting, and by the time it completes (firing its event
+# synchronously, still holding the lock) that event is already behind
+# the NEXT wait call's fresh entry-time snapshot (`snapshot_seq =
+# self._event_seq`) -- confirmed the event genuinely fires and is
+# captured (present in the buffer), just never seen as "new" by any
+# poll, across 8 attempts / 4s, twice independently. This is a property
+# of the cap being any positive size, not of 500ms specifically -- a
+# 1ms or 100000ms cap would fail identically. The negative control (an
+# edit from OUTSIDE this lock entirely -- a separate raw UNO connection,
+# same mechanism as a human GUI edit -- fired genuinely concurrently
+# with an active wait call) IS reliably observed, no regression from
+# pre-fix behavior. See docs/HARDENING_PLAN.md's Phase 5 note for the
+# full evidence and the open question this raises for Morgan.
+_MAX_WAIT_LOCK_HOLD_MS = 500
+
 
 if XDocumentEventListener is not None:
     class _DocumentEventCapture(unohelper.Base, XDocumentEventListener):
@@ -1074,10 +1115,19 @@ class UNOBridge:
         events) until a buffered event with seq > the snapshot taken at
         entry and a matching event_type appears, or timeout_ms elapses.
         Returns None on timeout rather than raising -- a timeout is an
-        expected, non-error outcome for this tool."""
+        expected, non-error outcome for this tool.
+
+        The actual wait is clamped to min(timeout_ms, _MAX_WAIT_LOCK_HOLD_MS)
+        regardless of the caller-requested timeout_ms -- see that
+        constant's comment for why and how the cap was derived. A capped
+        return still comes back as a plain timeout (this method returns
+        None either way); the caller can't tell a cap from a genuine
+        timeout, which is deliberate. A caller wanting to wait longer
+        than the cap re-issues the call."""
         self._ensure_document_event_capture()
         wanted = set(event_types)
-        deadline = time.monotonic() + max(timeout_ms, 0) / 1000.0
+        clamped_timeout_ms = min(max(timeout_ms, 0), _MAX_WAIT_LOCK_HOLD_MS)
+        deadline = time.monotonic() + clamped_timeout_ms / 1000.0
         with self._event_condition:
             snapshot_seq = self._event_seq
             while True:

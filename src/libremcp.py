@@ -988,7 +988,7 @@ def main():
             return
         
         elif arg == "--version":
-            print("LibreOffice MCP Server v2.0.9")
+            print("LibreOffice MCP Server v2.0.10")
             return
     
     # Normal server mode - show startup message and run

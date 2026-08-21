@@ -413,7 +413,27 @@ def get_document_events_live(limit: int = 100, event_types: Optional[List[str]] 
 @register_tool(
     name="wait_for_document_event_live",
     priority="P3",
-    purpose="Block until a matching document event or timeout.",
+    purpose=(
+        "Block until a matching document event or timeout. Waits are "
+        "capped at uno_bridge._MAX_WAIT_LOCK_HOLD_MS (500ms) per call "
+        "regardless of the requested timeout_ms, since this call holds "
+        "the process-wide UNO execution lock for its full wait duration "
+        "-- an uncapped wait would starve any OTHER concurrent tool call "
+        "queued behind it for up to the full requested timeout_ms. "
+        "IMPORTANT, live-verified 2026-08-21: this cap bounds that "
+        "starvation, but does NOT make this tool able to observe an "
+        "event caused by your OWN edit call through this same HTTP "
+        "surface, even by re-polling -- both calls serialize on the same "
+        "lock, so your edit can only run in the gap between one wait call "
+        "ending and the next starting, and by the time it completes "
+        "(firing its event synchronously) that event is already 'in the "
+        "past' relative to the next wait call's fresh snapshot. Reliably "
+        "works only for events from OUTSIDE this tool's own lock (a "
+        "separate raw UNO connection, or a human editing in the GUI) -- "
+        "see docs/EVENT_WAIT_CONCURRENCY_DECISION.md for the fix and "
+        "docs/HARDENING_PLAN.md's Phase 5 note for this finding and its "
+        "live evidence."
+    ),
     parameters=schema({
         "event_types": {"type": "array", "items": {"type": "string"}},
         "timeout_ms": {"type": "integer"},
@@ -421,6 +441,10 @@ def get_document_events_live(limit: int = 100, event_types: Optional[List[str]] 
     status="implemented",
 )
 def wait_for_document_event_live(event_types: List[str], timeout_ms: int) -> Dict[str, Any]:
+    """Waits are internally clamped to uno_bridge._MAX_WAIT_LOCK_HOLD_MS
+    per call -- see that constant's comment and this tool's own `purpose`
+    string for why, and for the live-verified limitation on observing
+    same-HTTP-path self-triggered events even with the cap in place."""
     start = envelope.start_timer()
     error = _validate_event_types(event_types, start, required=True) or _validate_timeout_ms(timeout_ms, start)
     if error is not None:

@@ -909,3 +909,131 @@ true where the originating bug was found and fixed, one is fully open.
    audited against its own ground-truth counterpart this pass -- scope
    was the one reported defect, not a sweep of every statistic in the
    catalog.
+
+## Phase 5: `wait_for_document_event_live` capped-wait fix -- implemented per
+Morgan's decision, but the primary use case is still not restored
+
+`docs/EVENT_WAIT_CONCURRENCY_DECISION.md`'s decision implemented exactly
+as specified: `uno_bridge.py`'s `wait_for_document_event()` now clamps
+its actual wait to `min(timeout_ms, _MAX_WAIT_LOCK_HOLD_MS)`, no other
+change to the wait loop, `ai_interface.py`/`_UNO_EXECUTION_LOCK` itself
+untouched. **Status: implemented and live-verified for what it actually
+does; live evidence shows it does not achieve what the decision doc
+predicted it would. Escalating back to Morgan rather than declaring this
+closed.**
+
+**The cap value, measured not guessed, per the decision doc's explicit
+ask.** `edit-latency-probe-windows.py` (new), 100 real HTTP round trips
+of `append_paragraph_live`/`insert_heading_live` (the typeset-run's
+dominant call shape) against a real headless LibreOffice instance: min
+5.0ms, median 29.1ms, p95 44.8ms, max 62.7ms, each figure already
+including its own full `_UNO_EXECUTION_LOCK` hold. First attempt at this
+measurement returned a suspicious, uniform ~2000-2100ms per call
+regardless of operation -- read as a red flag rather than trusted
+(real UNO work for a single-paragraph insert has no reason to be that
+uniform), traced to `urllib.request` resolving `"localhost"` on this
+Windows dev box adding a large, constant per-connection delay unrelated
+to any server-side work; switching the probe to `127.0.0.1` directly
+dropped every sample by roughly 40x and produced the real, tightly-
+clustered numbers above. `_MAX_WAIT_LOCK_HOLD_MS = 500` set from that:
+roughly 8x headroom over the measured max, for heavier call shapes this
+pass didn't probe (image/table inserts, saves), while keeping the worst
+case one wait call can cost a queued *other* call an order of magnitude
+below the original 2000ms placeholder.
+
+**Re-verified with the same positive/negative pair Sabrina's original
+finding used, per Morgan's explicit instruction -- and the result
+diverges from the decision doc's prediction.** New probe,
+`event-wait-concurrency-probe-windows.py`:
+
+- **Cap mechanics: confirmed working exactly as specified.** Every
+  `wait_for_document_event_live` call in both runs held the lock for
+  512-528ms (the 500ms cap plus normal call overhead), never anywhere
+  near the requested 5000ms `timeout_ms` -- the starvation-bounding half
+  of the fix is real and verified.
+- **Negative control (event from OUTSIDE this tool's own lock): still
+  works, no regression.** A raw UNO connection (bypasses
+  `_UNO_EXECUTION_LOCK` entirely, same mechanism as a human GUI edit)
+  firing an edit genuinely concurrently with an active
+  `wait_for_document_event_live` call was observed correctly, on the
+  first poll attempt. (First attempt at this control ran the raw edit
+  *then* started the wait -- sequential, not concurrent -- and failed
+  for the wrong reason, the same snapshot-timing issue below; caught by
+  rereading the original finding's own methodology before trusting a
+  "regression," not assumed. Fixed the probe to fire the edit on a
+  background thread genuinely overlapping an active wait call, matching
+  what the original finding actually tested.)
+- **Positive pair (the tool's own primary use case -- same agent's edit
+  and wait through the same HTTP surface): still does not work, even
+  with the cap, even across 8 poll attempts (4s of capped waiting).**
+  Confirmed this is not a capture failure: a diagnostic read via
+  `get_document_events_live` immediately after the failed poll loop
+  shows the edit's `OnModifyChanged` event genuinely fired and is
+  sitting in the buffer (`seq: 2`) -- it was simply never seen as "new"
+  by any of the 8 wait calls. Reproduced identically on two independent
+  runs.
+
+**Why, mechanically -- read from the actual code, not guessed at.**
+`wait_for_document_event()` takes its "what counts as new" snapshot
+(`snapshot_seq = self._event_seq`) at the moment each call *starts*, and
+that same call holds `_UNO_EXECUTION_LOCK` for its entire duration
+(acquired once, in `ai_interface.py`, around the whole tool-execution
+sequence -- confirmed by reading `_execute_tool_sync`'s `with
+_UNO_EXECUTION_LOCK: result = self.mcp_server.execute_tool(...)`). Since
+the edit call needs that identical lock, it structurally *cannot* run
+while a wait call holds it -- it can only run in the gap between one
+wait call releasing the lock and the next one acquiring it. Whichever of
+{the queued edit, the caller's next wait call} wins that gap's lock
+acquisition determines the outcome, and neither branch lets the caller
+observe its own edit:
+
+- If the edit wins the race: it runs to completion and fires its event
+  *before* releasing the lock, so by the time the next wait call
+  acquires the lock and takes its own fresh snapshot, that event is
+  already in the past relative to that snapshot -- not "new."
+- If the next wait call wins the race instead: the edit still can't run
+  at all during that wait call's window (same starvation as before,
+  just bounded to 500ms instead of unbounded) -- cycle repeats.
+
+There is no interleaving where a wait call's snapshot is taken *before*
+the edit's event lands *and* that same wait call is still actively
+blocked (not yet returned) when it lands -- because the lock fully
+serializes the two calls with no overlap window. **This is a property of
+there being any positive-sized cap at all, not of 500ms specifically --
+a 1ms or a 100000ms cap fails identically**, since the mechanism doesn't
+depend on cap magnitude at all.
+
+**Corrected the tool's own claims rather than ship an overclaim.** The
+tool's `purpose` string and `wait_for_document_event_live`'s docstring
+(written first pass, before this evidence existed) originally implied
+re-polling would let a caller observe its own interleaved edit -- not
+literally false (each poll *does* get a fair, bounded turn at the lock,
+which is what was asked for), but reasonably read as promising more than
+what's actually verified. Corrected both to state plainly, with the live
+evidence, that this only reliably works for events from outside this
+tool's own lock.
+
+**Not fixed this pass, deliberately -- this needs Morgan's call, not a
+same-pass silent redesign.** Making the primary use case actually work
+would need a real design change to the wait/snapshot contract itself
+(e.g., a caller-supplied `since_seq` so continuity is tracked across
+polls instead of re-derived from "now" at each call's entry) -- Morgan's
+decision doc explicitly scoped this pass to "no other change to the wait
+loop itself" and preserving the existing `event_types`/`timeout_ms`
+signature (rejecting the non-blocking-poll redesign, Alternative 2, for
+exactly that signature-preservation reason). Changing the snapshot
+semantics is exactly that kind of signature/contract change the decision
+doc reserved for a future call, not something to fold in silently under
+"implement the cap." Routed back to Morgan/Buddy: does the tool's
+primary use case matter enough to warrant that further design change, or
+does "reliably works for external events, bounded-but-non-functional for
+self-triggered ones" become the documented, accepted shape going
+forward?
+
+**Testing.** 474/474 passing (no count change -- no fakes-based
+regression test possible, same `UNOBridge`-can't-instantiate-outside-
+LibreOffice constraint as every other UNO-only fix in this project).
+Both new probes (`edit-latency-probe-windows.py`,
+`event-wait-concurrency-probe-windows.py`) are new, reusable artifacts,
+not one-off ad hoc commands, matching this project's `smoke-test-
+windows.py`-established convention.
