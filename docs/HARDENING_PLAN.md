@@ -477,7 +477,9 @@ concurrency control not yet started).
   holding the process-wide `_UNO_EXECUTION_LOCK`, so it can't observe an
   event triggered by another tool call through the same HTTP server --
   see `docs/MCP_TOOLING_SCAFFOLD_PLAN.md`'s "Live-verification pass"
-  entry for the full evidence on all of the above. This closes out Part
+  entry for the full evidence on all of the above. Architecture decision
+  made 2026-08-21, not yet implemented -- see
+  `docs/EVENT_WAIT_CONCURRENCY_DECISION.md`. This closes out Part
   2's 12 shared-service scope-limited stubs and `drawing_objects.py`'s
   remaining tool, live-verified.
 - **Error-code consistency:** one shared, validated envelope

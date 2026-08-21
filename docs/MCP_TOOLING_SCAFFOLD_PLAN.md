@@ -2075,6 +2075,12 @@ carving an exception into a deliberately coarse, already-hardened lock
 for one blocking tool is a real concurrency-design decision, not a
 same-pass fix.
 
+**Decided (2026-08-21), not yet implemented:** see
+`docs/EVENT_WAIT_CONCURRENCY_DECISION.md` -- cap the lock hold per call
+(`min(timeout_ms, _MAX_WAIT_LOCK_HOLD_MS)`, caller re-polls for longer
+waits) rather than carving an exception into `_UNO_EXECUTION_LOCK`.
+Routed to Sabrina for implementation + live re-verification.
+
 **Testing:** 472/472 passing (up from 471): `test_drawing_objects.py`'s
 `test_activate_embedded_object_live_defaults_to_running`/`_accepts_case_
 insensitive_verb` replace the old UI_ACTIVE-default/`"active"`-verb
