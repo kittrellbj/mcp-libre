@@ -1,7 +1,7 @@
 # LibreOffice MCP Server
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.10-blue.svg)](#versioning)
+[![Version](https://img.shields.io/badge/version-2.0.11-blue.svg)](#versioning)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](#requirements)
 [![LibreOffice](https://img.shields.io/badge/LibreOffice-24.2%2B-18A303.svg)](#requirements)
 
@@ -204,7 +204,7 @@ python build-oxt-windows.py
 The extension package is created at:
 
 ```text
-build/libreoffice-mcp-extension-2.0.10.oxt
+build/libreoffice-mcp-extension-2.0.11.oxt
 ```
 
 The Windows builder creates a LibreOffice-compatible ZIP/OXT structure with normalized archive paths.
@@ -218,7 +218,7 @@ PowerShell example:
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
 & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension
-& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.10.oxt"
+& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.11.oxt"
 ```
 
 Removing an extension that is not already installed may report that no matching extension exists. That is harmless.
@@ -269,7 +269,7 @@ A convenient rebuild/reinstall command in PowerShell is:
 
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
-python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.10.oxt"
+python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.11.oxt"
 ```
 
 Then reopen LibreOffice and start the MCP server from the Tools menu.
@@ -887,6 +887,27 @@ uv run pytest
 ---
 
 # Versioning
+
+## v2.0.11
+
+Step 5 of the typeset-run remediation, first tool: `find_cells_live`,
+Brian's new-tools assignment priority #2 ("the biggest obvious Calc
+hole") — Calc had no basic find-this-value/formula/comment-anywhere
+primitive despite full range/formula/sort/filter manipulation. Built to
+Brian's exact schema. Scope deliberately bounded (given range, else each
+searched sheet's own used range, never the full grid; given sheet, else
+every sheet in the workbook). Live-verified against real headless
+LibreOffice Calc with a new probe, `find-cells-probe-windows.py` — 12
+checks against real data, all passing, including negative checks
+(values mode correctly does NOT match formula/comment text, `match=
+"exact"` correctly rejects a partial substring `"contains"` would
+accept, an invalid regex reports `INVALID_PARAMETER` cleanly rather than
+a raw traceback).
+
+- 476 automated tests passing (474 + 2 new fakes-based plumbing tests).
+- Full writeup: `docs/HARDENING_PLAN.md`'s new "Phase 6" section, which
+  also tracks the rest of the new-tools list (13 more) and the
+  `get_document_statistics_live` rewrite still queued.
 
 ## v2.0.10
 

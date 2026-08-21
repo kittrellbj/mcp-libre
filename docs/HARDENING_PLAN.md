@@ -1065,3 +1065,77 @@ snapshot-at-entry), which changes the tool's parameter contract --
 revisit only if a real caller actually needs the self-triggered path,
 per Morgan's call above. Not tracked anywhere else; this paragraph is
 the record.
+
+## Phase 6: new tools (Brian's priority order) + `get_document_statistics_live`
+rewrite -- in progress, posting per-tool per the standing "post progress
+per tier" convention rather than batching
+
+Brian's 2026-08-21 new-tools assignment, 15 items total, his priority
+order (full rationale/schemas in his own message, quoted verbatim by
+Buddy when assigning). Item 1 (statistics rewrite) is tracked as its own
+item below the table since it replaces an existing tool's shape rather
+than adding a new one; items 2-15 are new tools, "Part 3." Explicitly
+NOT adding a standalone `get_selected_text_live` per Brian's own
+redundancy note -- `get_selection_live` already covers it.
+
+| # | Tool | Status |
+|---|------|--------|
+| 2 | `find_cells_live` | **Done, live-verified** -- see below |
+| 3 | `get_slide_content_live` | Queued |
+| 4 | `find_shape_text_live` | Queued |
+| 5 | `get_presentation_content_live` | Queued |
+| 6 | Writer page number on `get_view_state_live` | Queued |
+| 7 | `goto_page_live` | Queued |
+| 8 | `list_fonts_live` | Queued |
+| 9 | `activate_draw_page_live` | Queued |
+| 10 | `get_draw_page_live` | Queued |
+| 11 | `update_cell_comment_live` | Queued |
+| 12 | `get_freeze_panes_live` | Queued |
+| 13 | `get_sheet_summary_live` | Queued |
+| 14 | `get_document_snapshot_live` | Queued |
+| 15 | `extract_document_text_live` | Queued |
+
+**`find_cells_live` (#2, "the biggest obvious Calc hole").** Built to
+Brian's exact schema (`query`, `sheet`, `range`, `look_in`, `match`,
+`case_sensitive`, `max_results` -> `{matches: [{sheet, address, value,
+formula}], count, truncated}`). New `UNOBridge.find_cells()`
+(`uno_bridge.py`, right after `get_used_range()`) plus the
+`find_cells_live` tool wrapper in `calc_sheets.py` (chosen over
+`calc_data.py` -- directly related to and placed adjacent to
+`get_used_range`, which the range-omitted search path reuses). Scope
+deliberately bounded, not a full-grid scan: `range` given -> just that
+range; `range` omitted -> each candidate sheet's own used range (same
+cursor technique `get_used_range()` already established); `sheet`
+omitted -> every sheet in the workbook, each match reporting which
+sheet it came from. A `_FIND_CELLS_MAX_SCANNED_CELLS` backstop
+(200,000) additionally bounds worst-case scan cost independent of
+`max_results`, distinguished in `truncated`'s reasoning (though not
+currently surfaced as two different values -- both report `truncated:
+true`, a possible future refinement if a caller needs to tell them
+apart). `look_in="comments"`/`"all"` pre-builds a `{(col,row): text}`
+dict from the sheet's `Annotations` once per sheet rather than a fresh
+linear scan per candidate cell. `match="regex"` invalid input raises
+`ValueError` with the real `re.error` message, mapped to
+`INVALID_PARAMETER` -- not a raw traceback, not silently matching
+nothing.
+
+Fakes-based plumbing tests (`tests/test_calc_sheets.py`,
+`test_find_cells_live`/`test_find_cells_live_rejects_invalid_look_in_
+and_match`) plus a real registry-catalog entry
+(`tests/test_tool_scaffold_contract.py`). Live-verified against real
+headless LibreOffice Calc with a new probe,
+`find-cells-probe-windows.py` -- 12 checks, all passing, against real
+data (values, a formula, a cross-sheet comment): finds by value within
+one sheet and across the whole workbook when `sheet` is omitted; finds
+formula text under `look_in="formulas"` while confirming `"values"`
+mode does NOT match formula text (would find the computed result, not
+the formula string) -- and the same values/comments cross-check in the
+other direction; `match="exact"` case-insensitively matches a whole
+cell but correctly rejects a partial substring `"contains"` would
+accept; `match="regex"` finds a real pattern and a genuinely invalid
+regex reports `INVALID_PARAMETER` cleanly; `max_results` caps the count
+and sets `truncated: true`; a query with zero real matches reports
+`count: 0`, `truncated: false`, an empty list -- not silently omitted
+or defaulted to something misleading.
+
+476/476 tests passing (474 + 2 new).

@@ -153,6 +153,19 @@ class FakeUnoBridge:
     def get_used_range(self, doc, sheet=None):
         return {"start_column": 0, "start_row": 0, "end_column": 3, "end_row": 5}
 
+    def find_cells(self, doc, query, sheet=None, range=None, look_in="values", match="contains",
+                    case_sensitive=False, max_results=100):
+        if look_in not in ("values", "formulas", "comments", "all"):
+            raise ValueError(f"look_in must be one of values/formulas/comments/all, got {look_in!r}")
+        if match not in ("contains", "exact", "regex"):
+            raise ValueError(f"match must be one of contains/exact/regex, got {match!r}")
+        self.last_find_cells_call = {
+            "query": query, "sheet": sheet, "range": range, "look_in": look_in,
+            "match": match, "case_sensitive": case_sensitive, "max_results": max_results,
+        }
+        matches = [{"sheet": sheet or "Sheet1", "address": "B2", "value": query, "formula": None}]
+        return {"matches": matches, "count": len(matches), "truncated": False}
+
     def insert_rows(self, doc, index, sheet=None, count=1):
         pass
 
@@ -397,6 +410,30 @@ def test_get_used_range_live():
     result = _handler("get_used_range_live")()
     assert result["success"] is True
     assert result["result"]["end_row"] == 5
+
+
+def test_find_cells_live():
+    context.reset()
+    bridge, _, _ = _install(active_document=FakeDocument())
+    result = _handler("find_cells_live")(query="Travel", sheet="Budget", look_in="all", match="regex")
+    assert result["success"] is True
+    assert result["result"]["count"] == 1
+    assert result["result"]["matches"][0]["address"] == "B2"
+    # Argument passthrough, not just a truthy result -- confirms the tool
+    # wrapper forwards every parameter rather than silently dropping one.
+    assert bridge.last_find_cells_call == {
+        "query": "Travel", "sheet": "Budget", "range": None, "look_in": "all",
+        "match": "regex", "case_sensitive": False, "max_results": 100,
+    }
+
+
+def test_find_cells_live_rejects_invalid_look_in_and_match():
+    context.reset()
+    _install(active_document=FakeDocument())
+    for kwargs in ({"query": "x", "look_in": "bogus"}, {"query": "x", "match": "bogus"}):
+        result = _handler("find_cells_live")(**kwargs)
+        assert result["success"] is False
+        assert result["error"]["code"] == "INVALID_PARAMETER"
 
 
 # -- rows / columns --

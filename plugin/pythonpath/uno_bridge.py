@@ -4981,6 +4981,146 @@ class UNOBridge:
             "end_column": end_addr.EndColumn, "end_row": end_addr.EndRow,
         }
 
+    _FIND_CELLS_MAX_SCANNED_CELLS = 200000
+
+    def find_cells(self, doc: Any, query: str, sheet: Optional[str] = None, range: Optional[str] = None,
+                    look_in: str = "values", match: str = "contains", case_sensitive: bool = False,
+                    max_results: int = 100) -> Dict[str, Any]:
+        """Search cell values/formulas/comments for `query`, across one
+        sheet or the whole workbook. New tool (Brian's priority #2, "the
+        biggest obvious Calc hole") -- no prior mechanism in this catalog
+        did substring/regex search over cell content at all.
+
+        Scope, deliberately bounded rather than scanning the full
+        1M+-row grid: `range` given -> just that range (on `sheet` if
+        also given, else the active sheet); `range` omitted -> each
+        candidate sheet's own used range (via the same cursor-based
+        gotoStartOfUsedArea/gotoEndOfUsedArea technique get_used_range()
+        already established), never the whole sheet. `sheet` omitted ->
+        every sheet in the workbook (matching "find this anywhere in the
+        workbook" from the spec) -- each match reports which sheet it
+        came from.
+
+        `look_in="comments"`/`"all"` looks up each candidate cell's
+        annotation via a single pre-built {(col,row): text} dict per
+        sheet (one pass over that sheet's Annotations), not a fresh
+        linear _find_annotation_at() scan per cell -- avoids O(cells x
+        annotations) on a sheet with many comments.
+
+        `match="regex"` uses re.search (a `query` matching anywhere in
+        the candidate string), consistent with "contains"; not
+        re.fullmatch. An invalid regex raises ValueError with the
+        original re.error message rather than silently matching nothing
+        or crashing with an opaque traceback.
+
+        Stops as soon as `max_results` matches are found OR
+        _FIND_CELLS_MAX_SCANNED_CELLS cells have been examined (a
+        runaway-scan backstop distinct from max_results -- protects a
+        huge used range with very few/no matches from scanning
+        indefinitely); `truncated` in the result distinguishes "hit
+        max_results" from "hit the scan backstop" from neither.
+        """
+        self._require_calc(doc, "find_cells")
+        if look_in not in ("values", "formulas", "comments", "all"):
+            raise ValueError(f"look_in must be one of values/formulas/comments/all, got {look_in!r}")
+        if match not in ("contains", "exact", "regex"):
+            raise ValueError(f"match must be one of contains/exact/regex, got {match!r}")
+
+        if match == "regex":
+            try:
+                pattern = re.compile(query, flags=0 if case_sensitive else re.IGNORECASE)
+            except re.error as e:
+                raise ValueError(f"Invalid regex {query!r}: {e}")
+
+            def is_match(candidate: str) -> bool:
+                return pattern.search(candidate) is not None
+        elif match == "exact":
+            needle = query if case_sensitive else query.lower()
+
+            def is_match(candidate: str) -> bool:
+                return (candidate if case_sensitive else candidate.lower()) == needle
+        else:  # contains
+            needle = query if case_sensitive else query.lower()
+
+            def is_match(candidate: str) -> bool:
+                return needle in (candidate if case_sensitive else candidate.lower())
+
+        sheets = doc.getSheets()
+        if sheet is not None:
+            candidate_sheets = [self._resolve_sheet_by_name_or_index(sheets, sheet)]
+        else:
+            candidate_sheets = [sheets.getByIndex(i) for i in builtins.range(sheets.getCount())]
+
+        matches: List[Dict[str, Any]] = []
+        scanned = 0
+        truncated = False
+        for sheet_obj in candidate_sheets:
+            if len(matches) >= max_results:
+                truncated = True
+                break
+            if range is not None:
+                bounds = sheet_obj.getCellRangeByName(range).RangeAddress
+            else:
+                start_cursor = sheet_obj.createCursor()
+                start_cursor.gotoStartOfUsedArea(False)
+                end_cursor = sheet_obj.createCursor()
+                end_cursor.gotoEndOfUsedArea(False)
+                bounds = uno.createUnoStruct("com.sun.star.table.CellRangeAddress")
+                bounds.StartColumn = start_cursor.RangeAddress.StartColumn
+                bounds.StartRow = start_cursor.RangeAddress.StartRow
+                bounds.EndColumn = end_cursor.RangeAddress.EndColumn
+                bounds.EndRow = end_cursor.RangeAddress.EndRow
+
+            annotation_by_position = {}
+            if look_in in ("comments", "all"):
+                annotations = sheet_obj.Annotations
+                for i in builtins.range(annotations.getCount()):
+                    ann = annotations.getByIndex(i)
+                    pos = ann.Position
+                    if bounds.StartColumn <= pos.Column <= bounds.EndColumn and bounds.StartRow <= pos.Row <= bounds.EndRow:
+                        annotation_by_position[(pos.Column, pos.Row)] = ann.getString()
+
+            for row in builtins.range(bounds.StartRow, bounds.EndRow + 1):
+                if len(matches) >= max_results:
+                    truncated = True
+                    break
+                for col in builtins.range(bounds.StartColumn, bounds.EndColumn + 1):
+                    scanned += 1
+                    if scanned > self._FIND_CELLS_MAX_SCANNED_CELLS:
+                        truncated = True
+                        break
+                    cell_obj = sheet_obj.getCellByPosition(col, row)
+                    display_value = cell_obj.getString() if look_in in ("values", "all") else None
+                    formula = cell_obj.getFormula() if look_in in ("formulas", "all") else None
+                    comment = annotation_by_position.get((col, row)) if look_in in ("comments", "all") else None
+
+                    hit = False
+                    if display_value and is_match(display_value):
+                        hit = True
+                    elif formula and is_match(formula):
+                        hit = True
+                    elif comment and is_match(comment):
+                        hit = True
+                    if hit:
+                        # Report value/formula per the schema regardless of
+                        # which look_in mode found the hit -- a caller
+                        # matching on a comment still wants to see what's
+                        # actually in the cell.
+                        matches.append({
+                            "sheet": sheet_obj.Name,
+                            "address": self._column_row_to_a1(col, row),
+                            "value": cell_obj.getString() or None,
+                            "formula": cell_obj.getFormula() or None,
+                        })
+                        if len(matches) >= max_results:
+                            truncated = True
+                            break
+                if scanned > self._FIND_CELLS_MAX_SCANNED_CELLS:
+                    truncated = True
+                    break
+
+        return {"matches": matches, "count": len(matches), "truncated": truncated}
+
     def insert_rows(self, doc: Any, index: int, sheet: Optional[str] = None, count: int = 1) -> None:
         self._require_calc(doc, "insert_rows")
         self._resolve_sheet(doc, sheet).getRows().insertByIndex(index, count)

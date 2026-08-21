@@ -189,7 +189,7 @@ def test_get_server_info_live_reports_real_fields():
     result = _handler("get_server_info_live")()
     assert result["success"] is True
     r = result["result"]
-    assert r["extension_version"] == "2.0.10"
+    assert r["extension_version"] == "2.0.11"
     assert r["libreoffice_version"] == "24.2.0.3"
     assert "python_version" in r and r["python_version"]
     assert r["transport"] == "http"

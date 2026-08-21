@@ -165,6 +165,10 @@ EXPECTED_BY_MODULE = {
         "set_column_width_live", "hide_rows_live", "show_rows_live", "hide_columns_live", "show_columns_live",
         "freeze_panes_live", "unfreeze_panes_live", "recalculate_live", "evaluate_formula_live",
         "get_formula_dependencies_live", "get_formula_errors_live",
+        # New tool, 2026-08-21 (Brian's new-tools assignment, priority #2,
+        # not part of the original 484-tool spec this section was sourced
+        # from) -- the missing Calc search primitive.
+        "find_cells_live",
     },
     # Phase C - Calc-complete, section 2: "Calc - data management, analysis,
     # pivots, validation, external data".
