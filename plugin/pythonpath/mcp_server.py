@@ -6,6 +6,7 @@ via the UNO API, providing real-time document manipulation capabilities.
 """
 
 import asyncio
+import difflib
 import json
 import logging
 import os
@@ -571,9 +572,19 @@ class LibreOfficeMCPServer:
         self.runtime_state.record_call()
         try:
             if tool_name not in self.tools:
+                # BUG #8 investigation finding (2026-08-21): the reported
+                # "catalog/dispatcher divergence" turned out to be a
+                # plausible-but-nonexistent name guessed by analogy (e.g.
+                # create_paragraph_style_live vs. the real
+                # create_style_live) -- the catalog and dispatcher were
+                # never actually out of sync, both read this same `tools`
+                # dict. A close-match hint costs nothing and heads off the
+                # next agent making the same guess-and-misreport mistake.
+                close_matches = difflib.get_close_matches(tool_name, self.tools.keys(), n=3)
                 return {
                     "success": False,
                     "error": f"Unknown tool: {tool_name}",
+                    "did_you_mean": close_matches,
                     "available_tools": list(self.tools.keys())
                 }
 

@@ -1,7 +1,7 @@
 # LibreOffice MCP Server
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.7-blue.svg)](#versioning)
+[![Version](https://img.shields.io/badge/version-2.0.8-blue.svg)](#versioning)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](#requirements)
 [![LibreOffice](https://img.shields.io/badge/LibreOffice-24.2%2B-18A303.svg)](#requirements)
 
@@ -204,7 +204,7 @@ python build-oxt-windows.py
 The extension package is created at:
 
 ```text
-build/libreoffice-mcp-extension-2.0.7.oxt
+build/libreoffice-mcp-extension-2.0.8.oxt
 ```
 
 The Windows builder creates a LibreOffice-compatible ZIP/OXT structure with normalized archive paths.
@@ -218,7 +218,7 @@ PowerShell example:
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
 & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension
-& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.7.oxt"
+& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.8.oxt"
 ```
 
 Removing an extension that is not already installed may report that no matching extension exists. That is harmless.
@@ -269,7 +269,7 @@ A convenient rebuild/reinstall command in PowerShell is:
 
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
-python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.7.oxt"
+python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.8.oxt"
 ```
 
 Then reopen LibreOffice and start the MCP server from the Tools menu.
@@ -887,6 +887,17 @@ uv run pytest
 ---
 
 # Versioning
+
+## v2.0.8
+
+Investigated BUGs #8 and #11 from 2026-08-19's typeset-run log. **Neither was a real defect** — both were misdiagnoses by the original testing agent, settled with live evidence rather than assumed clean and dropped silently.
+
+**BUG #8 — "catalog/dispatcher divergence: `create_paragraph_style_live` advertised but rejected."** Not real. `create_paragraph_style_live` has never existed in this project's history (`git log -S` across all commits returns zero results) — the tool for creating a paragraph style is `create_style_live` with `family="ParagraphStyles"`, unchanged since it was first scaffolded. Decisively confirmed against the original tester's own captured `GET /tools` catalog snapshot from that exact session: it never contained `create_paragraph_style_live` either. The catalog (`GET /tools`) and dispatcher (`POST /execute`/`/tools/<name>`) read the same `self.tools` dict off the same server singleton — there is no code path where they could diverge. The tester guessed a plausible-but-nonexistent name by analogy with the real `create_page_style_live` and got a correct rejection, then misreported it as a catalog/dispatcher mismatch. Two small hardening improvements made anyway, since the underlying failure class (a caller guessing a wrong tool name) is real even though this instance wasn't a bug: `execute_tool`'s "Unknown tool" error now includes a `did_you_mean` field (`difflib.get_close_matches` against the real registry — live-verified: querying the nonexistent name surfaces `create_style_live` as a top match), and `create_style_live`'s `purpose` string now explicitly says it's the tool a caller might otherwise look for as `create_paragraph_style_live`, with the full list of supported `family` values.
+
+**BUG #11 — "`set_shape_geometry_live` doesn't actually resize."** Not real. `set_shape_geometry`'s UNO code (`uno_bridge.py`) sets `shape.Size` directly on the resolved shape object — exactly what the bug report itself recommended as the fix — and has been unchanged since it was first written, before the bug was even logged. Confirmed two ways: (1) the saved output artifact from that exact test session has 23 image frames from differently-sized source PNGs all showing the *one* uniform width the calling script requested, which is only possible if the resize took effect; (2) live-verified fresh this pass — inserted a rectangle at 3000×2000 (1/100mm), called `set_shape_geometry_live` to resize it to 9000×6000, and read it back independently via `get_shape_live` (which queries the live UNO object, not an echo of the request): came back 8999×6001, real resize confirmed end to end. The original ~12:07 observation of an unchanged exported image size most likely reflects that same session's separate, already-documented stale-document-reference problem (see the v2.0.x entries on `save_as_document_live`/export resolving a stale frame), not this function.
+
+- 474 automated tests passing (no count change — no new tests added; `MCPServer.execute_tool`'s `did_you_mean` addition has no existing test harness to extend, since every current test exercises tool handlers directly through the `tools/` registry rather than through the `MCPServer` class — flagged as a real coverage gap, not silently left uncovered)
+- Live-verified both investigation conclusions and both hardening additions end to end on a fresh headless LibreOffice instance: `create_paragraph_style_live` rejection now includes `did_you_mean: [..., "create_style_live", ...]`; `create_style_live`'s schema reflects the clarified description; a real shape's `Size` round-tripped correctly through `set_shape_geometry_live` → `get_shape_live`
 
 ## v2.0.7
 
