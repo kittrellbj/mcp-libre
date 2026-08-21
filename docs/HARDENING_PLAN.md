@@ -754,3 +754,158 @@ path's admission-semaphore busy response (Phase 2's noted follow-up --
 dedicated busy code on `/mcp`, unrelated to session/version conformance);
 adopting the modern (`2026-07-28`+) per-request protocol era, per the
 scope-boundary note above.
+
+## Phase 4 (after Phase 3): 2026-08-19 typeset-run remediation + durable guidance
+
+Brian ran an extended agentic build (typesetting "Creativity and AI",
+~19hr elapsed across two sessions) purely through the `:8765` MCP tool
+surface and logged every problem hit along the way
+(`mcp_problems_log.txt`, routed by Buddy). The book shipped, but only
+after routing around 15 distinct product bugs. Standing decision: treat
+this as the bar for "best practices to support agentic workflows," not a
+one-off cleanup -- fix the 15, and write up durable guidance so the same
+*classes* of bug don't recur.
+
+**Status: done.** `fix/p0-remediation-08-20-2026`, `d208e64` (P0/P1) ->
+`f4499a4` (P2/P3) -> `87bc458` (#8/#11 investigation) -> this pass.
+
+### Corrected bug count: 13 real defects, not 15
+
+Two of the original 15 logged findings were misdiagnoses, settled with
+live evidence rather than assumed clean and moved past -- **name them
+specifically here so neither gets re-litigated as still-open:**
+
+- **#8** (`create_paragraph_style_live` catalog/dispatcher divergence):
+  never existed -- `git log -S` across all commits, zero results. The
+  real tool is `create_style_live` with `family="ParagraphStyles"`. The
+  original tester's own captured `GET /tools` snapshot never contained
+  `create_paragraph_style_live` either -- a name guessed by analogy with
+  `create_page_style_live`, correctly rejected, misreported as a
+  catalog/dispatcher mismatch. Structurally can't diverge: `/tools` and
+  `/execute` share one `tools_dict` singleton (see bullet 5 below).
+- **#11** (`set_shape_geometry_live` not resizing): already worked.
+  `shape.Size` set directly on the resolved shape, unchanged since
+  before the bug was logged. Confirmed two ways: the original session's
+  own saved artifact (23 differently-sized source images all landing at
+  one uniform requested width) and a fresh live repro this pass (insert
+  3000x2000, resize to 9000x6000, independent `get_shape_live` readback:
+  8999x6001).
+
+The other 13 are real, all fixed except **#15**, deliberately left as a
+documented architecture flag (see `batch_execute_live`'s own purpose
+string) rather than a band-aid -- a real fix needs subprocess-level
+isolation or a cooperative cancellation token, since a thread-based fake
+timeout would abandon a zombie thread still holding the process-wide
+`_UNO_EXECUTION_LOCK`, blocking every future call, not just that batch.
+
+| # | Finding | Status |
+|---|---------|--------|
+| 1 | `set_page_layout(mirrored=...)` -- wrong UNO enum namespace | Fixed, `d208e64` |
+| 2 | Session permanently stuck after last doc closed | Fixed, `d208e64` |
+| 4 | `update_index_live` silent reversion, `success=true` | Fixed + fail-loud guard, `d208e64` |
+| 5 | `batch_execute_live` scrambles position-sensitive inserts | Fixed for insert/heading/page-break, `d208e64`; extended this pass, see below |
+| 6 | `save_as_document_live` serializes a phantom near-empty frame | Fixed, `d208e64` |
+| 7 | `at_paragraph`/`at_position` semantics undocumented | Doc fix, `f4499a4` |
+| 9 | `append_paragraph_live` partial-apply on unknown style | Fixed, `f4499a4` |
+| 10 | `soffice.exe --version` hangs | Doc fix, `f4499a4` |
+| 12 | `insert_toc_live` not idempotent | Fixed, `f4499a4` |
+| 13 | `set_document_properties_live` case-sensitive keys | Fixed, `f4499a4` |
+| 14 | `get_document_statistics_live` paragraph undercount | Fixed, `f4499a4` |
+| 15 | `batch_execute_live` no per-op timeout | Documented architecture flag, not fixed |
+
+### New finding this pass: BUG #5's fix didn't reach every tool with the same shape
+
+Auditing bullet 3 below (batching safe-or-unsafe) against the actual
+code, rather than taking BUG #5's fix as blanket coverage, turned up two
+more tools with the identical defect shape: `apply_page_style()` and
+`remove_page_break()` both resolve an omitted position through
+`_current_paragraph_index(doc)` (the VIEW cursor) but, unlike
+`insert_paragraph()`/`insert_heading()`/`insert_page_break()` after the
+original fix, never resynced that cursor afterward -- so an explicit or
+defaulted position set by one batched call couldn't be inherited by a
+later omitted-position call in the same batch. Never triggered in
+Brian's original repro (he didn't batch these two specifically), but the
+same mechanism, live-confirmed.
+
+Fixed with the identical resync pattern the original fix established
+(reposition the view cursor to the paragraph just acted on, best-effort,
+never fails an otherwise-successful call). Live-verified with a new
+probe, `batch-page-style-probe-windows.py`: three paragraphs, then a
+batch of `[apply_page_style(paragraph=1, insert_break=true),
+remove_page_break(position omitted)]` -- the omitted call must resolve
+paragraph 1, inherited from the prior call, not some unrelated stale
+position. **Mutation-tested both directions:** reverting the fix and
+rerunning the same probe against the same repro, `remove_page_break_live`
+resolved paragraph 4 (the stale view-cursor position left over from
+document creation/activation -- unrelated to paragraph 1) and the probe
+correctly failed; with the fix restored, it resolves paragraph 1 and the
+probe passes. No fakes-based regression test possible -- same
+`UNOBridge`-can't-instantiate-outside-LibreOffice constraint every other
+UNO-only fix in this doc has hit.
+
+### Durable guidance -- the six standing-decision bullets
+
+Written up as concrete, evidence-checked status, not restated as
+aspirational rules -- some are already true project-wide, some are only
+true where the originating bug was found and fixed, one is fully open.
+
+1. **No `success=true` on partial-apply or state reversion.** Enforced
+   at the two points where it was found broken: #4's `update_index_live`
+   (paragraph-count-before/after fail-loud guard) and #9's
+   `append_paragraph_live` (style validated before any edit, so an
+   unknown style fails atomically instead of partially applying). Not
+   yet a codebase-wide invariant with automated enforcement -- no
+   lint/test catches a *new* tool introducing the same shape. That's a
+   code-review-time discipline today, not a structural guarantee; a
+   systematic audit across all ~90 real tools (same spirit as
+   `test_map_exception_to_code_covers_every_branch` in item 1's #31
+   work) would be the way to make it one, not attempted this pass.
+2. **Every mutating call echoes the document/session id.** Already true
+   for 339 of 348 `envelope.build_success()` call sites project-wide
+   (audited this pass). Of the 9 without it, all are legitimately
+   document-less: 8 are server-level tools in `core_runtime.py`
+   (`get_server_info_live`, `list_tools_live`, etc. -- no document
+   concept at all) and the 9th, `get_document_events_live`, is a
+   process-wide multi-document event feed where each individual event
+   already carries its own `document_id` (see `_public_document_event`).
+   This was substantially already the existing convention
+   (`envelope.py`'s `document_id` parameter) before this standing
+   decision was written -- not new work, a confirmation.
+3. **A batching path is automatically order-safe or explicitly
+   documented as unsafe.** Partially true, a real gap found and fixed
+   this pass. `batch_execute_live`'s own purpose string documents the
+   one known-unsafe-by-design gap (#15, no per-op timeout). The
+   position-drift class (#5) now covers `insert_paragraph`/
+   `insert_heading`/`insert_page_break`/`apply_page_style`/
+   `remove_page_break` (the last two fixed this pass, see above) --
+   confirmed by grep, these five are the only callers of
+   `_current_paragraph_index(doc)` for an omitted position, so no sixth
+   instance is currently unaudited. Still no single enumerated
+   safe/unsafe list in one place -- a caller has to read each function's
+   own docstring to learn this. Flagging as a real, still-open
+   documentation gap rather than closing the bullet.
+4. **Named-resource creates are idempotent (get-or-create).** Fixed for
+   the one instance found (#12, `insert_toc_live`, get-or-create by
+   service name + title). Audited two other named-resource creates this
+   pass: `create_style()` already fails loud on a duplicate name
+   (`FileExistsError`) -- a different but compliant shape (reject, never
+   silently duplicate or silently no-op); `create_named_range()` has no
+   existence check at all -- calling it twice with the same name is
+   unaudited, unverified behavior (UNO's `addNewByName()` could raise,
+   silently overwrite, or duplicate, not confirmed either way). Flagged
+   here rather than assumed safe.
+5. **`/tools` catalog and `/execute` dispatch share one source of
+   truth.** Already true, structurally guaranteed -- confirmed directly
+   by #8's own investigation: both the catalog endpoint and dispatch
+   read the same `tools_dict` singleton, so a genuine catalog/dispatcher
+   split isn't representable in this architecture without a second
+   registry existing somewhere, which there isn't. Nothing to fix; the
+   bullet was written from a misdiagnosed symptom (#8), not an actual
+   gap.
+6. **Stats/verification tools match ground-truth enumeration.** Fixed
+   for the one instance found (#14): `get_document_statistics_live`'s
+   `paragraph_count` now shares the same filtered `_count_paragraphs()`
+   helper `get_paragraph_count_live` already used. No other stats tool
+   audited against its own ground-truth counterpart this pass -- scope
+   was the one reported defect, not a sweep of every statistic in the
+   catalog.

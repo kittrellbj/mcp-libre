@@ -1,7 +1,7 @@
 # LibreOffice MCP Server
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.8-blue.svg)](#versioning)
+[![Version](https://img.shields.io/badge/version-2.0.9-blue.svg)](#versioning)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](#requirements)
 [![LibreOffice](https://img.shields.io/badge/LibreOffice-24.2%2B-18A303.svg)](#requirements)
 
@@ -204,7 +204,7 @@ python build-oxt-windows.py
 The extension package is created at:
 
 ```text
-build/libreoffice-mcp-extension-2.0.8.oxt
+build/libreoffice-mcp-extension-2.0.9.oxt
 ```
 
 The Windows builder creates a LibreOffice-compatible ZIP/OXT structure with normalized archive paths.
@@ -218,7 +218,7 @@ PowerShell example:
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
 & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension
-& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.8.oxt"
+& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.9.oxt"
 ```
 
 Removing an extension that is not already installed may report that no matching extension exists. That is harmless.
@@ -269,7 +269,7 @@ A convenient rebuild/reinstall command in PowerShell is:
 
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
-python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.8.oxt"
+python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.9.oxt"
 ```
 
 Then reopen LibreOffice and start the MCP server from the Tools menu.
@@ -878,7 +878,7 @@ For Windows native extension changes, verify at minimum:
 [ ] PDF export works
 ```
 
-Run the automated test suite (471 tests):
+Run the automated test suite (474 tests):
 
 ```bash
 uv run pytest
@@ -887,6 +887,31 @@ uv run pytest
 ---
 
 # Versioning
+
+## v2.0.9
+
+Phase 4 of the 2026-08-19 typeset-run remediation: corrected the bug
+count (13 real defects, not 15 — #8 and #11 were misdiagnoses, see
+v2.0.8 below) and wrote up durable guidance in `docs/HARDENING_PLAN.md`
+for the six standing-decision bullets Buddy's original assignment asked
+for. Auditing bullet 3 (batching safe-or-unsafe) against the actual code
+rather than the fix already landed found a real, previously-undocumented
+gap: BUG #5's view-cursor resync fix (`insert_paragraph`/
+`insert_heading`/`insert_page_break`) never reached two structurally
+identical functions, `apply_page_style_live` and `remove_page_break_live`
+— both resolve an omitted position through the same stale view cursor
+with nothing to resync it. Fixed with the identical pattern. Live-verified
+with a new probe, `batch-page-style-probe-windows.py`, mutation-tested
+both directions: reverting the fix, the same repro's `remove_page_break`
+resolves paragraph 4 (a stale, unrelated position) instead of the
+expected 1; with the fix, 1.
+
+- 474 automated tests passing (no count change — no fakes-based
+  regression test possible for this fix, same `UNOBridge`-can't-
+  instantiate-outside-LibreOffice constraint every other UNO-only fix in
+  this project has hit).
+- Full findings, the corrected-count table, and each of the six bullets'
+  concrete status: `docs/HARDENING_PLAN.md`'s "Phase 4" section.
 
 ## v2.0.8
 

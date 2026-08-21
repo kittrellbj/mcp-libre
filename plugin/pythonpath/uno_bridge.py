@@ -8169,7 +8169,17 @@ class UNOBridge:
         verified this alone is sufficient to change the page style from
         that paragraph forward; `insert_break` additionally sets
         BreakType=PAGE_BEFORE for a caller that wants the explicit
-        page-break semantics rather than just a style-region change."""
+        page-break semantics rather than just a style-region change.
+
+        BUG #5-class fix (found auditing the durable-guidance writeup,
+        same mechanism as insert_paragraph()/insert_page_break(), never
+        triggered in the original typeset-run repro): omitted `paragraph`
+        resolves through the VIEW cursor via _current_paragraph_index(doc),
+        but nothing in this method ever moves that cursor -- so two
+        batched, position-omitted calls in a row would resolve the
+        identical paragraph both times instead of advancing. Fixed the
+        same way: resync the view cursor to the paragraph just styled,
+        best-effort (never fails an otherwise-successful apply)."""
         family = self._writer_page_style_family(doc)
         if not family.hasByName(style_name):
             raise KeyError(f"No such page style '{style_name}'.")
@@ -8178,6 +8188,10 @@ class UNOBridge:
         para.PageDescName = style_name
         if insert_break:
             para.BreakType = uno.Enum("com.sun.star.style.BreakType", "PAGE_BEFORE")
+        try:
+            self._get_controller(doc).getViewCursor().gotoRange(para.getStart(), False)
+        except Exception:
+            pass  # best-effort -- see BUG #5-class fix note above
         return {"paragraph": n, "style_name": style_name}
 
     def set_page_columns(self, doc: Any, count: int, spacing: Optional[float] = None,
@@ -8242,11 +8256,20 @@ class UNOBridge:
         live-verified None raises "Type 0 is not supported!" (the
         property is string-typed; None isn't a legal UNO string value),
         while "" is accepted and reads back as the same None/unset state
-        insert_page_break's own untouched paragraphs start in."""
+        insert_page_break's own untouched paragraphs start in.
+
+        BUG #5-class fix (same finding as apply_page_style() above): a
+        batched, position-omitted call resolved through the stale view
+        cursor with nothing to advance it. Resynced the same way,
+        best-effort."""
         n = paragraph if paragraph is not None else (position if position is not None else self._current_paragraph_index(doc))
         para = self._get_paragraph_object(doc, n)
         para.BreakType = uno.Enum("com.sun.star.style.BreakType", "NONE")
         para.PageDescName = ""
+        try:
+            self._get_controller(doc).getViewCursor().gotoRange(para.getStart(), False)
+        except Exception:
+            pass  # best-effort -- see BUG #5-class fix note above
         return {"paragraph": n}
 
     _HEADER_FOOTER_TEXT_PROPS = {

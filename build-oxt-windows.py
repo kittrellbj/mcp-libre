@@ -4,7 +4,7 @@ import zipfile
 repoDir = Path(__file__).resolve().parent
 pluginDir = repoDir / "plugin"
 buildDir = repoDir / "build"
-outputPath = buildDir / "libreoffice-mcp-extension-2.0.8.oxt"
+outputPath = buildDir / "libreoffice-mcp-extension-2.0.9.oxt"
 
 buildDir.mkdir(parents=True, exist_ok=True)
 
