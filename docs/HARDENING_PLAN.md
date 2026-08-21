@@ -1037,3 +1037,31 @@ Both new probes (`edit-latency-probe-windows.py`,
 `event-wait-concurrency-probe-windows.py`) are new, reusable artifacts,
 not one-off ad hoc commands, matching this project's `smoke-test-
 windows.py`-established convention.
+
+**Morgan's decision (2026-08-21): accept the current shape, do not chase
+the fix this pass.** Confirmed the diagnosis is structural, not a tuning
+problem -- any positive cap value fails the same way, since the wait's
+contract ("events new since my snapshot-at-entry") and the producer/
+consumer serialization on `_UNO_EXECUTION_LOCK` mean the two calls can
+never overlap in time. Explicitly rejected redesigning the wait/snapshot
+contract now: that's new API surface (a caller-supplied cursor, e.g.
+`since_event_id`, params/docs/caller-learning-curve), a second design
+decision layered on top of "clamp the timeout," for a P3 tool whose
+primary use case has never worked for any caller in this project's
+history -- no evidence anyone is currently blocked on it. Same
+disproportionate-risk-for-the-payoff logic as rejecting the
+`_UNO_EXECUTION_LOCK` exception-carve alternative in the original
+decision. What shipped is kept as a real, standalone improvement:
+correctness-critical lock untouched, the external-event path verified
+and bounded, the docstring now tells the truth instead of overclaiming.
+
+**Open backlog item, named explicitly so it isn't mistaken for closed:**
+`wait_for_document_event_live` cannot observe self-triggered events
+(its own caller's edit through the same HTTP surface) -- only events
+from outside its own lock (a separate raw UNO connection, a human GUI
+edit). Fixing this for real needs cursor-based continuity across polls
+(a caller-supplied position replacing the current per-call
+snapshot-at-entry), which changes the tool's parameter contract --
+revisit only if a real caller actually needs the self-triggered path,
+per Morgan's call above. Not tracked anywhere else; this paragraph is
+the record.
