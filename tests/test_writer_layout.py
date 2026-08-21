@@ -53,6 +53,13 @@ class FakeIndex:
         self.index_type = index_type
         self.updated = False
         self.disposed = False
+        self.Title = title  # real-UNO-shaped alias -- insert_toc_live's BUG #12
+        # get-or-create check reads getServiceName()/Title the same way the
+        # real UNOBridge's own objects expose them, not this fake's
+        # originally lowercase title/index_type pair.
+
+    def getServiceName(self):
+        return self.index_type
 
 
 class FakeUnoBridge:
@@ -274,7 +281,10 @@ class FakeUnoBridge:
         return {"index_id": index_id, "title": index.title, "type": index.index_type}
 
     def insert_toc(self, doc, at_position=None, title=None, max_level=10, options=None):
-        toc = FakeIndex(title or "Table of Contents", "ContentIndex")
+        # Fully-qualified service name, matching real UNO's getServiceName()
+        # -- insert_toc_live's BUG #12 get-or-create check matches against
+        # this exact string, same as the real UNOBridge's ContentIndex objects.
+        toc = FakeIndex(title or "Table of Contents", "com.sun.star.text.ContentIndex")
         indexes = getattr(self, "_indexes", [])
         indexes.append(toc)
         self._indexes = indexes
@@ -519,6 +529,29 @@ def test_insert_caption_live():
 
 
 # -- indexes --
+
+def test_insert_toc_live_is_idempotent():
+    """BUG #12 fix: a repeat insert_toc_live call must return the existing
+    ToC, not create a duplicate index."""
+    context.reset()
+    _install(active_document=FakeDocument())
+    first = _handler("insert_toc_live")(title="Contents")
+    assert first["success"] is True
+    second = _handler("insert_toc_live")(title="Contents")
+    assert second["success"] is True
+    assert second["result"]["index_id"] == first["result"]["index_id"]
+    assert _handler("list_document_indexes_live")()["result"]["count"] == 1
+
+    # An unnamed request also matches an existing ToC regardless of its title.
+    third = _handler("insert_toc_live")()
+    assert third["result"]["index_id"] == first["result"]["index_id"]
+    assert _handler("list_document_indexes_live")()["result"]["count"] == 1
+
+    # A distinct title is a deliberate second, differently-named ToC.
+    fourth = _handler("insert_toc_live")(title="Appendix Contents")
+    assert fourth["result"]["index_id"] != first["result"]["index_id"]
+    assert _handler("list_document_indexes_live")()["result"]["count"] == 2
+
 
 def test_toc_lifecycle_live():
     context.reset()

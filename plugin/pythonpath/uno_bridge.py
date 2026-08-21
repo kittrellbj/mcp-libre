@@ -560,12 +560,17 @@ class UNOBridge:
             content = text.getString()
             stats["word_count"] = len(content.split())
             stats["character_count"] = len(content)
-            paragraph_count = 0
-            enum = text.createEnumeration()
-            while enum.hasMoreElements():
-                enum.nextElement()
-                paragraph_count += 1
-            stats["paragraph_count"] = paragraph_count
+            # BUG #14 fix (live-verified): this used to enumerate every
+            # top-level text element and count them all, including
+            # non-paragraph content (e.g. a TextTable counts as one element
+            # of its own) -- confirmed live it diverges from
+            # get_paragraph_count_live by exactly the table count (12 real
+            # paragraphs + 1 table -> this reported 13, not 12). Now shares
+            # _count_paragraphs() (the same filtered enumeration
+            # get_paragraph_count_live already uses), so the two tools
+            # agree on what "paragraph" means instead of silently counting
+            # different things under the same field name.
+            stats["paragraph_count"] = self._count_paragraphs(doc)
             try:
                 stats["page_count"] = doc.getCurrentController().PageCount
             except Exception:
@@ -603,11 +608,21 @@ class UNOBridge:
                                            "description": "Description", "keywords": "Keywords"}
 
     def set_document_properties(self, doc: Any, properties: Dict[str, Any]) -> List[str]:
-        """Set standard document metadata. Returns the list of field names actually applied."""
+        """Set standard document metadata. Returns the list of field names actually applied.
+
+        BUG #13 fix: the original report's own repro passed capitalized
+        keys ({"Title": ..., "Author": ...}) and got them silently
+        ignored -- the field-name lookup was exact-match against
+        lowercase keys only, with no case-insensitivity and no schema
+        documenting that requirement (empty inputSchema, confirmed in
+        set_document_properties_live's tool registration). Not the
+        "wrong shape entirely" the original report guessed (a flat dict
+        IS the right shape -- confirmed by this method's own signature);
+        fixed by matching field names case-insensitively instead."""
         doc_props = doc.getDocumentProperties()
         applied = []
         for key, value in properties.items():
-            uno_field = self._SETTABLE_DOCUMENT_PROPERTY_FIELDS.get(key)
+            uno_field = self._SETTABLE_DOCUMENT_PROPERTY_FIELDS.get(key.lower())
             if uno_field is None:
                 continue  # unknown/unsettable field name -- caller is told via the returned list
             if uno_field == "Keywords":
@@ -3429,8 +3444,20 @@ class UNOBridge:
 
     def append_paragraph(self, doc: Any, text: str = "", style_name: Optional[str] = None) -> Dict[str, Any]:
         """Append a new paragraph to the end of the document. Always adds a
-        new paragraph (never reuses an existing empty trailing one)."""
+        new paragraph (never reuses an existing empty trailing one).
+
+        BUG #9 fix (live-verified): an unknown style_name used to raise
+        AFTER the text was already inserted -- the tool layer reports
+        success=false, but the paragraph is still there, unstyled. A
+        caller that only checks success would drop content that actually
+        landed. Fixed by validating style_name BEFORE touching the
+        document at all, so an unknown style now fails atomically (nothing
+        inserted) instead of partially applying behind a failure code."""
         self._require_writer(doc, "append_paragraph")
+        if style_name:
+            family_container = self._get_style_family(doc, "ParagraphStyles")
+            if not family_container.hasByName(style_name):
+                raise KeyError(f"No such paragraph style '{style_name}'.")
         text_obj = doc.getText()
         cursor = text_obj.createTextCursor()
         cursor.gotoEnd(False)
@@ -3438,9 +3465,6 @@ class UNOBridge:
         text_obj.insertString(cursor, text, False)
         style_applied = False
         if style_name:
-            family_container = self._get_style_family(doc, "ParagraphStyles")
-            if not family_container.hasByName(style_name):
-                raise KeyError(f"No such paragraph style '{style_name}'.")
             cursor.ParaStyleName = style_name
             style_applied = True
         return {"appended_paragraph": self._count_paragraphs(doc), "text": text, "style_applied": style_applied}

@@ -312,9 +312,25 @@ def get_document_properties_live(document_id: Optional[str] = None) -> Dict[str,
 @register_tool(
     name="set_document_properties_live",
     priority="P1",
-    purpose="Set standard document metadata.",
+    purpose=(
+        "Set standard document metadata. properties is a flat {name: value} dict "
+        "(not PropertyValue pairs), keys matched case-insensitively (BUG #13 fix). "
+        "Recognized keys: title, subject, author, description, keywords (a list of "
+        "strings). Any other key is silently skipped and named in the response's "
+        "warnings."
+    ),
     parameters=schema({
-        "properties": {"type": "object"},
+        "properties": {
+            "type": "object",
+            "description": "Flat {name: value} dict. Recognized keys: title, subject, author, description, keywords.",
+            "properties": {
+                "title": {"type": "string"},
+                "subject": {"type": "string"},
+                "author": {"type": "string"},
+                "description": {"type": "string"},
+                "keywords": {"type": "array", "items": {"type": "string"}},
+            },
+        },
         "document_id": {"type": "string"},
     }, required=["properties"]),
     status="implemented",

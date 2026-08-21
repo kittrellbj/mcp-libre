@@ -1,7 +1,7 @@
 # LibreOffice MCP Server
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.6-blue.svg)](#versioning)
+[![Version](https://img.shields.io/badge/version-2.0.7-blue.svg)](#versioning)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](#requirements)
 [![LibreOffice](https://img.shields.io/badge/LibreOffice-24.2%2B-18A303.svg)](#requirements)
 
@@ -204,7 +204,7 @@ python build-oxt-windows.py
 The extension package is created at:
 
 ```text
-build/libreoffice-mcp-extension-2.0.6.oxt
+build/libreoffice-mcp-extension-2.0.7.oxt
 ```
 
 The Windows builder creates a LibreOffice-compatible ZIP/OXT structure with normalized archive paths.
@@ -218,7 +218,7 @@ PowerShell example:
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
 & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension
-& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.6.oxt"
+& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.7.oxt"
 ```
 
 Removing an extension that is not already installed may report that no matching extension exists. That is harmless.
@@ -269,7 +269,7 @@ A convenient rebuild/reinstall command in PowerShell is:
 
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
-python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.6.oxt"
+python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.7.oxt"
 ```
 
 Then reopen LibreOffice and start the MCP server from the Tools menu.
@@ -887,6 +887,25 @@ uv run pytest
 ---
 
 # Versioning
+
+## v2.0.7
+
+Six of the fifteen bugs from 2026-08-19's extended agentic typeset-run log (P2/P3 tier), fixed and live-verified end to end against a fresh headless LibreOffice instance before this push, per standing policy.
+
+**BUG #7 — `insert_paragraph_live`/`insert_heading_live`/`insert_page_break_live`'s shared anchor contract was undocumented.** An omitted `at_paragraph`/`at_position` anchors off wherever the *last* insert-family call (single or batched) left off, not a fixed "current selection" — this was real, working behavior the whole time, just never written down, so it read as flaky under `batch_execute_live`. Doc-only fix: all three tools' `purpose` strings now state the contract explicitly and cross-reference each other.
+
+**BUG #9 — `append_paragraph_live` could partially apply on an unknown `style_name`.** The style-name lookup used to run *after* the text was already inserted, so an unknown style raised `success: false` while the paragraph landed anyway, unstyled — a caller that only checks `success` silently drops content that's actually there. Fixed by validating `style_name` before touching the document at all: an unknown style now fails atomically, nothing inserted. Live-verified both directions (unknown style rejected with zero document-length change; valid append with no style still succeeds).
+
+**BUG #10 — `soffice.exe --version` hangs instead of exiting on this project's own Windows dev environment.** It launches the full app rather than printing a version and returning. Doc-only fix: `docs/PREREQUISITES.md` now recommends a file-existence check (`Test-Path`) as the Windows verification method instead, matching `smoke-test-windows.py`'s own convention. Not confirmed on Linux/macOS.
+
+**BUG #12 — `insert_toc_live` created a duplicate table of contents on a repeat call.** Fixed with a get-or-create: a repeat call matching an existing `com.sun.star.text.ContentIndex` (by title, or any existing ToC when title is omitted) now returns that index instead of inserting a second one. Live-verified: `list_document_indexes_live`'s own count stays at 1 across two repeat calls. **Caveat, confirmed live this pass, not just assumed:** the returned `index_id` itself can differ across repeat calls — a raw-UNO probe showed two `getDocumentIndexes().getByIndex()` fetches of the *same* underlying ContentIndex return proxies with different `hash()` values, so the object registry's identity-keyed dict mints a second id even though no second index was created. Each id still resolves correctly for its own later `get`/`update`/`delete`. Documented in `writer_layout.py`'s module docstring and the tool's `purpose` string so a caller doesn't mistake this for the fix not working.
+
+**BUG #13 — `set_document_properties_live` silently dropped capitalized property keys.** The field-name lookup matched exact-case only (`"title"`, not `"Title"`), with no case-insensitivity and no schema documenting the requirement. Fixed by lowercasing the lookup key. Live-verified: `{"Title": ..., "AUTHOR": ...}` now applies and round-trips correctly through `get_document_properties_live`.
+
+**BUG #14 — `get_document_statistics_live`'s `paragraph_count` disagreed with `get_paragraph_count_live` whenever the document contained a table.** The statistics path counted every top-level text element via a raw enumeration (a `TextTable` counts as one element of its own), while the dedicated tool used a filtered count — live-verified this diverged by exactly the table count (13 vs. 12 on a 12-paragraph, 1-table document). Fixed by having statistics share the same filtered `_count_paragraphs()` helper. Live-verified: both tools now report the same count on a document containing a table.
+
+- 474 automated tests passing (up from 473, net +1): `test_insert_toc_live_is_idempotent` covers BUG #12's get-or-create contract, including the deliberate-second-ToC-via-distinct-title case
+- Live-verified end to end on a fresh headless LibreOffice instance, rebuilding/redeploying after the fixes, independently re-checking real document state for each of the four fixes with runtime behavior (#9, #12, #13, #14); #7 and #10 are documentation-only, confirmed correct by reading the underlying behavior/environment directly rather than re-executing unchanged code
 
 ## v2.0.6
 
