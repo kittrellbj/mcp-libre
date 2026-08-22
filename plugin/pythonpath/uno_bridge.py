@@ -5680,6 +5680,49 @@ class UNOBridge:
         doc.getCurrentController().setCurrentPage(target)
         return {"index": self._draw_page_index(doc.getDrawPages(), target), "name": target.Name}
 
+    def get_draw_page(self, doc: Any, page: Any = None, include_shape_metadata: bool = False) -> Dict[str, Any]:
+        """Return all text content of a Draw page (new tool, Brian's
+        new-tools assignment priority #10) -- the Draw counterpart to
+        get_slide_content() (#3): "give me all the content of this page"
+        instead of list_shapes_live + N get_shape_live calls. page
+        omitted -> the active page, same _resolve_draw_page() convention
+        every other draw.py page tool uses.
+
+        Same shape-text extraction loop as get_slide_content() (only
+        shapes with non-empty getString() text are included, same
+        "skip if falsy" convention _shape_summary() established), reused
+        rather than re-derived. Deliberately narrower than
+        get_slide_content()'s result, though: Draw pages don't carry
+        Impress's hidden/notes concepts in this tool catalog (no
+        hide_draw_page_live or Draw notes tooling exists), so this
+        result is just {index, name, text: [...]}, not a stripped-down
+        copy of the Impress shape padded with fields that would never
+        mean anything here.
+        """
+        self._require_draw(doc, "get_draw_page")
+        target_page = self._resolve_draw_page(doc, page)
+        text_entries: List[Dict[str, Any]] = []
+        for i in range(target_page.getCount()):
+            shape = target_page.getByIndex(i)
+            if not hasattr(shape, "getString"):
+                continue
+            try:
+                text = shape.getString()
+            except Exception:
+                continue
+            if not text:
+                continue
+            entry: Dict[str, Any] = {"shape": shape.Name, "text": text}
+            if include_shape_metadata:
+                entry["type"] = self._get_shape_type(shape)
+                entry.update(self._shape_geometry(shape))
+            text_entries.append(entry)
+        return {
+            "index": self._draw_page_index(doc.getDrawPages(), target_page),
+            "name": target_page.Name,
+            "text": text_entries,
+        }
+
     def insert_draw_page(self, doc: Any, position: Optional[int] = None, name: Optional[str] = None) -> Dict[str, Any]:
         self._require_draw(doc, "insert_draw_page")
         pages = doc.getDrawPages()

@@ -1,7 +1,7 @@
 # LibreOffice MCP Server
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.18-blue.svg)](#versioning)
+[![Version](https://img.shields.io/badge/version-2.0.19-blue.svg)](#versioning)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](#requirements)
 [![LibreOffice](https://img.shields.io/badge/LibreOffice-24.2%2B-18A303.svg)](#requirements)
 
@@ -204,7 +204,7 @@ python build-oxt-windows.py
 The extension package is created at:
 
 ```text
-build/libreoffice-mcp-extension-2.0.18.oxt
+build/libreoffice-mcp-extension-2.0.19.oxt
 ```
 
 The Windows builder creates a LibreOffice-compatible ZIP/OXT structure with normalized archive paths.
@@ -218,7 +218,7 @@ PowerShell example:
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
 & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension
-& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.18.oxt"
+& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.19.oxt"
 ```
 
 Removing an extension that is not already installed may report that no matching extension exists. That is harmless.
@@ -269,7 +269,7 @@ A convenient rebuild/reinstall command in PowerShell is:
 
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
-python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.18.oxt"
+python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.19.oxt"
 ```
 
 Then reopen LibreOffice and start the MCP server from the Tools menu.
@@ -887,6 +887,32 @@ uv run pytest
 ---
 
 # Versioning
+
+## v2.0.19
+
+Step 5 of the typeset-run remediation, ninth item: `get_draw_page_live`,
+Brian's new-tools assignment priority #10 — the Draw counterpart to
+Impress's `get_slide_content_live` (#3). `page` omitted -> the active
+page. Deliberately narrower than `get_slide_content_live`'s result:
+Draw pages don't carry Impress's hidden/notes concepts anywhere in
+this tool catalog, so the result is just `{index, name, text: [...]}`.
+
+New `UNOBridge.get_draw_page()` plus the `get_draw_page_live` tool
+wrapper in `draw.py`. Same shape-text extraction loop as
+`get_slide_content()` (only shapes with non-empty text are included),
+reused rather than re-derived.
+
+Live-verified against real headless LibreOffice Draw with a new probe,
+`get-draw-page-probe-windows.py` — 8 checks against a real 2-page
+document, all passing: omitted `page` defaults to the real active
+page; addressing page 2 by name returns page 2's real text, not page
+1's; an empty shape contributes nothing; `include_shape_metadata=true`
+adds real type/geometry; an unknown page name fails cleanly.
+
+- 502 automated tests passing (498 + 4 new fakes-based plumbing tests).
+- Full writeup: `docs/HARDENING_PLAN.md`'s "Phase 6" section, which also
+  tracks the rest of the new-tools list (5 more) and the
+  `get_document_statistics_live` rewrite still queued after it.
 
 ## v2.0.18
 

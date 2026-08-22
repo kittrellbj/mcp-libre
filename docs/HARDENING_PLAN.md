@@ -1088,7 +1088,7 @@ redundancy note -- `get_selection_live` already covers it.
 | 7 | `goto_page_live` | **Done, live-verified** -- see below |
 | 8 | `list_fonts_live` | **Done, live-verified** -- see below |
 | 9 | `activate_draw_page_live` | **Done, live-verified** -- see below |
-| 10 | `get_draw_page_live` | Queued |
+| 10 | `get_draw_page_live` | **Done, live-verified** -- see below |
 | 11 | `update_cell_comment_live` | Queued |
 | 12 | `get_freeze_panes_live` | Queued |
 | 13 | `get_sheet_summary_live` | Queued |
@@ -1455,5 +1455,45 @@ read afterward, not just `success: true`); activating an unknown page
 name reports a clean failure, not a raw traceback.
 
 498/498 tests passing (495 + 3 new). Same bare-`uv run pytest`
+collection gap noted above -- unchanged by this tool, still queued as
+the first item after step 5 wraps.
+
+**`get_draw_page_live` (#10).** New tool, not part of the original spec
+`draw.py` was sourced from -- the Draw counterpart to Impress's
+`get_slide_content_live` (#3): "give me all the content of this page"
+instead of `list_shapes_live` + N `get_shape_live` calls. `page`
+omitted -> the active page (same `_resolve_draw_page()` convention
+every other draw.py page tool uses). Deliberately narrower than
+`get_slide_content_live`'s result, though: Draw pages don't carry
+Impress's hidden/notes concepts anywhere in this tool catalog (no
+`hide_draw_page_live` or Draw notes tooling exists), so the result is
+just `{index, name, text: [...]}`, not a copy of the Impress shape
+padded with fields that would never mean anything here.
+
+New `UNOBridge.get_draw_page()` (`uno_bridge.py`, right after
+`activate_draw_page()`) plus the `get_draw_page_live` tool wrapper in
+`draw.py`, right after `activate_draw_page_live`. Same shape-text
+extraction loop as `get_slide_content()` (only shapes with non-empty
+`getString()` text are included, same "skip if falsy" convention
+`_shape_summary()` established), reused rather than re-derived --
+`include_shape_metadata=true` reuses the same `_get_shape_type`/
+`_shape_geometry` helpers too.
+
+Fakes-based plumbing tests (`tests/test_draw.py`:
+`test_get_draw_page_live_defaults_to_active_page`,
+`test_get_draw_page_live_by_name`,
+`test_get_draw_page_live_with_shape_metadata`,
+`test_get_draw_page_live_unknown_page`) plus the registry-catalog entry
+(`tests/test_tool_scaffold_contract.py`). Live-verified against real
+headless LibreOffice Draw with a new probe,
+`get-draw-page-probe-windows.py` -- 8 checks, all passing, against a
+real 2-page document (page 1 titled + a deliberately empty shape, page
+2 with its own titled shape): omitted `page` defaults to the real
+active page; addressing page 2 by name returns page 2's real text, not
+page 1's; the empty shape contributes nothing; `include_shape_
+metadata=true` adds real type/geometry; an unknown page name fails
+cleanly.
+
+502/502 tests passing (498 + 4 new). Same bare-`uv run pytest`
 collection gap noted above -- unchanged by this tool, still queued as
 the first item after step 5 wraps.

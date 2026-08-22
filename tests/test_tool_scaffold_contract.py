@@ -246,6 +246,10 @@ EXPECTED_BY_MODULE = {
         # not part of the original spec this module was sourced from) --
         # the Draw counterpart to Impress's activate_slide_live.
         "activate_draw_page_live",
+        # New tool, 2026-08-22 (Brian's new-tools assignment, priority #10,
+        # not part of the original spec) -- the Draw counterpart to
+        # Impress's get_slide_content_live.
+        "get_draw_page_live",
     },
 }
 

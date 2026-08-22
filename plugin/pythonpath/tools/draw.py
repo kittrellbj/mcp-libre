@@ -96,6 +96,32 @@ def activate_draw_page_live(page: Any) -> Dict[str, Any]:
 
 
 @register_tool(
+    name="get_draw_page_live",
+    priority="P1",
+    purpose=(
+        "Return all text content of a Draw page (shapes with text) in one "
+        "call, instead of list_shapes_live + N get_shape_live -- Brian's "
+        "new-tools assignment priority #10, the Draw counterpart to "
+        "Impress's get_slide_content_live. page omitted -> the active page."
+    ),
+    parameters=schema({
+        "page": {"description": "Page index or name. Omitted -> the active page."},
+        "include_shape_metadata": {"type": "boolean"},
+    }),
+    status="implemented",
+)
+def get_draw_page_live(page: Any = None, include_shape_metadata: bool = False) -> Dict[str, Any]:
+    start = envelope.start_timer()
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        result = ctx.uno_bridge.get_draw_page(doc, page, include_shape_metadata)
+        return envelope.build_success(result=result, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
+
+
+@register_tool(
     name="insert_draw_page_live",
     priority="P1",
     purpose="Insert page.",
