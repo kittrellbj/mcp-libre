@@ -1093,7 +1093,7 @@ redundancy note -- `get_selection_live` already covers it.
 | 12 | `get_freeze_panes_live` | **Done, live-verified** -- see below |
 | 13 | `get_sheet_summary_live` | **Done, live-verified** -- see below |
 | 14 | `get_document_snapshot_live` | **Done, live-verified** -- see below |
-| 15 | `extract_document_text_live` | Queued |
+| 15 | `extract_document_text_live` | **Done, live-verified** -- see below |
 
 **`find_cells_live` (#2, "the biggest obvious Calc hole").** Built to
 Brian's exact schema (`query`, `sheet`, `range`, `look_in`, `match`,
@@ -1666,3 +1666,58 @@ real name.
 515/515 tests passing (510 + 5 new). Same bare-`uv run pytest`
 collection gap noted above -- unchanged by this tool, still queued as
 the first item after step 5 wraps.
+
+**`extract_document_text_live` (#15, the last item in the Phase 6
+new-tools list).** New tool -- a flat plain-text extraction of the
+whole document regardless of type, for search/embedding/context use
+rather than the structured, per-container reads
+`get_slide_content_live`/`get_draw_page_live`/`get_sheet_summary_live`
+already provide.
+
+Writer: `doc.getText().getString()`, the plain body text (footnotes/
+headers/footers are a separate surface this doesn't reach, same scope
+boundary `get_document_statistics`'s `word_count` already has). Calc:
+each sheet's used range (same bounded `gotoStartOfUsedArea()`/
+`gotoEndOfUsedArea()` technique `get_used_range()` establishes -- never
+the full 1M-row grid), read via the bulk `getDataArray()` rather than a
+per-cell loop, stopping (`truncated: true`) after
+`_FIND_CELLS_MAX_SCANNED_CELLS` cells across all sheets combined (the
+same runaway-scan backstop `find_cells()` uses). Impress/Draw: composes
+`get_presentation_content()`/`get_draw_page()` (#5/#10) per slide/page
+rather than re-deriving shape-text extraction a third time.
+
+Real edge case guarded against, not assumed: a genuinely blank Calc
+sheet's `gotoStartOfUsedArea()`/`gotoEndOfUsedArea()` collapse to a
+single cell (the same behavior `get_sheet_summary()` already found and
+guards against) -- without that same guard here, that empty cell's
+default numeric `0.0` read back from `getDataArray()` would otherwise
+leak into the extraction as a spurious "0.0" line for a sheet that has
+nothing in it. Live-verified with a real second, genuinely blank sheet
+inserted alongside real content, confirming the extraction stays clean.
+
+New `UNOBridge.extract_document_text()` (`uno_bridge.py`, right after
+`get_document_snapshot()`) plus the `extract_document_text_live` tool
+wrapper in `document_lifecycle.py`, right after
+`get_document_snapshot_live`.
+
+Fakes-based plumbing tests (`tests/test_document_lifecycle.py`:
+`test_extract_document_text_live_reports_real_text_and_count`,
+`test_extract_document_text_live_warns_when_calc_extraction_truncated`,
+`test_extract_document_text_live_no_active_document`) plus the
+registry-catalog entry (`tests/test_tool_scaffold_contract.py`).
+Live-verified against real headless LibreOffice across all four
+document types with a new probe,
+`extract-document-text-probe-windows.py` -- 15 checks, all passing:
+Writer's real paragraph text with a matching `character_count`; Calc's
+real text and numeric cell content, with a genuinely blank second sheet
+confirmed NOT to leak a spurious "0.0"/"0" into the result; Impress's
+real shape text and real speaker notes; Draw's real shape text.
+
+**Phase 6 new-tools list (items #2-15) is now fully complete.** The
+only item remaining before this branch closes is the
+`get_document_statistics_live` rewrite (Brian's priority #1, tracked
+separately above as Part 4 -- not started).
+
+518/518 tests passing (515 + 3 new). Same bare-`uv run pytest`
+collection gap noted above -- unchanged by this tool, still queued as
+the first item after this step wraps.

@@ -704,6 +704,89 @@ class UNOBridge:
             snapshot["warning"] = f"No snapshot detail available for document type '{doc_type}'"
         return snapshot
 
+    def extract_document_text(self, doc: Any) -> Dict[str, Any]:
+        """Return a flat plain-text extraction of the whole document (new
+        tool, Brian's new-tools assignment priority #15, the last of the
+        Phase 6 new-tools list) -- "give me everything readable as text"
+        regardless of document type, for search/embedding/context use
+        rather than the structured, per-container reads
+        get_slide_content_live/get_draw_page_live/get_sheet_summary_live
+        already provide.
+
+        Writer: doc.getText().getString(), the plain body text --
+        footnotes/headers/footers are a separate surface this doesn't
+        reach, same scope boundary get_document_statistics's word_count
+        already has.
+
+        Calc: each sheet's used range (bounded the same
+        gotoStartOfUsedArea()/gotoEndOfUsedArea() way get_used_range()
+        establishes -- never the full 1M-row grid), read via the bulk
+        getDataArray() rather than a per-cell loop. Same genuinely-blank-
+        sheet guard get_sheet_summary() uses (a collapsed single-cell
+        used range is checked for real content before being trusted) --
+        without it, an empty sheet's default numeric 0.0 read back from
+        getDataArray() would otherwise be misreported as real text "0.0"
+        for a sheet that has nothing in it. Stops (truncated: true)
+        after _FIND_CELLS_MAX_SCANNED_CELLS cells across all sheets
+        combined, the same runaway-scan backstop find_cells() uses.
+
+        Impress/Draw: composes get_presentation_content()/get_draw_page()
+        (#5/#10) per slide/page rather than re-deriving shape-text
+        extraction a third time -- every shape's text, plus Impress notes.
+        """
+        doc_type = self._get_document_type(doc)
+        truncated = False
+        if doc_type == "writer":
+            text = doc.getText().getString()
+        elif doc_type == "calc":
+            parts: List[str] = []
+            scanned = 0
+            sheets = doc.getSheets()
+            for i in range(sheets.getCount()):
+                if truncated:
+                    break
+                sheet_obj = sheets.getByIndex(i)
+                used = self.get_used_range(doc, sheet_obj.Name)
+                single_cell = used["start_column"] == used["end_column"] and used["start_row"] == used["end_row"]
+                if single_cell:
+                    cell = sheet_obj.getCellByPosition(used["start_column"], used["start_row"])
+                    if not (cell.getString() or cell.getFormula()):
+                        continue  # genuinely blank sheet -- same edge case get_sheet_summary() guards against
+                width = used["end_column"] - used["start_column"] + 1
+                height = used["end_row"] - used["start_row"] + 1
+                if scanned + (width * height) > self._FIND_CELLS_MAX_SCANNED_CELLS:
+                    truncated = True
+                    break
+                range_obj = sheet_obj.getCellRangeByPosition(
+                    used["start_column"], used["start_row"], used["end_column"], used["end_row"])
+                for row in range_obj.getDataArray():
+                    for value in row:
+                        if value != "" and value is not None:
+                            parts.append(str(value))
+                scanned += width * height
+            text = "\n".join(parts)
+        elif doc_type == "impress":
+            content = self.get_presentation_content(doc)
+            parts = []
+            for slide in content["slides"]:
+                parts.extend(t["text"] for t in slide["text"])
+                if slide.get("notes"):
+                    parts.append(slide["notes"])
+            text = "\n".join(parts)
+        elif doc_type == "draw":
+            parts = []
+            pages = doc.getDrawPages()
+            for i in range(pages.getCount()):
+                page_content = self.get_draw_page(doc, i)
+                parts.extend(t["text"] for t in page_content["text"])
+            text = "\n".join(parts)
+        else:
+            text = ""
+        result: Dict[str, Any] = {"type": doc_type, "text": text, "character_count": len(text)}
+        if doc_type == "calc":
+            result["truncated"] = truncated
+        return result
+
     _DOCUMENT_PROPERTY_FIELDS = ("Title", "Subject", "Author", "Description", "ModifiedBy")
 
     def get_document_properties(self, doc: Any) -> Dict[str, Any]:

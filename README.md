@@ -1,7 +1,7 @@
 # LibreOffice MCP Server
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.23-blue.svg)](#versioning)
+[![Version](https://img.shields.io/badge/version-2.0.24-blue.svg)](#versioning)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](#requirements)
 [![LibreOffice](https://img.shields.io/badge/LibreOffice-24.2%2B-18A303.svg)](#requirements)
 
@@ -204,7 +204,7 @@ python build-oxt-windows.py
 The extension package is created at:
 
 ```text
-build/libreoffice-mcp-extension-2.0.23.oxt
+build/libreoffice-mcp-extension-2.0.24.oxt
 ```
 
 The Windows builder creates a LibreOffice-compatible ZIP/OXT structure with normalized archive paths.
@@ -218,7 +218,7 @@ PowerShell example:
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
 & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension
-& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.23.oxt"
+& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.24.oxt"
 ```
 
 Removing an extension that is not already installed may report that no matching extension exists. That is harmless.
@@ -269,7 +269,7 @@ A convenient rebuild/reinstall command in PowerShell is:
 
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
-python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.23.oxt"
+python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.24.oxt"
 ```
 
 Then reopen LibreOffice and start the MCP server from the Tools menu.
@@ -887,6 +887,41 @@ uv run pytest
 ---
 
 # Versioning
+
+## v2.0.24
+
+Step 5 of the typeset-run remediation, fourteenth item, and the last of
+the Phase 6 new-tools list: `extract_document_text_live`, Brian's
+new-tools assignment priority #15 — a flat plain-text extraction of the
+whole document regardless of type, for search/embedding/context use.
+
+Writer: plain body text. Calc: each sheet's used range via bulk
+`getDataArray()`, stopping (`truncated: true`) after a scan backstop.
+Impress/Draw: composes `get_presentation_content()`/`get_draw_page()`
+(#5/#10) per slide/page. Real edge case guarded against: a genuinely
+blank Calc sheet's used-range cursors collapse to a single cell (the
+same behavior `get_sheet_summary()` already found), which would
+otherwise leak a spurious "0.0" into the extraction — live-verified
+with a real blank sheet inserted alongside real content, confirming
+the extraction stays clean.
+
+New `UNOBridge.extract_document_text()` plus the
+`extract_document_text_live` tool wrapper in `document_lifecycle.py`.
+
+Live-verified against real headless LibreOffice across all four
+document types with a new probe,
+`extract-document-text-probe-windows.py` — 15 checks, all passing:
+Writer's real paragraph text; Calc's real text/numeric content with
+the blank-sheet guard confirmed; Impress's real shape text and speaker
+notes; Draw's real shape text.
+
+**Phase 6 new-tools list (items #2-15) is now fully complete.** The
+only item remaining before this branch closes is the
+`get_document_statistics_live` rewrite (Brian's priority #1, tracked
+separately as Part 4).
+
+- 518 automated tests passing (515 + 3 new fakes-based plumbing tests).
+- Full writeup: `docs/HARDENING_PLAN.md`'s "Phase 6" section.
 
 ## v2.0.23
 

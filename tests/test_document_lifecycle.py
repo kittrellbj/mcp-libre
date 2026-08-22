@@ -46,6 +46,8 @@ class FakeUnoBridge:
         self.saved_paths = []
         self.converted = []
         self.printed = []
+        self.extracted_text = {}
+        self.extraction_truncated = False
 
     def get_active_document(self):
         return self.active_document
@@ -96,6 +98,13 @@ class FakeUnoBridge:
         else:
             snapshot["warning"] = f"No snapshot detail available for document type '{doc.doc_type}'"
         return snapshot
+
+    def extract_document_text(self, doc):
+        text = self.extracted_text.get(doc.doc_type, "")
+        result = {"type": doc.doc_type, "text": text, "character_count": len(text)}
+        if doc.doc_type == "calc":
+            result["truncated"] = self.extraction_truncated
+        return result
 
     def get_document_properties(self, doc):
         return dict(doc.standard_properties)
@@ -320,6 +329,39 @@ def test_get_document_snapshot_live_no_active_document():
     assert result["error"]["code"] == "NO_ACTIVE_DOCUMENT"
 
 
+def test_extract_document_text_live_reports_real_text_and_count():
+    # New tool, 2026-08-22 (Brian's new-tools assignment, priority #15,
+    # the last item in the Phase 6 new-tools list) -- flat plain-text
+    # extraction across all doc types.
+    context.reset()
+    uno_bridge, _, _ = _install(active_document=FakeDocument("writer"))
+    uno_bridge.extracted_text["writer"] = "First paragraph\nSecond paragraph"
+    result = _handler("extract_document_text_live")()
+    assert result["success"] is True
+    assert result["result"]["text"] == "First paragraph\nSecond paragraph"
+    assert result["result"]["character_count"] == len("First paragraph\nSecond paragraph")
+    assert result["warnings"] == []
+
+
+def test_extract_document_text_live_warns_when_calc_extraction_truncated():
+    context.reset()
+    uno_bridge, _, _ = _install(active_document=FakeDocument("calc"))
+    uno_bridge.extracted_text["calc"] = "Revenue"
+    uno_bridge.extraction_truncated = True
+    result = _handler("extract_document_text_live")()
+    assert result["success"] is True
+    assert result["result"]["truncated"] is True
+    assert "backstop" in result["warnings"][0]
+
+
+def test_extract_document_text_live_no_active_document():
+    context.reset()
+    _install()
+    result = _handler("extract_document_text_live")()
+    assert result["success"] is False
+    assert result["error"]["code"] == "NO_ACTIVE_DOCUMENT"
+
+
 def test_save_as_document_live_success_and_file_exists():
     context.reset()
     _install(active_document=FakeDocument("writer"), existing_files={"/out/existing.odt"})
@@ -515,6 +557,9 @@ if __name__ == "__main__":
         test_get_document_snapshot_live_impress,
         test_get_document_snapshot_live_draw,
         test_get_document_snapshot_live_no_active_document,
+        test_extract_document_text_live_reports_real_text_and_count,
+        test_extract_document_text_live_warns_when_calc_extraction_truncated,
+        test_extract_document_text_live_no_active_document,
         test_save_as_document_live_success_and_file_exists,
         test_save_copy_live,
         test_convert_document_live_success_and_missing_input,

@@ -226,6 +226,32 @@ def get_document_snapshot_live(document_id: Optional[str] = None) -> Dict[str, A
 
 
 @register_tool(
+    name="extract_document_text_live",
+    priority="P1",
+    purpose=(
+        "Return a flat plain-text extraction of the whole document, "
+        "regardless of type -- Brian's new-tools assignment priority #15, "
+        "the last item in the Phase 6 new-tools list -- for search/"
+        "embedding/context use rather than a structured per-container read."
+    ),
+    parameters=schema({"document_id": {"type": "string"}}),
+    status="implemented",
+)
+def extract_document_text_live(document_id: Optional[str] = None) -> Dict[str, Any]:
+    start = envelope.start_timer()
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx, document_id)
+        result = ctx.uno_bridge.extract_document_text(doc)
+        warnings = []
+        if result.get("truncated"):
+            warnings.append("Calc extraction stopped early after the scan backstop was hit -- text may be incomplete.")
+        return envelope.build_success(result=result, document_id=resolved_id, warnings=warnings, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start, document_id=document_id)
+
+
+@register_tool(
     name="save_as_document_live",
     priority="P1",
     purpose="Explicit Save As with filter and filter options.",

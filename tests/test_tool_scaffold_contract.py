@@ -86,6 +86,11 @@ EXPECTED_BY_MODULE = {
         # get_slide_content_live/get_draw_page_live for the active
         # sheet/slide/page.
         "get_document_snapshot_live",
+        # New tool, 2026-08-22 (Brian's new-tools assignment, priority #15,
+        # not part of the original spec, last item in the Phase 6
+        # new-tools list) -- flat plain-text extraction across all doc
+        # types.
+        "extract_document_text_live",
     },
     "undo_view_selection": {
         "get_undo_state_live", "undo_live", "redo_live", "begin_undo_context_live",
