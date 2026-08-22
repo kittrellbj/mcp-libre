@@ -202,6 +202,30 @@ def get_document_statistics_live(document_id: Optional[str] = None) -> Dict[str,
 
 
 @register_tool(
+    name="get_document_snapshot_live",
+    priority="P1",
+    purpose=(
+        "Return a compact, type-appropriate \"what's open right now\" "
+        "snapshot -- document identity plus a lightweight per-type status "
+        "(active sheet/slide/page, or paragraph/page counts for Writer) -- "
+        "Brian's new-tools assignment priority #14, for a caller starting "
+        "a session without already knowing what kind of document is active."
+    ),
+    parameters=schema({"document_id": {"type": "string"}}),
+    status="implemented",
+)
+def get_document_snapshot_live(document_id: Optional[str] = None) -> Dict[str, Any]:
+    start = envelope.start_timer()
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx, document_id)
+        result = ctx.uno_bridge.get_document_snapshot(doc)
+        return envelope.build_success(result=result, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start, document_id=document_id)
+
+
+@register_tool(
     name="save_as_document_live",
     priority="P1",
     purpose="Explicit Save As with filter and filter options.",

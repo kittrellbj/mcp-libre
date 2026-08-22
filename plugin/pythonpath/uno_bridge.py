@@ -660,6 +660,50 @@ class UNOBridge:
 
         return stats
 
+    def get_document_snapshot(self, doc: Any) -> Dict[str, Any]:
+        """Return a compact, type-appropriate "what's open right now"
+        snapshot (new tool, Brian's new-tools assignment priority #14) --
+        document identity plus a lightweight per-type status, in one call
+        for a caller starting a session without already knowing what kind
+        of document is active.
+
+        Deliberately does NOT reuse get_document_statistics() -- that
+        tool is separately queued for its own rewrite (Brian's priority
+        #1, tracked at the top of this Phase 6 section, different shape
+        expected) -- so this method's own Writer counts are derived
+        independently (same _count_paragraphs()/PageCount reads, just not
+        routed through the tool about to change under it. For Calc/
+        Impress/Draw, this composes the bulk-read tools this same pass
+        already built (get_sheet_summary() #13, get_slide_content() #3,
+        get_draw_page() #10) for the active sheet/slide/page, rather than
+        re-deriving their per-type logic a second time.
+        """
+        info = self.get_document_info(doc)
+        doc_type = info.get("type")
+        snapshot: Dict[str, Any] = {
+            "type": doc_type, "title": info.get("title"),
+            "url": info.get("url"), "modified": info.get("modified"),
+        }
+        if doc_type == "writer":
+            snapshot["paragraph_count"] = self._count_paragraphs(doc)
+            try:
+                snapshot["page_count"] = doc.getCurrentController().PageCount
+            except Exception:
+                snapshot["page_count"] = None
+        elif doc_type == "calc":
+            sheets = doc.getSheets()
+            snapshot["sheet_count"] = sheets.getCount()
+            snapshot["active_sheet"] = self.get_sheet_summary(doc)
+        elif doc_type == "impress":
+            snapshot["slide_count"] = doc.getDrawPages().getCount()
+            snapshot["active_slide"] = self.get_slide_content(doc)
+        elif doc_type == "draw":
+            snapshot["page_count"] = doc.getDrawPages().getCount()
+            snapshot["active_page"] = self.get_draw_page(doc)
+        else:
+            snapshot["warning"] = f"No snapshot detail available for document type '{doc_type}'"
+        return snapshot
+
     _DOCUMENT_PROPERTY_FIELDS = ("Title", "Subject", "Author", "Description", "ModifiedBy")
 
     def get_document_properties(self, doc: Any) -> Dict[str, Any]:

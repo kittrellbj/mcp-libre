@@ -1092,7 +1092,7 @@ redundancy note -- `get_selection_live` already covers it.
 | 11 | `update_cell_comment_live` | **Done, live-verified** -- see below |
 | 12 | `get_freeze_panes_live` | **Done, live-verified** -- see below |
 | 13 | `get_sheet_summary_live` | **Done, live-verified** -- see below |
-| 14 | `get_document_snapshot_live` | Queued |
+| 14 | `get_document_snapshot_live` | **Done, live-verified** -- see below |
 | 15 | `extract_document_text_live` | Queued |
 
 **`find_cells_live` (#2, "the biggest obvious Calc hole").** Built to
@@ -1622,5 +1622,47 @@ protection reports all four correctly and consistently with what was
 actually applied.
 
 510/510 tests passing (507 + 3 new). Same bare-`uv run pytest`
+collection gap noted above -- unchanged by this tool, still queued as
+the first item after step 5 wraps.
+
+**`get_document_snapshot_live` (#14).** New tool -- a compact,
+type-appropriate "what's open right now" snapshot (document identity
+plus a lightweight per-type status) in one call, for a caller starting
+a session without already knowing what kind of document is active.
+
+Deliberately does NOT reuse `get_document_statistics()` -- that tool is
+separately queued for its own rewrite (Brian's priority #1, tracked at
+the top of this Phase 6 section, a different shape expected) -- so this
+tool's own Writer counts (`paragraph_count`/`page_count`) are derived
+independently via the same `_count_paragraphs()`/`PageCount` reads,
+just not routed through the tool about to change under it. For Calc/
+Impress/Draw, this composes the bulk-read tools this same pass already
+built for the active sheet/slide/page -- `get_sheet_summary()` (#13),
+`get_slide_content()` (#3), `get_draw_page()` (#10) -- rather than
+re-deriving their per-type logic a second time.
+
+New `UNOBridge.get_document_snapshot()` (`uno_bridge.py`, right after
+`get_document_statistics()`) plus the `get_document_snapshot_live` tool
+wrapper in `document_lifecycle.py`, right after
+`get_document_statistics_live`.
+
+Fakes-based plumbing tests (`tests/test_document_lifecycle.py`:
+`test_get_document_snapshot_live_writer`,
+`test_get_document_snapshot_live_calc`,
+`test_get_document_snapshot_live_impress`,
+`test_get_document_snapshot_live_draw`,
+`test_get_document_snapshot_live_no_active_document`) plus the
+registry-catalog entry (`tests/test_tool_scaffold_contract.py`).
+Live-verified against real headless LibreOffice across all four
+document types with a new probe,
+`get-document-snapshot-probe-windows.py` -- 17 checks, all passing:
+Writer reports the real 2-paragraph count and a real positive page
+count with no Calc/Impress/Draw fields leaking in; Calc reports the
+real 2-sheet count and the real active sheet's real used range; Impress
+reports the real 2-slide count and the real active slide's real shape
+text; Draw reports the real 2-page count and the real active page's
+real name.
+
+515/515 tests passing (510 + 5 new). Same bare-`uv run pytest`
 collection gap noted above -- unchanged by this tool, still queued as
 the first item after step 5 wraps.

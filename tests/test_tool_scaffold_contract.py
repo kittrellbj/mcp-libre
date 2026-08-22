@@ -80,6 +80,12 @@ EXPECTED_BY_MODULE = {
         "get_modified_state_live", "set_modified_state_live", "refresh_document_live",
         "reload_document_live", "print_document_live", "get_print_settings_live",
         "set_print_settings_live",
+        # New tool, 2026-08-22 (Brian's new-tools assignment, priority #14,
+        # not part of the original spec) -- compact cross-doc-type "what's
+        # open right now" snapshot, composing get_sheet_summary_live/
+        # get_slide_content_live/get_draw_page_live for the active
+        # sheet/slide/page.
+        "get_document_snapshot_live",
     },
     "undo_view_selection": {
         "get_undo_state_live", "undo_live", "redo_live", "begin_undo_context_live",

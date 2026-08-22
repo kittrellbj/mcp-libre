@@ -1,6 +1,6 @@
 [project]
 name = "mcp-libre"
-version = "2.0.22"
+version = "2.0.23"
 description = "LibreOffice Model Context Protocol Server - Provides tools and resources for interacting with LibreOffice documents"
 readme = "README.md"
 license = {text = "MIT"}

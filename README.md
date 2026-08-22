@@ -1,7 +1,7 @@
 # LibreOffice MCP Server
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.22-blue.svg)](#versioning)
+[![Version](https://img.shields.io/badge/version-2.0.23-blue.svg)](#versioning)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](#requirements)
 [![LibreOffice](https://img.shields.io/badge/LibreOffice-24.2%2B-18A303.svg)](#requirements)
 
@@ -204,7 +204,7 @@ python build-oxt-windows.py
 The extension package is created at:
 
 ```text
-build/libreoffice-mcp-extension-2.0.22.oxt
+build/libreoffice-mcp-extension-2.0.23.oxt
 ```
 
 The Windows builder creates a LibreOffice-compatible ZIP/OXT structure with normalized archive paths.
@@ -218,7 +218,7 @@ PowerShell example:
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
 & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension
-& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.22.oxt"
+& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.23.oxt"
 ```
 
 Removing an extension that is not already installed may report that no matching extension exists. That is harmless.
@@ -269,7 +269,7 @@ A convenient rebuild/reinstall command in PowerShell is:
 
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
-python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.22.oxt"
+python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.23.oxt"
 ```
 
 Then reopen LibreOffice and start the MCP server from the Tools menu.
@@ -887,6 +887,38 @@ uv run pytest
 ---
 
 # Versioning
+
+## v2.0.23
+
+Step 5 of the typeset-run remediation, thirteenth item:
+`get_document_snapshot_live`, Brian's new-tools assignment priority
+#14 — a compact, type-appropriate "what's open right now" snapshot in
+one call, for a caller starting a session without already knowing what
+kind of document is active.
+
+Deliberately does NOT reuse `get_document_statistics()` (queued for its
+own separate rewrite, Brian's priority #1) — Writer counts are derived
+independently. For Calc/Impress/Draw, composes the bulk-read tools this
+same pass already built for the active sheet/slide/page —
+`get_sheet_summary()` (#13), `get_slide_content()` (#3),
+`get_draw_page()` (#10) — rather than re-deriving their per-type logic.
+
+New `UNOBridge.get_document_snapshot()` plus the
+`get_document_snapshot_live` tool wrapper in `document_lifecycle.py`.
+
+Live-verified against real headless LibreOffice across all four
+document types with a new probe,
+`get-document-snapshot-probe-windows.py` — 17 checks, all passing:
+Writer reports the real paragraph/page counts with no other doc type's
+fields leaking in; Calc reports the real sheet count and active
+sheet's real used range; Impress reports the real slide count and
+active slide's real shape text; Draw reports the real page count and
+active page's real name.
+
+- 515 automated tests passing (510 + 5 new fakes-based plumbing tests).
+- Full writeup: `docs/HARDENING_PLAN.md`'s "Phase 6" section, which also
+  tracks the last new tool (`extract_document_text_live`) and the
+  `get_document_statistics_live` rewrite still queued after it.
 
 ## v2.0.22
 

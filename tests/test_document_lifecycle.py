@@ -79,6 +79,24 @@ class FakeUnoBridge:
     def get_document_statistics(self, doc):
         return {"type": doc.doc_type, "word_count": 42, "character_count": 250}
 
+    def get_document_snapshot(self, doc):
+        snapshot = {"type": doc.doc_type, "title": doc.title, "url": doc.url, "modified": doc.modified}
+        if doc.doc_type == "writer":
+            snapshot["paragraph_count"] = 12
+            snapshot["page_count"] = 3
+        elif doc.doc_type == "calc":
+            snapshot["sheet_count"] = 2
+            snapshot["active_sheet"] = {"index": 0, "name": "Sheet1"}
+        elif doc.doc_type == "impress":
+            snapshot["slide_count"] = 5
+            snapshot["active_slide"] = {"index": 0, "name": "Slide 1"}
+        elif doc.doc_type == "draw":
+            snapshot["page_count"] = 2
+            snapshot["active_page"] = {"index": 0, "name": "Page1"}
+        else:
+            snapshot["warning"] = f"No snapshot detail available for document type '{doc.doc_type}'"
+        return snapshot
+
     def get_document_properties(self, doc):
         return dict(doc.standard_properties)
 
@@ -246,6 +264,60 @@ def test_get_document_statistics_live():
     result = _handler("get_document_statistics_live")()
     assert result["success"] is True
     assert result["result"]["word_count"] == 42
+
+
+def test_get_document_snapshot_live_writer():
+    # New tool, 2026-08-22 (Brian's new-tools assignment, priority #14) --
+    # cross-doc-type "what's open right now" snapshot.
+    context.reset()
+    _install(active_document=FakeDocument("writer", title="Report.odt"))
+    result = _handler("get_document_snapshot_live")()
+    assert result["success"] is True
+    r = result["result"]
+    assert r["type"] == "writer" and r["title"] == "Report.odt"
+    assert r["paragraph_count"] == 12 and r["page_count"] == 3
+    assert "sheet_count" not in r and "slide_count" not in r
+
+
+def test_get_document_snapshot_live_calc():
+    context.reset()
+    _install(active_document=FakeDocument("calc"))
+    result = _handler("get_document_snapshot_live")()
+    assert result["success"] is True
+    r = result["result"]
+    assert r["type"] == "calc"
+    assert r["sheet_count"] == 2
+    assert r["active_sheet"] == {"index": 0, "name": "Sheet1"}
+
+
+def test_get_document_snapshot_live_impress():
+    context.reset()
+    _install(active_document=FakeDocument("impress"))
+    result = _handler("get_document_snapshot_live")()
+    assert result["success"] is True
+    r = result["result"]
+    assert r["type"] == "impress"
+    assert r["slide_count"] == 5
+    assert r["active_slide"] == {"index": 0, "name": "Slide 1"}
+
+
+def test_get_document_snapshot_live_draw():
+    context.reset()
+    _install(active_document=FakeDocument("draw"))
+    result = _handler("get_document_snapshot_live")()
+    assert result["success"] is True
+    r = result["result"]
+    assert r["type"] == "draw"
+    assert r["page_count"] == 2
+    assert r["active_page"] == {"index": 0, "name": "Page1"}
+
+
+def test_get_document_snapshot_live_no_active_document():
+    context.reset()
+    _install()
+    result = _handler("get_document_snapshot_live")()
+    assert result["success"] is False
+    assert result["error"]["code"] == "NO_ACTIVE_DOCUMENT"
 
 
 def test_save_as_document_live_success_and_file_exists():
@@ -438,6 +510,11 @@ if __name__ == "__main__":
         test_open_from_template_live,
         test_close_document_live_unregisters_and_maps_prompt_error,
         test_get_document_statistics_live,
+        test_get_document_snapshot_live_writer,
+        test_get_document_snapshot_live_calc,
+        test_get_document_snapshot_live_impress,
+        test_get_document_snapshot_live_draw,
+        test_get_document_snapshot_live_no_active_document,
         test_save_as_document_live_success_and_file_exists,
         test_save_copy_live,
         test_convert_document_live_success_and_missing_input,
