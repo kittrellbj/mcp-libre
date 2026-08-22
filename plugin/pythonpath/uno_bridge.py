@@ -8381,6 +8381,52 @@ class UNOBridge:
                 pass
         return {"cell": cell, "author_applied": author_applied}
 
+    def update_cell_comment(self, doc: Any, cell: str, sheet: Optional[str] = None, text: Optional[str] = None,
+                             author: Optional[str] = None, visible: Optional[bool] = None) -> Dict[str, Any]:
+        """Update an existing cell comment's text/author/visibility (new
+        tool, Brian's new-tools assignment priority #11).
+
+        Distinct from add_cell_comment_live's upsert semantics (that
+        tool already updates text/author in place at an existing
+        comment, per its own docstring): this one requires the comment
+        to already exist -- KeyError (-> OBJECT_NOT_FOUND, same
+        convention every other "no such X" lookup in this file uses) if
+        there's none at the target cell -- so a caller correcting an
+        existing comment gets a clean failure on a typo'd cell reference
+        instead of silently creating a brand new comment there. Also the
+        only cell-comment tool that can toggle IsVisible (the "always
+        shown, not just on hover" display flag), which
+        add_cell_comment_live never exposed.
+
+        Same author-readonly handling as add_cell_comment (live-verified
+        this LibreOffice build won't let Author be set): caught so a
+        caller-supplied author that can't be honored doesn't take an
+        otherwise-successful text/visible update down with it --
+        author_applied reports whether it landed.
+        """
+        sheet_obj = self._resolve_sheet(doc, sheet)
+        cell_addr = sheet_obj.getCellRangeByName(cell).RangeAddress
+        annotations = sheet_obj.Annotations
+        existing = self._find_annotation_at(annotations, cell_addr.StartColumn, cell_addr.StartRow)
+        if existing is None:
+            raise KeyError(f"No comment exists at cell '{cell}' -- use add_cell_comment_live to create one.")
+        updated: List[str] = []
+        if text is not None:
+            existing.setString(text)
+            updated.append("text")
+        author_applied = False
+        if author is not None:
+            try:
+                existing.Author = author
+                author_applied = True
+                updated.append("author")
+            except Exception:
+                pass
+        if visible is not None:
+            existing.IsVisible = visible
+            updated.append("visible")
+        return {"cell": cell, "updated": updated, "author_applied": author_applied}
+
     def list_cell_comments(self, doc: Any, sheet: Optional[str] = None, range: Optional[str] = None) -> List[Dict[str, Any]]:
         sheet_obj = self._resolve_sheet(doc, sheet)
         bounds = sheet_obj.getCellRangeByName(range).RangeAddress if range is not None else None

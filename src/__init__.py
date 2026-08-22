@@ -7,5 +7,5 @@ for interacting with LibreOffice documents.
 
 from .libremcp import main
 
-__version__ = "2.0.19"
+__version__ = "2.0.20"
 __all__ = ["main"]

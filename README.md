@@ -1,7 +1,7 @@
 # LibreOffice MCP Server
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.19-blue.svg)](#versioning)
+[![Version](https://img.shields.io/badge/version-2.0.20-blue.svg)](#versioning)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](#requirements)
 [![LibreOffice](https://img.shields.io/badge/LibreOffice-24.2%2B-18A303.svg)](#requirements)
 
@@ -204,7 +204,7 @@ python build-oxt-windows.py
 The extension package is created at:
 
 ```text
-build/libreoffice-mcp-extension-2.0.19.oxt
+build/libreoffice-mcp-extension-2.0.20.oxt
 ```
 
 The Windows builder creates a LibreOffice-compatible ZIP/OXT structure with normalized archive paths.
@@ -218,7 +218,7 @@ PowerShell example:
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
 & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension
-& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.19.oxt"
+& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.20.oxt"
 ```
 
 Removing an extension that is not already installed may report that no matching extension exists. That is harmless.
@@ -269,7 +269,7 @@ A convenient rebuild/reinstall command in PowerShell is:
 
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
-python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.19.oxt"
+python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.20.oxt"
 ```
 
 Then reopen LibreOffice and start the MCP server from the Tools menu.
@@ -887,6 +887,36 @@ uv run pytest
 ---
 
 # Versioning
+
+## v2.0.20
+
+Step 5 of the typeset-run remediation, tenth item: `update_cell_comment_live`,
+Brian's new-tools assignment priority #11 — distinct from the existing
+`add_cell_comment_live`'s upsert semantics. This one requires the
+comment to already exist (`OBJECT_NOT_FOUND` if there's none at the
+target cell) and is the only cell-comment tool that can toggle
+`IsVisible` (the "always shown, not just on hover" display flag).
+`text`/`author`/`visible` are all independently optional — only the
+fields actually given are touched, reported back in an `updated` list.
+
+New `UNOBridge.update_cell_comment()` plus the `update_cell_comment_live`
+tool wrapper in `calc_page.py`. Same author-readonly handling as
+`add_cell_comment` (live-verified this LibreOffice build won't let
+`Author` be set): caught so a caller-supplied author that can't be
+honored doesn't take an otherwise-successful text/visible update down
+with it.
+
+Live-verified against real headless LibreOffice Calc with a new probe,
+`update-cell-comment-probe-windows.py` — 6 checks, all passing: a
+text-only update reports `updated: ["text"]` and `list_cell_comments_live`
+confirms the real comment text changed; a visibility-only update
+reports `updated: ["visible"]` without touching text; updating a cell
+with no existing comment reports a clean `OBJECT_NOT_FOUND` failure.
+
+- 505 automated tests passing (502 + 3 new fakes-based plumbing tests).
+- Full writeup: `docs/HARDENING_PLAN.md`'s "Phase 6" section, which also
+  tracks the rest of the new-tools list (3 more) and the
+  `get_document_statistics_live` rewrite still queued after it.
 
 ## v2.0.19
 

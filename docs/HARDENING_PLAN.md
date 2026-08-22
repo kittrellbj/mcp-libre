@@ -1089,7 +1089,7 @@ redundancy note -- `get_selection_live` already covers it.
 | 8 | `list_fonts_live` | **Done, live-verified** -- see below |
 | 9 | `activate_draw_page_live` | **Done, live-verified** -- see below |
 | 10 | `get_draw_page_live` | **Done, live-verified** -- see below |
-| 11 | `update_cell_comment_live` | Queued |
+| 11 | `update_cell_comment_live` | **Done, live-verified** -- see below |
 | 12 | `get_freeze_panes_live` | Queued |
 | 13 | `get_sheet_summary_live` | Queued |
 | 14 | `get_document_snapshot_live` | Queued |
@@ -1495,5 +1495,43 @@ metadata=true` adds real type/geometry; an unknown page name fails
 cleanly.
 
 502/502 tests passing (498 + 4 new). Same bare-`uv run pytest`
+collection gap noted above -- unchanged by this tool, still queued as
+the first item after step 5 wraps.
+
+**`update_cell_comment_live` (#11).** New tool, distinct from the
+existing `add_cell_comment_live`'s upsert semantics (that tool already
+updates text/author in place at an existing comment, per its own
+docstring). This one requires the comment to already exist --
+`OBJECT_NOT_FOUND` if there's none at the target cell -- so a caller
+correcting a real comment gets a clean failure on a typo'd cell
+reference instead of silently creating a brand new comment there. Also
+the only cell-comment tool that can toggle `IsVisible` (the "always
+shown, not just on hover" display flag), which `add_cell_comment_live`
+never exposed. `text`/`author`/`visible` are all independently
+optional -- only the fields actually given are touched, reported back
+in an `updated` list so a caller can confirm exactly what changed.
+
+New `UNOBridge.update_cell_comment()` (`uno_bridge.py`, right after
+`add_cell_comment()`) plus the `update_cell_comment_live` tool wrapper
+in `calc_page.py`, right after `add_cell_comment_live`. Same
+author-readonly handling as `add_cell_comment` (live-verified this
+LibreOffice build won't let `Author` be set): caught so a
+caller-supplied author that can't be honored doesn't take an
+otherwise-successful text/visible update down with it.
+
+Fakes-based plumbing tests (`tests/test_calc_page.py`:
+`test_update_cell_comment_live_updates_existing_comment`,
+`test_update_cell_comment_live_requires_existing_comment`,
+`test_update_cell_comment_live_warns_when_author_not_applied`) plus the
+registry-catalog entry (`tests/test_tool_scaffold_contract.py`).
+Live-verified against real headless LibreOffice Calc with a new probe,
+`update-cell-comment-probe-windows.py` -- 6 checks, all passing: a
+text-only update reports `updated: ["text"]` and `list_cell_comments_
+live` confirms the real comment text actually changed; a
+visibility-only update reports `updated: ["visible"]` without touching
+text; updating a cell with no existing comment reports a clean
+`OBJECT_NOT_FOUND` failure rather than silently creating one.
+
+505/505 tests passing (502 + 3 new). Same bare-`uv run pytest`
 collection gap noted above -- unchanged by this tool, still queued as
 the first item after step 5 wraps.

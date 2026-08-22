@@ -209,6 +209,11 @@ EXPECTED_BY_MODULE = {
         "add_cell_comment_live", "list_cell_comments_live", "delete_cell_comment_live", "protect_sheet_live",
         "unprotect_sheet_live", "set_cell_protection_live", "list_number_formats_live",
         "create_number_format_live", "apply_number_format_live",
+        # New tool, 2026-08-22 (Brian's new-tools assignment, priority #11,
+        # not part of the original spec this module was sourced from) --
+        # strict update (comment must already exist) + IsVisible toggle,
+        # distinct from add_cell_comment_live's upsert.
+        "update_cell_comment_live",
     },
     # Phase D - "Impress - slides, masters, notes, transitions, animations, slideshow".
     "impress": {

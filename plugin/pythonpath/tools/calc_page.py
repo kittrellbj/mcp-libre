@@ -184,6 +184,40 @@ def add_cell_comment_live(cell: str, text: str, sheet: Optional[str] = None,
 
 
 @register_tool(
+    name="update_cell_comment_live",
+    priority="P1",
+    purpose=(
+        "Update an existing Calc cell comment's text/author/visibility -- "
+        "Brian's new-tools assignment priority #11. Distinct from "
+        "add_cell_comment_live's upsert semantics: requires the comment to "
+        "already exist (OBJECT_NOT_FOUND if not) and is the only cell-"
+        "comment tool that can toggle IsVisible."
+    ),
+    parameters=schema({
+        "sheet": {"type": "string"},
+        "cell": {"type": "string"},
+        "text": {"type": "string"},
+        "author": {"type": "string"},
+        "visible": {"type": "boolean"},
+    }, required=["cell"]),
+    status="implemented",
+)
+def update_cell_comment_live(cell: str, sheet: Optional[str] = None, text: Optional[str] = None,
+                              author: Optional[str] = None, visible: Optional[bool] = None) -> Dict[str, Any]:
+    start = envelope.start_timer()
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        result = ctx.uno_bridge.update_cell_comment(doc, cell, sheet, text, author, visible)
+        warnings = []
+        if author is not None and not result.get("author_applied"):
+            warnings.append("author is read-only in this LibreOffice build -- other fields were applied, but the author was not changed.")
+        return envelope.build_success(result=result, document_id=resolved_id, warnings=warnings, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
+
+
+@register_tool(
     name="list_cell_comments_live",
     priority="P1",
     purpose="List Calc cell annotations.",
