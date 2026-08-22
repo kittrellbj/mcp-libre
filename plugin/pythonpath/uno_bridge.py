@@ -6500,6 +6500,62 @@ class UNOBridge:
         page = self._resolve_slide(doc, slide)
         self._find_notes_shape(page.NotesPage).setString(text)
 
+    def get_slide_content(self, doc: Any, slide: Any = None, include_notes: bool = True,
+                           include_shape_metadata: bool = False) -> Dict[str, Any]:
+        """New tool (Brian's new-tools assignment, priority #3, "give me
+        all the content of slide 7" instead of list_shapes_live + N
+        get_shape_live calls). Returns the same per-slide shape
+        get_presentation_content_live (priority #5, still queued) will
+        wrap in bulk -- built once here so that tool can reuse it via a
+        loop later rather than duplicating this logic.
+
+        Only shapes with non-empty getString() text are included in
+        `text` (same "skip if falsy" convention _shape_summary() already
+        uses) -- an empty placeholder or a pure image shape contributes
+        nothing to a text-content read. Each entry's `shape` key is the
+        shape's own UNO Name (e.g. "Title 1", "Content 2"), not a
+        registry shape_id -- this is a read-only content dump, not an
+        addressable-object mint; list_shapes_live already covers minting
+        shape_ids for callers that need to act on a specific shape after.
+        include_shape_metadata=True additionally reports each text
+        entry's short type name and geometry (reusing _get_shape_type/
+        _shape_geometry, the same helpers list_shapes_in_container's
+        summaries use) -- optional, since most callers just want text.
+
+        include_notes=False omits the `notes` key entirely rather than
+        setting it to None, so a caller can tell "didn't ask" apart from
+        "asked, page genuinely has no NotesShape" (LookupError -> None).
+        """
+        page = self._resolve_slide(doc, slide)
+        text_entries: List[Dict[str, Any]] = []
+        for i in range(page.getCount()):
+            shape = page.getByIndex(i)
+            if not hasattr(shape, "getString"):
+                continue
+            try:
+                text = shape.getString()
+            except Exception:
+                continue
+            if not text:
+                continue
+            entry: Dict[str, Any] = {"shape": shape.Name, "text": text}
+            if include_shape_metadata:
+                entry["type"] = self._get_shape_type(shape)
+                entry.update(self._shape_geometry(shape))
+            text_entries.append(entry)
+        result: Dict[str, Any] = {
+            "index": self._slide_index(doc.getDrawPages(), page),
+            "name": page.Name,
+            "hidden": not page.Visible,
+            "text": text_entries,
+        }
+        if include_notes:
+            try:
+                result["notes"] = self._find_notes_shape(page.NotesPage).getString()
+            except LookupError:
+                result["notes"] = None
+        return result
+
     def get_slide_transition(self, doc: Any, slide: Any) -> Dict[str, Any]:
         page = self._resolve_slide(doc, slide)
         return {

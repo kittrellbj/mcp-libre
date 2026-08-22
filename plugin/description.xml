@@ -4,7 +4,7 @@
              xmlns:dep="http://openoffice.org/extensions/description/2006"
              xmlns:lo="http://libreoffice.org/extensions/description/2011">
     <identifier value="org.mcp.libreoffice.extension"/>
-    <version value="2.0.11"/>
+    <version value="2.0.12"/>
     <display-name>
         <name lang="en">LibreOffice MCP Server Extension</name>
     </display-name>

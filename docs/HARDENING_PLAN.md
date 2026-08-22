@@ -1081,7 +1081,7 @@ redundancy note -- `get_selection_live` already covers it.
 | # | Tool | Status |
 |---|------|--------|
 | 2 | `find_cells_live` | **Done, live-verified** -- see below |
-| 3 | `get_slide_content_live` | Queued |
+| 3 | `get_slide_content_live` | **Done, live-verified** -- see below |
 | 4 | `find_shape_text_live` | Queued |
 | 5 | `get_presentation_content_live` | Queued |
 | 6 | Writer page number on `get_view_state_live` | Queued |
@@ -1139,3 +1139,73 @@ and sets `truncated: true`; a query with zero real matches reports
 or defaulted to something misleading.
 
 476/476 tests passing (474 + 2 new).
+
+**`get_slide_content_live` (#3, "give me all the content of slide 7").**
+No exact schema was specified for this one in Brian's message (only the
+rationale -- avoid `list_shapes_live` + N `get_shape_live` calls), so it
+was built to match the per-slide entry shape Brian *did* specify exactly
+for `get_presentation_content_live` (#5, still queued): `{index, name,
+hidden, text: [{shape, text}], notes}`. Deliberate choice, not a guess --
+`get_presentation_content_live` will wrap N of these in bulk, so sharing
+one shape now means it can reuse `UNOBridge.get_slide_content()` in a
+loop later rather than duplicating the per-slide read logic.
+
+New `UNOBridge.get_slide_content()` (`uno_bridge.py`, placed right after
+`get_speaker_notes`/`set_speaker_notes`, whose `_find_notes_shape()` it
+reuses for the notes read) plus the `get_slide_content_live` tool
+wrapper in `impress.py`. `slide` is required (index or name, same
+`_resolve_slide()` every other per-slide impress.py tool uses) --
+unlike `get_presentation_content_live`, this tool's whole point is "one
+specific slide," so there's no meaningful "all slides" default to fall
+back to.
+
+Only shapes with non-empty `getString()` text are included in `text`
+(same "skip if falsy" convention `_shape_summary()` already established
+for `list_shapes_live`) -- an empty placeholder or a pure image shape
+contributes nothing to a text-content read. Each entry's `shape` key is
+the shape's own UNO `Name` (e.g. "Title 1", matching Brian's own
+example), not a registry `shape_id` -- this is a read-only content dump,
+not an addressable-object mint; `list_shapes_live` already covers
+minting `shape_id`s for callers that need to act on a specific shape
+afterward. `include_shape_metadata=true` additionally reports each
+entry's short type name and geometry, reusing `_get_shape_type`/
+`_shape_geometry` (the same helpers `list_shapes_in_container`'s
+summaries use) -- optional, since most callers just want text.
+`include_notes=false` omits the `notes` key from the result entirely
+rather than setting it to `null`, so a caller can tell "didn't ask"
+apart from "asked, page genuinely has no `NotesShape`" (a real
+`LookupError`, mapped to `notes: null`).
+
+Fakes-based plumbing tests (`tests/test_impress.py`:
+`test_get_slide_content_live`, `test_get_slide_content_live_omits_
+notes_key_when_not_requested`, `test_get_slide_content_live_with_shape_
+metadata`, `test_get_slide_content_live_unknown_slide`) plus the
+registry-catalog entry (`tests/test_tool_scaffold_contract.py`).
+Live-verified against real headless LibreOffice Impress with a new
+probe, `slide-content-probe-windows.py` -- 10 checks, all passing,
+against real data (a titled text shape, a deliberately empty rectangle
+shape, real speaker notes, a second hidden empty slide): the titled
+shape's real text is returned; the empty shape contributes nothing
+(exactly 1 text entry, not 2 with an empty string); notes default to
+included and match the real speaker-notes text; `include_notes=false`
+omits the `notes` key entirely, confirmed by key absence not a `null`
+check; `include_shape_metadata=true` adds `type`/`width`/`height` to the
+text entry, `=false` (the default) omits them; a hidden, shapeless
+second slide reports `hidden: true` and `text: []`; an unknown slide
+name fails cleanly (`success: false`), not a raw traceback.
+
+480/480 tests passing (476 + 4 new). One pre-existing issue flagged,
+not touched this pass: `uv run pytest` (bare, no args) currently aborts
+collection entirely on 3 files unrelated to this work --
+`tests/test_client.py`, `plugin/test_plugin.py`,
+`tests/test_insert_fix.py` -- with `ImportError`/`ModuleNotFoundError`
+on `mcp.shared.memory.create_connected_server_and_client_session` /
+`mcp.server.fastmcp`. Confirmed via `git stash` against the prior commit
+(`7bb8233`) that this predates this pass's changes -- a `mcp` SDK/venv
+version drift, not a regression introduced here. The 480/480 figure
+above is `uv run pytest --ignore=plugin/test_plugin.py
+--ignore=tests/test_client.py --ignore=tests/test_insert_fix.py`, i.e.
+the fakes-based suite this whole remediation effort has been tracking;
+a bare `uv run pytest` needs that drift fixed first before it can even
+start collecting. Worth its own pass -- not silently worked around
+here, and not blocking this tool's own verification.

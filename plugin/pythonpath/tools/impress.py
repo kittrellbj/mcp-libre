@@ -456,6 +456,29 @@ def set_speaker_notes_live(slide: Any, text: str) -> Dict[str, Any]:
 
 
 @register_tool(
+    name="get_slide_content_live",
+    priority="P1",
+    purpose="Return all text content of one slide (shapes + notes) in one call, instead of list_shapes_live + N get_shape_live.",
+    parameters=schema({
+        "slide": {"description": "Slide index or name."},
+        "include_notes": {"type": "boolean"},
+        "include_shape_metadata": {"type": "boolean"},
+    }, required=["slide"]),
+    status="implemented",
+)
+def get_slide_content_live(slide: Any, include_notes: bool = True,
+                            include_shape_metadata: bool = False) -> Dict[str, Any]:
+    start = envelope.start_timer()
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        result = ctx.uno_bridge.get_slide_content(doc, slide, include_notes, include_shape_metadata)
+        return envelope.build_success(result=result, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
+
+
+@register_tool(
     name="get_slide_transition_live",
     priority="P1",
     purpose="Return transition/effect/duration/advance settings.",

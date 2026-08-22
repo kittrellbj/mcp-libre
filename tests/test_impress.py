@@ -45,7 +45,7 @@ class FakeShape:
 
 
 def _new_slide(name, layout=0, master="Default", hidden=False):
-    return {"name": name, "layout": layout, "master": master, "hidden": hidden}
+    return {"name": name, "layout": layout, "master": master, "hidden": hidden, "shapes": []}
 
 
 class FakeAnimationEffect:
@@ -194,6 +194,27 @@ class FakeUnoBridge:
 
     def set_speaker_notes(self, doc, slide, text):
         self.notes[self._find(slide)["name"]] = text
+
+    def get_slide_content(self, doc, slide=None, include_notes=True, include_shape_metadata=False):
+        if slide is None:
+            entry = self._find(self.active_slide_name)
+        else:
+            entry = self._find(slide)
+        index = self.slides.index(entry)
+        text_entries = []
+        for s in entry["shapes"]:
+            if not s.get("text"):
+                continue
+            item = {"shape": s["name"], "text": s["text"]}
+            if include_shape_metadata:
+                item["type"] = s.get("type", "text")
+                item["width"] = s.get("width", 1000)
+                item["height"] = s.get("height", 500)
+            text_entries.append(item)
+        result = {"index": index, "name": entry["name"], "hidden": entry["hidden"], "text": text_entries}
+        if include_notes:
+            result["notes"] = self.notes.get(entry["name"], "")
+        return result
 
     # -- transitions --
 
@@ -507,6 +528,54 @@ def test_get_and_set_speaker_notes_live():
     get_result = _handler("get_speaker_notes_live")(slide="Slide 1")
     assert get_result["success"] is True
     assert get_result["result"]["text"] == "Remember to smile"
+
+
+# -- content --
+
+def test_get_slide_content_live():
+    context.reset()
+    uno_bridge, _, _ = _install(active_document=FakeDocument())
+    uno_bridge.slides[0]["shapes"] = [
+        {"name": "Title 1", "text": "Quarterly Results", "type": "text"},
+        {"name": "Picture 1", "text": "", "type": "image"},  # empty text -- must be skipped
+    ]
+    uno_bridge.notes["Slide 1"] = "Mention enterprise growth"
+    result = _handler("get_slide_content_live")(slide="Slide 1")
+    assert result["success"] is True
+    assert result["result"]["index"] == 0
+    assert result["result"]["name"] == "Slide 1"
+    assert result["result"]["hidden"] is False
+    assert result["result"]["text"] == [{"shape": "Title 1", "text": "Quarterly Results"}]
+    assert result["result"]["notes"] == "Mention enterprise growth"
+
+
+def test_get_slide_content_live_omits_notes_key_when_not_requested():
+    context.reset()
+    uno_bridge, _, _ = _install(active_document=FakeDocument())
+    uno_bridge.notes["Slide 1"] = "Mention enterprise growth"
+    result = _handler("get_slide_content_live")(slide="Slide 1", include_notes=False)
+    assert result["success"] is True
+    assert "notes" not in result["result"]
+
+
+def test_get_slide_content_live_with_shape_metadata():
+    context.reset()
+    uno_bridge, _, _ = _install(active_document=FakeDocument())
+    uno_bridge.slides[0]["shapes"] = [{"name": "Content 2", "text": "Revenue increased 14%", "type": "text",
+                                       "width": 8000, "height": 3000}]
+    result = _handler("get_slide_content_live")(slide="Slide 1", include_shape_metadata=True)
+    assert result["success"] is True
+    entry = result["result"]["text"][0]
+    assert entry["shape"] == "Content 2"
+    assert entry["type"] == "text"
+    assert entry["width"] == 8000 and entry["height"] == 3000
+
+
+def test_get_slide_content_live_unknown_slide():
+    context.reset()
+    _install(active_document=FakeDocument())
+    result = _handler("get_slide_content_live")(slide="Nonexistent")
+    assert result["success"] is False
 
 
 # -- transitions --

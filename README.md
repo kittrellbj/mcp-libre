@@ -1,7 +1,7 @@
 # LibreOffice MCP Server
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.11-blue.svg)](#versioning)
+[![Version](https://img.shields.io/badge/version-2.0.12-blue.svg)](#versioning)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](#requirements)
 [![LibreOffice](https://img.shields.io/badge/LibreOffice-24.2%2B-18A303.svg)](#requirements)
 
@@ -204,7 +204,7 @@ python build-oxt-windows.py
 The extension package is created at:
 
 ```text
-build/libreoffice-mcp-extension-2.0.11.oxt
+build/libreoffice-mcp-extension-2.0.12.oxt
 ```
 
 The Windows builder creates a LibreOffice-compatible ZIP/OXT structure with normalized archive paths.
@@ -218,7 +218,7 @@ PowerShell example:
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
 & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension
-& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.11.oxt"
+& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.12.oxt"
 ```
 
 Removing an extension that is not already installed may report that no matching extension exists. That is harmless.
@@ -269,7 +269,7 @@ A convenient rebuild/reinstall command in PowerShell is:
 
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
-python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.11.oxt"
+python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.12.oxt"
 ```
 
 Then reopen LibreOffice and start the MCP server from the Tools menu.
@@ -887,6 +887,42 @@ uv run pytest
 ---
 
 # Versioning
+
+## v2.0.12
+
+Step 5 of the typeset-run remediation, second tool: `get_slide_content_live`,
+Brian's new-tools assignment priority #3 ("give me all the content of
+slide 7" instead of `list_shapes_live` + N `get_shape_live` calls). New
+`UNOBridge.get_slide_content()` (placed right after `get_speaker_notes`/
+`set_speaker_notes`, whose `_find_notes_shape` it reuses) returns the
+same per-slide shape the still-queued `get_presentation_content_live`
+(priority #5) will wrap in bulk — built once so that tool can reuse it
+via a loop rather than duplicating the logic. Only shapes with non-empty
+text are included; `include_shape_metadata=true` adds each entry's
+short type name and geometry; `include_notes=false` omits the `notes`
+key entirely rather than reporting it as `null`, so callers can tell
+"didn't ask" apart from "asked, page genuinely has no notes".
+Live-verified against real headless LibreOffice Impress with a new
+probe, `slide-content-probe-windows.py` — 10 checks against real data
+(a titled shape, a deliberately empty shape, real speaker notes, a
+hidden second slide), all passing, including negative checks (the empty
+shape contributes nothing to `text`, `include_shape_metadata=false`
+omits type/geometry, an unknown slide name fails cleanly rather than a
+raw traceback).
+
+- 480 automated tests passing (476 + 4 new fakes-based plumbing tests).
+- Full writeup: `docs/HARDENING_PLAN.md`'s "Phase 6" section, which also
+  tracks the rest of the new-tools list (12 more) and the
+  `get_document_statistics_live` rewrite still queued.
+- Flagged, not fixed this pass: `tests/test_client.py`, `plugin/
+  test_plugin.py`, and `tests/test_insert_fix.py` fail at collection
+  (pre-existing `mcp` package/venv drift — `ImportError`/
+  `ModuleNotFoundError` on `mcp.shared.memory`/`mcp.server.fastmcp`,
+  confirmed via `git stash` to predate this commit, not a regression
+  from this pass). The 480 count above is the fakes-based suite these
+  three files sit outside of; `uv run pytest` alone currently aborts
+  collection before reaching it — a real environment issue worth its
+  own pass, not something to silently work around here.
 
 ## v2.0.11
 
