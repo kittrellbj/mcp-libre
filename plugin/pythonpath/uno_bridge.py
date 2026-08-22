@@ -5533,6 +5533,52 @@ class UNOBridge:
             controller.setActiveSheet(self._resolve_sheet(doc, sheet))
         controller.freezeAtPosition(0, 0)
 
+    def get_freeze_panes(self, doc: Any, sheet: Optional[str] = None) -> Dict[str, Any]:
+        """Return the current freeze-panes state (new tool, Brian's
+        new-tools assignment priority #12) -- freeze_panes_live/
+        unfreeze_panes_live both existed with no getter to check the
+        result against.
+
+        Freeze state lives on the document's controller (view-wide), not
+        a per-sheet model property directly readable without that sheet
+        being active -- same reason freeze_panes()/unfreeze_panes() above
+        switch the active sheet as part of applying a freeze. Unlike
+        those two mutating tools, though, a caller reading freeze state
+        on a non-active sheet shouldn't come away with a changed active
+        sheet as a side effect of a read: if `sheet` is given and isn't
+        already active, this temporarily switches to read it, then
+        restores whichever sheet was actually active beforehand.
+
+        Live-verified quirk, not a guess: this LibreOffice build's
+        controller.SplitRow reads back one higher than the row actually
+        passed to freezeAtPosition() whenever any row is really frozen
+        (SplitColumn has no such offset, and SplitRow itself is a
+        correct 0 when no row is frozen at all -- confirmed against
+        freezes at every combination of row-only/column-only/both/
+        neither). Corrected here so `columns`/`rows`/`cell` all agree
+        with what freeze_panes_live was actually given, rather than
+        leaking this build's raw off-by-one into the tool's contract.
+        """
+        self._require_calc(doc, "get_freeze_panes")
+        controller = doc.getCurrentController()
+        original_sheet = controller.getActiveSheet()
+        target_sheet = self._resolve_sheet(doc, sheet) if sheet is not None else original_sheet
+        switched = sheet is not None and target_sheet.Name != original_sheet.Name
+        if switched:
+            controller.setActiveSheet(target_sheet)
+        try:
+            frozen = bool(controller.hasFrozenPanes())
+            split_column = int(controller.SplitColumn)
+            raw_split_row = int(controller.SplitRow)
+            split_row = raw_split_row - 1 if raw_split_row > 0 else 0
+        finally:
+            if switched:
+                controller.setActiveSheet(original_sheet)
+        result: Dict[str, Any] = {"frozen": frozen, "columns": split_column, "rows": split_row}
+        if frozen:
+            result["cell"] = self._column_row_to_a1(split_column, split_row)
+        return result
+
     def recalculate(self, doc: Any, hard: bool = False) -> None:
         self._require_calc(doc, "recalculate")
         if hard:

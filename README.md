@@ -1,7 +1,7 @@
 # LibreOffice MCP Server
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.20-blue.svg)](#versioning)
+[![Version](https://img.shields.io/badge/version-2.0.21-blue.svg)](#versioning)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](#requirements)
 [![LibreOffice](https://img.shields.io/badge/LibreOffice-24.2%2B-18A303.svg)](#requirements)
 
@@ -204,7 +204,7 @@ python build-oxt-windows.py
 The extension package is created at:
 
 ```text
-build/libreoffice-mcp-extension-2.0.20.oxt
+build/libreoffice-mcp-extension-2.0.21.oxt
 ```
 
 The Windows builder creates a LibreOffice-compatible ZIP/OXT structure with normalized archive paths.
@@ -218,7 +218,7 @@ PowerShell example:
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
 & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension
-& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.20.oxt"
+& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.21.oxt"
 ```
 
 Removing an extension that is not already installed may report that no matching extension exists. That is harmless.
@@ -269,7 +269,7 @@ A convenient rebuild/reinstall command in PowerShell is:
 
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
-python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.20.oxt"
+python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.21.oxt"
 ```
 
 Then reopen LibreOffice and start the MCP server from the Tools menu.
@@ -887,6 +887,37 @@ uv run pytest
 ---
 
 # Versioning
+
+## v2.0.21
+
+Step 5 of the typeset-run remediation, eleventh item: `get_freeze_panes_live`,
+Brian's new-tools assignment priority #12 — the getter
+`freeze_panes_live`/`unfreeze_panes_live` never had. `sheet` omitted ->
+the active sheet; reading a non-active sheet's freeze state does not
+leave it active afterward.
+
+Live-verified quirk, not a guess, and the main finding of this pass:
+this LibreOffice build's `controller.SplitRow` reads back one higher
+than the row actually passed to `freezeAtPosition()` whenever any row
+is really frozen (`SplitColumn` has no such offset). Confirmed against
+freezes at every combination — row-only, column-only, both, neither —
+via direct `curl` probing against a live running instance before
+finalizing the implementation. Corrected in `UNOBridge.get_freeze_panes()`
+so `columns`/`rows`/`cell` all agree with what `freeze_panes_live` was
+actually given.
+
+Live-verified against real headless LibreOffice Calc with a new probe,
+`get-freeze-panes-probe-windows.py` — 10 checks, all passing: a fresh
+sheet reports `frozen: false, columns: 0, rows: 0`; freezing at C3
+reports the real, corrected `columns: 2, rows: 2, cell: "C3"`; reading
+a second sheet's freeze state succeeds without leaving it active; a
+real unfreeze reports `frozen: false` again; column-only and row-only
+freezes each independently confirm the row correction.
+
+- 507 automated tests passing (505 + 2 new fakes-based plumbing tests).
+- Full writeup: `docs/HARDENING_PLAN.md`'s "Phase 6" section, which also
+  tracks the rest of the new-tools list (2 more) and the
+  `get_document_statistics_live` rewrite still queued after it.
 
 ## v2.0.20
 

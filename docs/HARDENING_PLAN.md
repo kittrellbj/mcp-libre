@@ -1090,7 +1090,7 @@ redundancy note -- `get_selection_live` already covers it.
 | 9 | `activate_draw_page_live` | **Done, live-verified** -- see below |
 | 10 | `get_draw_page_live` | **Done, live-verified** -- see below |
 | 11 | `update_cell_comment_live` | **Done, live-verified** -- see below |
-| 12 | `get_freeze_panes_live` | Queued |
+| 12 | `get_freeze_panes_live` | **Done, live-verified** -- see below |
 | 13 | `get_sheet_summary_live` | Queued |
 | 14 | `get_document_snapshot_live` | Queued |
 | 15 | `extract_document_text_live` | Queued |
@@ -1533,5 +1533,53 @@ text; updating a cell with no existing comment reports a clean
 `OBJECT_NOT_FOUND` failure rather than silently creating one.
 
 505/505 tests passing (502 + 3 new). Same bare-`uv run pytest`
+collection gap noted above -- unchanged by this tool, still queued as
+the first item after step 5 wraps.
+
+**`get_freeze_panes_live` (#12).** New tool -- the getter
+`freeze_panes_live`/`unfreeze_panes_live` never had. `sheet` omitted ->
+the active sheet. Freeze state lives on the document's controller
+(view-wide), not a per-sheet model property directly readable without
+that sheet being active -- same reason `freeze_panes()`/
+`unfreeze_panes()` switch the active sheet as part of applying a
+freeze. Unlike those two mutating tools, though, a caller reading
+freeze state on a non-active sheet shouldn't come away with a changed
+active sheet as a side effect of a *read*: if `sheet` is given and
+isn't already active, `UNOBridge.get_freeze_panes()` temporarily
+switches to read it, then restores whichever sheet was actually active
+beforehand.
+
+Live-verified quirk, not a guess, and the main finding of this pass:
+this LibreOffice build's `controller.SplitRow` reads back one higher
+than the row actually passed to `freezeAtPosition()` whenever any row
+is really frozen (`SplitColumn` has no such offset, and `SplitRow`
+itself correctly reads `0` when no row is frozen at all). Confirmed
+against freezes at every combination -- row-only, column-only, both,
+and neither -- via direct `curl` probing against a live running
+instance before finalizing the implementation, not assumed from the
+UNO API docs alone. Corrected in `get_freeze_panes()` so `columns`/
+`rows`/`cell` all agree with what `freeze_panes_live` was actually
+given, rather than leaking this build's raw off-by-one into the tool's
+contract.
+
+New `UNOBridge.get_freeze_panes()` (`uno_bridge.py`, right after
+`unfreeze_panes()`) plus the `get_freeze_panes_live` tool wrapper in
+`calc_sheets.py`, right after `unfreeze_panes_live`.
+
+Fakes-based plumbing tests (`tests/test_calc_sheets.py`:
+`test_get_freeze_panes_live_reports_unfrozen_by_default`,
+`test_get_freeze_panes_live_reflects_a_real_freeze`) plus the
+registry-catalog entry (`tests/test_tool_scaffold_contract.py`).
+Live-verified against real headless LibreOffice Calc with a new probe,
+`get-freeze-panes-probe-windows.py` -- 10 checks, all passing: a fresh
+sheet reports `frozen: false, columns: 0, rows: 0`; freezing at C3
+reports the real, corrected `columns: 2, rows: 2, cell: "C3"`; reading
+a second, non-active sheet's freeze state succeeds without leaving it
+active afterward (confirmed against `get_active_sheet_live`); a real
+unfreeze reports `frozen: false` again; a column-only freeze (C1) and a
+row-only freeze (A3) each independently confirm the row correction
+holds in both edge cases, not just the combined case.
+
+507/507 tests passing (505 + 2 new). Same bare-`uv run pytest`
 collection gap noted above -- unchanged by this tool, still queued as
 the first item after step 5 wraps.

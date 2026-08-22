@@ -893,6 +893,30 @@ def unfreeze_panes_live(sheet: Optional[str] = None) -> Dict[str, Any]:
 
 
 @register_tool(
+    name="get_freeze_panes_live",
+    priority="P1",
+    purpose=(
+        "Return the current freeze-panes state -- Brian's new-tools "
+        "assignment priority #12, the getter freeze_panes_live/"
+        "unfreeze_panes_live never had. sheet omitted -> the active "
+        "sheet; reading a non-active sheet's freeze state does not "
+        "change which sheet is active afterward."
+    ),
+    parameters=schema({"sheet": {"type": "string"}}),
+    status="implemented",
+)
+def get_freeze_panes_live(sheet: Optional[str] = None) -> Dict[str, Any]:
+    start = envelope.start_timer()
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        result = ctx.uno_bridge.get_freeze_panes(doc, sheet)
+        return envelope.build_success(result=result, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
+
+
+@register_tool(
     name="recalculate_live",
     priority="P1",
     purpose="Recalculate current workbook or selected range if supported.",

@@ -237,6 +237,11 @@ class FakeUnoBridge:
     def unfreeze_panes(self, doc, sheet=None):
         self.frozen_at = None
 
+    def get_freeze_panes(self, doc, sheet=None):
+        if self.frozen_at is None:
+            return {"frozen": False, "columns": 0, "rows": 0}
+        return {"frozen": True, "columns": 1, "rows": 1, "cell": self.frozen_at}
+
     def recalculate(self, doc, hard=False):
         self.recalculated = "hard" if hard else "soft"
 
@@ -559,6 +564,26 @@ def test_freeze_and_unfreeze_panes_live():
     assert uno_bridge.frozen_at is None
 
 
+def test_get_freeze_panes_live_reports_unfrozen_by_default():
+    # New tool, 2026-08-22 (Brian's new-tools assignment, priority #12) --
+    # freeze_panes_live/unfreeze_panes_live never had a getter.
+    context.reset()
+    _install(active_document=FakeDocument())
+    result = _handler("get_freeze_panes_live")()
+    assert result["success"] is True
+    assert result["result"] == {"frozen": False, "columns": 0, "rows": 0}
+
+
+def test_get_freeze_panes_live_reflects_a_real_freeze():
+    context.reset()
+    uno_bridge, _, _ = _install(active_document=FakeDocument())
+    _handler("freeze_panes_live")(cell="B2")
+    result = _handler("get_freeze_panes_live")()
+    assert result["success"] is True
+    assert result["result"]["frozen"] is True
+    assert result["result"]["cell"] == "B2"
+
+
 def test_recalculate_live_hard_and_soft():
     context.reset()
     uno_bridge, _, _ = _install(active_document=FakeDocument())
@@ -633,6 +658,8 @@ if __name__ == "__main__":
         test_set_row_height_and_column_width_live,
         test_hide_and_show_rows_columns_live,
         test_freeze_and_unfreeze_panes_live,
+        test_get_freeze_panes_live_reports_unfrozen_by_default,
+        test_get_freeze_panes_live_reflects_a_real_freeze,
         test_recalculate_live_hard_and_soft,
         test_evaluate_formula_live,
         test_get_formula_dependencies_live_both_directions,
