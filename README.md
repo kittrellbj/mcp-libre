@@ -1,7 +1,7 @@
 # LibreOffice MCP Server
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.12-blue.svg)](#versioning)
+[![Version](https://img.shields.io/badge/version-2.0.13-blue.svg)](#versioning)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](#requirements)
 [![LibreOffice](https://img.shields.io/badge/LibreOffice-24.2%2B-18A303.svg)](#requirements)
 
@@ -204,7 +204,7 @@ python build-oxt-windows.py
 The extension package is created at:
 
 ```text
-build/libreoffice-mcp-extension-2.0.12.oxt
+build/libreoffice-mcp-extension-2.0.13.oxt
 ```
 
 The Windows builder creates a LibreOffice-compatible ZIP/OXT structure with normalized archive paths.
@@ -218,7 +218,7 @@ PowerShell example:
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
 & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension
-& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.12.oxt"
+& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.13.oxt"
 ```
 
 Removing an extension that is not already installed may report that no matching extension exists. That is harmless.
@@ -269,7 +269,7 @@ A convenient rebuild/reinstall command in PowerShell is:
 
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
-python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.12.oxt"
+python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.13.oxt"
 ```
 
 Then reopen LibreOffice and start the MCP server from the Tools menu.
@@ -887,6 +887,48 @@ uv run pytest
 ---
 
 # Versioning
+
+## v2.0.13
+
+Step 5 of the typeset-run remediation, third tool: `find_shape_text_live`,
+Brian's new-tools assignment priority #4 ("shared search across
+Impress/Draw shapes, optionally Writer/Calc drawing objects") — the
+shape-level counterpart to `find_cells_live`'s cell-level search. No
+exact schema was given for this one; `query`/`match`/`case_sensitive`/
+`max_results` reuse `find_cells_live`'s established search-tool shape.
+New `UNOBridge.find_shape_text()` (`uno_bridge.py`, right after
+`get_shape_details`) plus the `find_shape_text_live` tool wrapper in
+`drawing_objects.py`, placed right after `list_shapes_live` since both
+are container-scoped shape enumeration primitives. Container scoping
+mirrors `find_cells_live`'s "container given → just that one; omitted →
+every candidate, each match reporting which one it came from" discipline
+across all four shape-capable doc types (Writer's single document-wide
+draw page, a Calc sheet's own draw page, an Impress/Draw page). Stops as
+soon as `max_results` matches are found or a 5000-shape scan backstop is
+hit — the same runaway-scan pattern `find_cells` established, scaled
+down since a document's shape count is normally orders of magnitude
+below its cell count.
+
+Live-verified against real headless LibreOffice Impress with a new
+probe, `find-shape-text-probe-windows.py` — 10 checks against real data
+(matching shapes on two different slides, a deliberately empty shape,
+duplicate text across slides), all passing, including negative checks
+(container scopes the search to one slide, `match=exact` rejects a
+non-exact substring, an invalid regex reports `INVALID_PARAMETER`
+cleanly, `max_results` truncation is reported honestly). Writer/Calc
+container resolution shares the same `_resolve_shape_container()`-family
+helpers already live-verified across all four doc types by
+`list_shapes_live`/`get_shape_live`/`insert_shape_live` in the original
+`drawing_objects.py` pass — not independently re-verified by this probe,
+which is scoped to Impress (the doc type Brian's assignment names
+first).
+
+- 483 automated tests passing (480 + 3 new fakes-based plumbing tests).
+- Full writeup: `docs/HARDENING_PLAN.md`'s "Phase 6" section, which also
+  tracks the rest of the new-tools list (11 more) and the
+  `get_document_statistics_live` rewrite still queued.
+
+---
 
 ## v2.0.12
 

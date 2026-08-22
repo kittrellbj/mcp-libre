@@ -141,6 +141,10 @@ EXPECTED_BY_MODULE = {
         "list_glue_points_live", "add_glue_point_live", "delete_glue_point_live", "insert_image_live",
         "replace_image_live", "set_image_properties_live", "export_shape_live", "list_embedded_objects_live",
         "insert_embedded_object_live", "activate_embedded_object_live", "delete_embedded_object_live",
+        # New tool, 2026-08-22 (Brian's new-tools assignment, priority #4,
+        # not part of the original 484-tool spec this section was sourced
+        # from) -- shape-level search counterpart to find_cells_live.
+        "find_shape_text_live",
     },
     # Phase C - "Charts and data visualizations" (Calc primarily; embedded
     # charts in Writer/Impress/Draw).

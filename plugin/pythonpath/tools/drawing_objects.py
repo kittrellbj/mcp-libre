@@ -124,6 +124,48 @@ def list_shapes_live(container: Optional[str] = None, type_filter: Optional[str]
 
 
 @register_tool(
+    name="find_shape_text_live",
+    status="implemented",
+    priority="P2",
+    purpose=(
+        "Search shape text for a query string, across one page/sheet or "
+        "the whole document -- the shape-level counterpart to "
+        "find_cells_live's cell-level search (Brian's priority #4, "
+        "2026-08-21 new-tools assignment: 'shared search across "
+        "Impress/Draw shapes, optionally Writer/Calc drawing objects')."
+    ),
+    parameters=schema({
+        "query": {"type": "string"},
+        "container": {"type": "string"},
+        "match": {"type": "string", "enum": ["contains", "exact", "regex"], "default": "contains"},
+        "case_sensitive": {"type": "boolean", "default": False},
+        "max_results": {"type": "integer", "default": 100},
+    }, required=["query"]),
+)
+def find_shape_text_live(query: str, container: Optional[str] = None, match: str = "contains",
+                          case_sensitive: bool = False, max_results: int = 100) -> Dict[str, Any]:
+    start = envelope.start_timer()
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        object_registry = _get_object_registry(ctx, resolved_id)
+        found = ctx.uno_bridge.find_shape_text(
+            doc, query, container=container, match=match,
+            case_sensitive=case_sensitive, max_results=max_results,
+        )
+        matches = [
+            {"container": label, **ctx.uno_bridge.get_shape_summary(shape, object_registry.register_object(shape))}
+            for label, shape in found["shapes"]
+        ]
+        return envelope.build_success(
+            result={"matches": matches, "count": len(matches), "truncated": found["truncated"]},
+            document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start),
+        )
+    except Exception as e:
+        return _error_response(e, start)
+
+
+@register_tool(
     name="get_shape_live",
     status="implemented",
     priority="P1",

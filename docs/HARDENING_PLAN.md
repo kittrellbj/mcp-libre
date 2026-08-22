@@ -1082,7 +1082,7 @@ redundancy note -- `get_selection_live` already covers it.
 |---|------|--------|
 | 2 | `find_cells_live` | **Done, live-verified** -- see below |
 | 3 | `get_slide_content_live` | **Done, live-verified** -- see below |
-| 4 | `find_shape_text_live` | Queued |
+| 4 | `find_shape_text_live` | **Done, live-verified** -- see below |
 | 5 | `get_presentation_content_live` | Queued |
 | 6 | Writer page number on `get_view_state_live` | Queued |
 | 7 | `goto_page_live` | Queued |
@@ -1209,3 +1209,61 @@ the fakes-based suite this whole remediation effort has been tracking;
 a bare `uv run pytest` needs that drift fixed first before it can even
 start collecting. Worth its own pass -- not silently worked around
 here, and not blocking this tool's own verification.
+
+**`find_shape_text_live` (#4, "shared search across Impress/Draw
+shapes, optionally Writer/Calc drawing objects").** No exact schema was
+given for this one either; `query`/`match`/`case_sensitive`/
+`max_results` reuse `find_cells_live`'s established search-tool shape
+rather than inventing a new one, since both are "find text somewhere in
+the document" primitives -- the shape-level counterpart to that tool's
+cell-level search.
+
+New `UNOBridge.find_shape_text()` (`uno_bridge.py`, placed right after
+`get_shape_details`) plus the `find_shape_text_live` tool wrapper in
+`drawing_objects.py`, placed right after `list_shapes_live` (both are
+container-scoped shape enumeration primitives). A new
+`_iter_shape_text_containers()` helper does the per-doc-type container
+list: Writer's single document-wide draw page (`container` ignored,
+same as `_resolve_shape_container()`); a named/indexed Calc sheet's own
+draw page, or every sheet's if `container` is omitted; a named/indexed
+Impress/Draw page, or every page's if omitted -- mirroring
+`find_cells()`'s "container given -> just that one; omitted -> every
+candidate, each match reporting which one it came from" scope
+discipline. The bridge method returns raw UNO shape objects paired with
+their container label, not JSON; minting `shape_id`s via
+`ObjectRegistry` stays the tool layer's job, the same split
+`list_shapes_in_container()` already established. Stops as soon as
+`max_results` matches are found or a 5000-shape scan backstop is hit --
+the same runaway-scan pattern `find_cells()` uses, scaled down since a
+document's shape count is normally orders of magnitude below its cell
+count.
+
+Fakes-based plumbing tests (`tests/test_drawing_objects.py`:
+`test_find_shape_text_live_registers_and_returns_ids`,
+`test_find_shape_text_live_container_scopes_the_search`,
+`test_find_shape_text_live_rejects_invalid_match`) plus the
+registry-catalog entry (`tests/test_tool_scaffold_contract.py`).
+Live-verified against real headless LibreOffice Impress with a new
+probe, `find-shape-text-probe-windows.py` -- 10 checks, all passing,
+against real data (two slides, a matching shape on each, a deliberately
+empty shape): omitted `container` searches every slide and reports each
+match's real slide name; `container` scopes the search to just that
+slide; the empty shape and a non-matching shape contribute nothing;
+`match="exact"` case-insensitively matches the full text but correctly
+rejects a partial substring; `match="regex"` finds both slides' shapes
+and a genuinely invalid regex reports `INVALID_PARAMETER` cleanly;
+`max_results` caps the count and sets `truncated: true`; the minted
+`shape_id` round-trips through the `ObjectRegistry` (resolvable by a
+follow-up `get_shape_live` call). Scoped to Impress -- the doc type
+Brian's assignment names first, and the one where container-scoping
+(one slide vs. every slide) is actually exercised. Writer/Calc container
+resolution shares the exact same `_resolve_shape_container()`-family
+helpers already live-verified across all four doc types by
+`list_shapes_live`/`get_shape_live`/`insert_shape_live` in the original
+`drawing_objects.py` pass -- not independently re-verified by this
+probe, flagged plainly rather than implying broader coverage than this
+pass actually has.
+
+483/483 tests passing (480 + 3 new). Same bare-`uv run pytest` collection
+gap noted above -- unchanged by this tool, still queued as the first
+item after step 5 wraps.

@@ -4148,6 +4148,102 @@ class UNOBridge:
         details["style"] = style
         return details
 
+    _FIND_SHAPE_TEXT_MAX_SCANNED_SHAPES = 5000
+
+    def _iter_shape_text_containers(self, doc: Any, container: Optional[Any] = None) -> List[Any]:
+        """Return [(label, page)] pairs to search -- Writer has exactly
+        one (its single document-wide draw page, `container` ignored,
+        same as `_resolve_shape_container`); Calc searches one sheet's
+        draw page if `container` names a sheet, else every sheet's;
+        Impress/Draw searches one page if `container` names/indexes one,
+        else every page. Mirrors find_cells()'s "container given -> just
+        that one; omitted -> every candidate, each match reporting which
+        one it came from" scope discipline."""
+        self._require_shape_capable(doc, "find_shape_text")
+        doc_type = self._get_document_type(doc)
+        if doc_type == "writer":
+            return [("document", doc.getDrawPage())]
+        if doc_type == "calc":
+            sheets = doc.getSheets()
+            if container is not None:
+                sheet = self._resolve_sheet_by_name_or_index(sheets, str(container))
+                return [(sheet.Name, sheet.getDrawPage())]
+            return [(sheets.getByIndex(i).Name, sheets.getByIndex(i).getDrawPage()) for i in range(sheets.getCount())]
+        # impress, draw
+        pages = doc.getDrawPages()
+        if container is not None:
+            page = self._resolve_page_by_name_or_index(pages, container)
+            return [(page.Name, page)]
+        return [(pages.getByIndex(i).Name, pages.getByIndex(i)) for i in range(pages.getCount())]
+
+    def find_shape_text(self, doc: Any, query: str, container: Optional[Any] = None,
+                         match: str = "contains", case_sensitive: bool = False,
+                         max_results: int = 100) -> Dict[str, Any]:
+        """New tool (Brian's new-tools assignment, priority #4, "shared
+        search across Impress/Draw shapes, optionally Writer/Calc drawing
+        objects"). No exact schema was given for this one; `query`/
+        `match`/`case_sensitive`/`max_results` reuse find_cells_live's
+        established search-tool shape rather than inventing a new one,
+        since both are "find text somewhere in the document" primitives.
+
+        Returns {"shapes": [(container_label, shape)], "truncated": bool}
+        -- raw UNO shape objects, not JSON; minting shape_ids via
+        ObjectRegistry is the tool layer's job (find_shape_text_live),
+        same split list_shapes_in_container() already established.
+
+        Stops as soon as `max_results` matches are found OR
+        _FIND_SHAPE_TEXT_MAX_SCANNED_SHAPES shapes have been examined --
+        same runaway-scan backstop shape find_cells() uses, scaled down
+        since a document's shape count is normally orders of magnitude
+        below its cell count.
+        """
+        if match not in ("contains", "exact", "regex"):
+            raise ValueError(f"match must be one of contains/exact/regex, got {match!r}")
+        if match == "regex":
+            try:
+                pattern = re.compile(query, flags=0 if case_sensitive else re.IGNORECASE)
+            except re.error as e:
+                raise ValueError(f"Invalid regex {query!r}: {e}")
+
+            def is_match(candidate: str) -> bool:
+                return pattern.search(candidate) is not None
+        elif match == "exact":
+            needle = query if case_sensitive else query.lower()
+
+            def is_match(candidate: str) -> bool:
+                return (candidate if case_sensitive else candidate.lower()) == needle
+        else:  # contains
+            needle = query if case_sensitive else query.lower()
+
+            def is_match(candidate: str) -> bool:
+                return needle in (candidate if case_sensitive else candidate.lower())
+
+        matches: List[Any] = []
+        scanned = 0
+        truncated = False
+        for label, page in self._iter_shape_text_containers(doc, container):
+            for i in range(page.getCount()):
+                if len(matches) >= max_results:
+                    truncated = True
+                    break
+                if scanned >= self._FIND_SHAPE_TEXT_MAX_SCANNED_SHAPES:
+                    truncated = True
+                    break
+                scanned += 1
+                shape = page.getByIndex(i)
+                if not hasattr(shape, "getString"):
+                    continue
+                try:
+                    text = shape.getString()
+                except Exception:
+                    continue
+                if not text or not is_match(text):
+                    continue
+                matches.append((label, shape))
+            if truncated:
+                break
+        return {"shapes": matches, "truncated": truncated}
+
     _SHAPE_TYPE_SERVICES = {
         "rectangle": "com.sun.star.drawing.RectangleShape",
         "ellipse": "com.sun.star.drawing.EllipseShape",
