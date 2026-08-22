@@ -1,7 +1,7 @@
 # LibreOffice MCP Server
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.16-blue.svg)](#versioning)
+[![Version](https://img.shields.io/badge/version-2.0.17-blue.svg)](#versioning)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](#requirements)
 [![LibreOffice](https://img.shields.io/badge/LibreOffice-24.2%2B-18A303.svg)](#requirements)
 
@@ -204,7 +204,7 @@ python build-oxt-windows.py
 The extension package is created at:
 
 ```text
-build/libreoffice-mcp-extension-2.0.16.oxt
+build/libreoffice-mcp-extension-2.0.17.oxt
 ```
 
 The Windows builder creates a LibreOffice-compatible ZIP/OXT structure with normalized archive paths.
@@ -218,7 +218,7 @@ PowerShell example:
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
 & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension
-& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.16.oxt"
+& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.17.oxt"
 ```
 
 Removing an extension that is not already installed may report that no matching extension exists. That is harmless.
@@ -269,7 +269,7 @@ A convenient rebuild/reinstall command in PowerShell is:
 
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
-python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.16.oxt"
+python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.17.oxt"
 ```
 
 Then reopen LibreOffice and start the MCP server from the Tools menu.
@@ -887,6 +887,36 @@ uv run pytest
 ---
 
 # Versioning
+
+## v2.0.17
+
+Step 5 of the typeset-run remediation, seventh item: `list_fonts_live`,
+Brian's new-tools assignment priority #8. Unlike every other tool in
+this batch, it isn't document-scoped at all — font availability is a
+property of the LibreOffice installation, same category as
+`get_server_info_live`/`get_capabilities_live`, so it lives in
+`core_runtime.py` and takes no `document_id`.
+
+New `UNOBridge.list_fonts()` uses the standard UNO idiom for font
+enumeration — a throwaway screen-compatible `XDevice`'s
+`getFontDescriptors()`, the same technique OOo Basic "list installed
+fonts" macros have used since UNO's font APIs never grew a simpler
+call. Returns one `FontDescriptor` per (name, style) combination
+actually installed; grouped by name into `{name, styles: [...]}` rather
+than a flat list with the same name repeated once per style variant.
+
+Live-verified against real headless LibreOffice with a new probe,
+`list-fonts-probe-windows.py` — 7 checks against the real bundled font
+set (no document even open), all passing: the real fonts list is
+non-empty and its `count` matches; no duplicate names; at least one
+real bundled family (Liberation/DejaVu) is present; at least one font
+reports more than one real installed style; every font's `styles` list
+comes back sorted.
+
+- 495 automated tests passing (493 + 2 new fakes-based plumbing tests).
+- Full writeup: `docs/HARDENING_PLAN.md`'s "Phase 6" section, which also
+  tracks the rest of the new-tools list (7 more) and the
+  `get_document_statistics_live` rewrite still queued after it.
 
 ## v2.0.16
 

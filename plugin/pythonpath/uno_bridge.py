@@ -199,6 +199,36 @@ class UNOBridge:
             logger.error(f"Failed to read application version: {e}")
             return {"success": False, "error": str(e)}
 
+    def list_fonts(self) -> Dict[str, Any]:
+        """Return the fonts available to this LibreOffice installation
+        (new tool, Brian's new-tools assignment priority #8).
+
+        Font availability is a property of the LibreOffice installation
+        itself, not of any open document -- like get_application_version()
+        just above, this deliberately takes no doc parameter and isn't
+        routed through _resolve_and_register at the tool layer.
+
+        Technique: the standard UNO idiom for font enumeration (the same
+        one OOo Basic "list installed fonts" macros have used since UNO's
+        font APIs never grew a simpler call) -- a throwaway
+        screen-compatible XDevice's getFontDescriptors(), which returns
+        one FontDescriptor per (name, style) combination actually
+        installed. Grouped by name (styles like "Bold"/"Italic" are
+        variants of the same font, not different fonts a caller would
+        pick between), each style deduplicated and sorted, then the
+        font list itself sorted case-insensitively for a stable,
+        readable result.
+        """
+        toolkit = self.smgr.createInstanceWithContext("com.sun.star.awt.Toolkit", self.ctx)
+        device = toolkit.createScreenCompatibleDevice(0, 0)
+        by_name: Dict[str, set] = {}
+        for descriptor in device.getFontDescriptors():
+            style = descriptor.StyleName or "Regular"
+            by_name.setdefault(descriptor.Name, set()).add(style)
+        fonts = [{"name": name, "styles": sorted(styles)} for name, styles in by_name.items()]
+        fonts.sort(key=lambda f: f["name"].lower())
+        return {"fonts": fonts, "count": len(fonts)}
+
     def get_capabilities(self) -> Dict[str, Any]:
         """
         Return which optional UNO interfaces this bridge resolved at import

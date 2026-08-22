@@ -1086,7 +1086,7 @@ redundancy note -- `get_selection_live` already covers it.
 | 5 | `get_presentation_content_live` | **Done, live-verified** -- see below |
 | 6 | Writer page number on `get_view_state_live` | **Done, live-verified** -- see below |
 | 7 | `goto_page_live` | **Done, live-verified** -- see below |
-| 8 | `list_fonts_live` | Queued |
+| 8 | `list_fonts_live` | **Done, live-verified** -- see below |
 | 9 | `activate_draw_page_live` | Queued |
 | 10 | `get_draw_page_live` | Queued |
 | 11 | `update_cell_comment_live` | Queued |
@@ -1382,5 +1382,45 @@ reports a warning naming both numbers; `page=0` reports a clean
 `INVALID_PARAMETER` failure, not a raw traceback.
 
 493/493 tests passing (489 + 4 new). Same bare-`uv run pytest`
+collection gap noted above -- unchanged by this tool, still queued as
+the first item after step 5 wraps.
+
+**`list_fonts_live` (#8).** New tool, not part of the original spec any
+existing module was sourced from. Unlike every other tool in this
+batch, it isn't document-scoped at all -- font availability is a
+property of the LibreOffice installation, not any open document, same
+category as `get_server_info_live`/`get_capabilities_live` -- so it was
+placed in `core_runtime.py` next to those rather than a
+document-type-specific module, and takes no `document_id` parameter.
+
+New `UNOBridge.list_fonts()` (`uno_bridge.py`, right after
+`get_application_version()`) plus the `list_fonts_live` tool wrapper in
+`core_runtime.py`, right after `get_server_info_live`. Uses the
+standard UNO idiom for font enumeration -- a throwaway
+screen-compatible `XDevice`'s `getFontDescriptors()`, the same
+technique OOo Basic "list installed fonts" macros have used since UNO's
+font APIs never grew a simpler call. That call returns one
+`FontDescriptor` per (name, style) combination actually installed
+(e.g. separate entries for a font's Regular/Bold/Italic/Bold Italic
+variants); grouped by name into `{name, styles: [...]}` since a caller
+picking a font for `font_name` in a style-setting tool wants "what
+names exist," not a flat list with the same name repeated once per
+style. Fonts sorted case-insensitively by name; each font's own
+`styles` list sorted too, for a stable, readable result.
+
+Fakes-based plumbing tests (`tests/test_core_runtime.py`:
+`test_list_fonts_live_reports_fonts_grouped_by_name`,
+`test_list_fonts_live_requires_no_active_document`) plus the
+registry-catalog entry (`tests/test_tool_scaffold_contract.py`).
+Live-verified against real headless LibreOffice with a new probe,
+`list-fonts-probe-windows.py` -- 7 checks, all passing, against the
+real bundled font set (no document even open): the real fonts list is
+non-empty and its `count` matches; no duplicate names (confirms
+grouping actually happened, not one row per style); at least one real
+bundled family (Liberation/DejaVu) is present; at least one font
+reports more than one real installed style; every font's own `styles`
+list comes back sorted.
+
+495/495 tests passing (493 + 2 new). Same bare-`uv run pytest`
 collection gap noted above -- unchanged by this tool, still queued as
 the first item after step 5 wraps.

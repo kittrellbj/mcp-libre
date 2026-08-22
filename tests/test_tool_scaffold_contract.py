@@ -65,6 +65,11 @@ EXPECTED_BY_MODULE = {
         "list_tools_live", "set_tool_profile_live", "get_session_state_live",
         "ping_live", "batch_execute_live", "validate_tool_call_live",
         "get_recent_errors_live", "get_diagnostics_live", "clear_diagnostics_live",
+        # New tool, 2026-08-22 (Brian's new-tools assignment, priority #8,
+        # not part of the original spec this module was sourced from) --
+        # installation-level font listing, not document-scoped, same as
+        # get_server_info_live above.
+        "list_fonts_live",
     },
     "document_lifecycle": {
         "get_active_document_live", "activate_document_live", "open_document_live",
