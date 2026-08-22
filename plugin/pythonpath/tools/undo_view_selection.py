@@ -8,17 +8,22 @@ types where supported).
 UNO basis per spec: XUndoManagerSupplier/XUndoManager, XController/XFrame,
 document events, view data.
 
-All 14 of this module's tools are now real (status="implemented"),
-following the same pattern as core_runtime.py/document_lifecycle.py:
-tools.context.get_context() for live UNOBridge/DocumentRegistry/
-RuntimeState, _resolve_and_register/_error_response/_map_exception_to_code
-reused from document_lifecycle.py rather than re-derived here (single
-source of truth for that mapping):
+All 14 of this module's original-spec tools are real (status=
+"implemented"), following the same pattern as core_runtime.py/
+document_lifecycle.py: tools.context.get_context() for live UNOBridge/
+DocumentRegistry/RuntimeState, _resolve_and_register/_error_response/
+_map_exception_to_code reused from document_lifecycle.py rather than
+re-derived here (single source of truth for that mapping). A 15th tool,
+goto_page_live, was added 2026-08-22 (Brian's new-tools assignment,
+priority #7) -- not part of the original spec, see its own docstring.
   - The 6 undo tools: get_undo_state_live, undo_live, redo_live,
     begin_undo_context_live, end_undo_context_live, cancel_undo_context_live.
   - The 6 view/selection/locking tools: get_view_state_live, set_zoom_live,
     get_selection_live, clear_selection_live, lock_document_updates_live,
     unlock_document_updates_live.
+  - goto_page_live: Writer-only page navigation, the write-side companion
+    to get_view_state_live's current_page_number addition (#6) -- see
+    below for details.
   - The 2 event tools: get_document_events_live, wait_for_document_event_live
     -- landed in a deliberately separate pass from the other 12 (this
     module's own history has them as the last two stubs closed out): event
@@ -284,6 +289,31 @@ def set_zoom_live(percent: Optional[int] = None, mode: Optional[str] = None) -> 
         doc, resolved_id = _resolve_and_register(ctx)
         result = ctx.uno_bridge.set_zoom(doc, percent=percent, mode=mode)
         return envelope.build_success(result=result, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
+
+
+@register_tool(
+    name="goto_page_live",
+    priority="P2",
+    purpose=(
+        "Move the Writer view cursor to a given page number (1-based, same "
+        "numbering get_view_state_live's current_page_number reports) -- "
+        "Brian's new-tools assignment priority #7, the write-side companion "
+        "to that read-only addition (#6)."
+    ),
+    parameters=schema({"page": {"type": "integer"}}, required=["page"]),
+    status="implemented",
+)
+def goto_page_live(page: int) -> Dict[str, Any]:
+    start = envelope.start_timer()
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        result = ctx.uno_bridge.goto_page(doc, page)
+        warnings = result.pop("warnings", [])
+        return envelope.build_success(result=result, document_id=resolved_id, warnings=warnings,
+                                       elapsed_ms=envelope.elapsed_ms_since(start))
     except Exception as e:
         return _error_response(e, start)
 

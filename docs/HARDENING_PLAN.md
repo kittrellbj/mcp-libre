@@ -1085,7 +1085,7 @@ redundancy note -- `get_selection_live` already covers it.
 | 4 | `find_shape_text_live` | **Done, live-verified** -- see below |
 | 5 | `get_presentation_content_live` | **Done, live-verified** -- see below |
 | 6 | Writer page number on `get_view_state_live` | **Done, live-verified** -- see below |
-| 7 | `goto_page_live` | Queued |
+| 7 | `goto_page_live` | **Done, live-verified** -- see below |
 | 8 | `list_fonts_live` | Queued |
 | 9 | `activate_draw_page_live` | Queued |
 | 10 | `get_draw_page_live` | Queued |
@@ -1343,5 +1343,44 @@ not a stale or cached value -- while `zoom_value`/`has_selection` are
 still reported alongside it.
 
 489/489 tests passing (487 + 2 new). Same bare-`uv run pytest`
+collection gap noted above -- unchanged by this tool, still queued as
+the first item after step 5 wraps.
+
+**`goto_page_live` (#7, write-side companion to #6).** New tool, not
+part of the original spec `undo_view_selection.py` was sourced from --
+same "no exact schema given" situation as #3/#4/#5, so it was built to
+pair directly with #6 rather than guessed fresh: `page` (1-based, same
+numbering `get_view_state_live`'s `current_page_number` reports) in,
+`{page}` out. New `UNOBridge.goto_page()` (`uno_bridge.py`, placed
+right after `get_view_state()`) plus the `goto_page_live` tool wrapper
+in `undo_view_selection.py`, right after `set_zoom_live`. Navigates
+through the same view cursor's `com.sun.star.text.XPageCursor`
+interface `get_view_state_live` reads from (`jumpToPage()`), not a
+second mechanism.
+
+Live-verified finding, not a guess: `jumpToPage()` past the document's
+real last page does not raise and does not leave the cursor where it
+was -- it silently clamps to the last real page. Reported back via a
+`warnings` entry naming both the requested and the real page reached,
+rather than either claiming the exact requested page was hit or
+failing outright for a request that isn't actually invalid, just
+unreachable.
+
+Fakes-based plumbing tests (`tests/test_undo_view_selection.py`:
+`test_goto_page_live_moves_to_the_requested_page`,
+`test_goto_page_live_clamps_past_the_last_real_page_and_warns`,
+`test_goto_page_live_rejects_non_positive_page`,
+`test_goto_page_live_rejects_non_writer_documents`) plus the
+registry-catalog entry (`tests/test_tool_scaffold_contract.py`).
+Live-verified against real headless LibreOffice Writer with a new
+probe, `goto-page-probe-windows.py` -- 9 checks, all passing, against a
+real 3-page document (2 forced page breaks): jumping back to page 1
+and forward to page 3 both actually move the real view cursor (checked
+against `get_view_state_live`'s own read, not just `success: true`);
+jumping to page 99 on the same 3-page document clamps to page 3 and
+reports a warning naming both numbers; `page=0` reports a clean
+`INVALID_PARAMETER` failure, not a raw traceback.
+
+493/493 tests passing (489 + 4 new). Same bare-`uv run pytest`
 collection gap noted above -- unchanged by this tool, still queued as
 the first item after step 5 wraps.

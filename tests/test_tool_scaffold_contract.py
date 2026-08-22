@@ -82,6 +82,11 @@ EXPECTED_BY_MODULE = {
         "set_zoom_live", "get_selection_live", "clear_selection_live",
         "get_document_events_live", "wait_for_document_event_live",
         "lock_document_updates_live", "unlock_document_updates_live",
+        # New tool, 2026-08-22 (Brian's new-tools assignment, priority #7,
+        # not part of the original spec this module was sourced from) --
+        # write-side companion to get_view_state_live's current_page_number
+        # addition (priority #6): navigate the Writer view cursor to a page.
+        "goto_page_live",
     },
     "styles": {
         "list_style_families_live", "list_styles_live", "get_style_live", "create_style_live",

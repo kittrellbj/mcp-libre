@@ -939,6 +939,35 @@ class UNOBridge:
                 state["warnings"] = [f"Could not read current page number: {e}"]
         return state
 
+    def goto_page(self, doc: Any, page: int) -> Dict[str, Any]:
+        """Move the Writer view cursor to the start of the given page
+        (new tool, Brian's new-tools assignment priority #7) -- the write
+        side companion to get_view_state_live's current_page_number
+        addition (#6), navigating through the same view cursor's
+        com.sun.star.text.XPageCursor interface that reads it.
+
+        Live-verified finding: jumpToPage() past the document's real last
+        page does not raise and does not leave the cursor where it was --
+        it silently clamps to the last real page. Reported back via a
+        warning naming the real page reached, rather than claiming the
+        exact requested page was hit when it wasn't.
+        """
+        self._require_writer(doc, "goto_page")
+        if not isinstance(page, int) or isinstance(page, bool) or page < 1:
+            raise ValueError(f"page must be a positive integer, got {page!r}")
+        view_cursor = self._get_controller(doc).getViewCursor()
+        if not hasattr(view_cursor, "jumpToPage"):
+            raise NotImplementedError("This document's view cursor does not support page navigation.")
+        view_cursor.jumpToPage(page)
+        actual_page = view_cursor.getPage() if hasattr(view_cursor, "getPage") else None
+        result: Dict[str, Any] = {"page": actual_page}
+        if actual_page is not None and actual_page != page:
+            result["warnings"] = [
+                f"Requested page {page} but the document only reaches page {actual_page} -- "
+                "clamped to the last real page rather than failing."
+            ]
+        return result
+
     def set_zoom(self, doc: Any, percent: Optional[int] = None, mode: Optional[str] = None) -> Dict[str, Any]:
         """Set zoom percent (exact value) or a named fit mode. Exactly one
         of percent/mode should be meaningful; if both are given, percent
