@@ -1087,7 +1087,7 @@ redundancy note -- `get_selection_live` already covers it.
 | 6 | Writer page number on `get_view_state_live` | **Done, live-verified** -- see below |
 | 7 | `goto_page_live` | **Done, live-verified** -- see below |
 | 8 | `list_fonts_live` | **Done, live-verified** -- see below |
-| 9 | `activate_draw_page_live` | Queued |
+| 9 | `activate_draw_page_live` | **Done, live-verified** -- see below |
 | 10 | `get_draw_page_live` | Queued |
 | 11 | `update_cell_comment_live` | Queued |
 | 12 | `get_freeze_panes_live` | Queued |
@@ -1422,5 +1422,38 @@ reports more than one real installed style; every font's own `styles`
 list comes back sorted.
 
 495/495 tests passing (493 + 2 new). Same bare-`uv run pytest`
+collection gap noted above -- unchanged by this tool, still queued as
+the first item after step 5 wraps.
+
+**`activate_draw_page_live` (#9).** New tool, not part of the original
+spec `draw.py` was sourced from -- the Draw counterpart to Impress's
+`activate_slide_live`, an omission `draw.py`'s own page tools
+(`list_draw_pages_live`/`get_active_draw_page_live`/
+`insert_draw_page_live`/etc.) never grew despite covering every other
+page operation. `page` (index or name, same `_resolve_draw_page()`
+convention every other draw.py page tool uses) in, `{index, name}` out
+-- same shape `get_active_draw_page_live` already reports, so a caller
+can immediately confirm the move without a schema mismatch.
+
+New `UNOBridge.activate_draw_page()` (`uno_bridge.py`, right after
+`get_active_draw_page()`) plus the `activate_draw_page_live` tool
+wrapper in `draw.py`, right after `get_active_draw_page_live`. Same
+`setCurrentPage()` mechanism `activate_slide()` uses for Impress, just
+resolved through Draw's own `_resolve_draw_page()` instead of
+`_resolve_slide()`.
+
+Fakes-based plumbing tests (`tests/test_draw.py`:
+`test_activate_draw_page_live_by_name`,
+`test_activate_draw_page_live_by_index`,
+`test_activate_draw_page_live_unknown_page`) plus the registry-catalog
+entry (`tests/test_tool_scaffold_contract.py`). Live-verified against
+real headless LibreOffice Draw with a new probe,
+`activate-draw-page-probe-windows.py` -- 8 checks, all passing, against
+a real 3-page document: activating by name and by index both move the
+real active page (confirmed against `get_active_draw_page_live`'s own
+read afterward, not just `success: true`); activating an unknown page
+name reports a clean failure, not a raw traceback.
+
+498/498 tests passing (495 + 3 new). Same bare-`uv run pytest`
 collection gap noted above -- unchanged by this tool, still queued as
 the first item after step 5 wraps.

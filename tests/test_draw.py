@@ -79,6 +79,12 @@ class FakeUnoBridge:
         idx = next(i for i, p in enumerate(self.pages) if p["name"] == self.active_page_name)
         return {"index": idx, "name": self.active_page_name}
 
+    def activate_draw_page(self, doc, page):
+        name = self._resolve_page_name(page)
+        self.active_page_name = name
+        idx = next(i for i, p in enumerate(self.pages) if p["name"] == name)
+        return {"index": idx, "name": name}
+
     def insert_draw_page(self, doc, position=None, name=None):
         idx = position if position is not None else len(self.pages)
         page_name = name or f"page{len(self.pages) + 1}"
@@ -199,6 +205,32 @@ def test_insert_draw_page_live():
     result = _handler("insert_draw_page_live")(name="NewPage")
     assert result["success"] is True
     assert any(p["name"] == "NewPage" for p in uno_bridge.pages)
+
+
+def test_activate_draw_page_live_by_name():
+    # New tool, 2026-08-22 (Brian's new-tools assignment, priority #9) --
+    # the Draw counterpart to Impress's activate_slide_live.
+    context.reset()
+    uno_bridge, _, _ = _install(active_document=FakeDocument(), page_names=["page1", "page2"])
+    result = _handler("activate_draw_page_live")(page="page2")
+    assert result["success"] is True
+    assert result["result"] == {"index": 1, "name": "page2"}
+    assert uno_bridge.active_page_name == "page2"
+
+
+def test_activate_draw_page_live_by_index():
+    context.reset()
+    _install(active_document=FakeDocument(), page_names=["page1", "page2", "page3"])
+    result = _handler("activate_draw_page_live")(page=2)
+    assert result["success"] is True
+    assert result["result"]["name"] == "page3"
+
+
+def test_activate_draw_page_live_unknown_page():
+    context.reset()
+    _install(active_document=FakeDocument())
+    result = _handler("activate_draw_page_live")(page="Nonexistent")
+    assert result["success"] is False
 
 
 def test_duplicate_draw_page_live():
@@ -335,6 +367,9 @@ if __name__ == "__main__":
         test_list_draw_pages_live,
         test_get_active_draw_page_live,
         test_insert_draw_page_live,
+        test_activate_draw_page_live_by_name,
+        test_activate_draw_page_live_by_index,
+        test_activate_draw_page_live_unknown_page,
         test_duplicate_draw_page_live,
         test_delete_draw_page_live,
         test_move_draw_page_live,

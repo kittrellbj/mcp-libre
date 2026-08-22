@@ -74,6 +74,28 @@ def get_active_draw_page_live() -> Dict[str, Any]:
 
 
 @register_tool(
+    name="activate_draw_page_live",
+    priority="P1",
+    purpose=(
+        "Activate a Draw page by index or name -- Brian's new-tools "
+        "assignment priority #9, the Draw counterpart to Impress's "
+        "activate_slide_live."
+    ),
+    parameters=schema({"page": {"description": "Page index or name."}}, required=["page"]),
+    status="implemented",
+)
+def activate_draw_page_live(page: Any) -> Dict[str, Any]:
+    start = envelope.start_timer()
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        result = ctx.uno_bridge.activate_draw_page(doc, page)
+        return envelope.build_success(result=result, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
+
+
+@register_tool(
     name="insert_draw_page_live",
     priority="P1",
     purpose="Insert page.",

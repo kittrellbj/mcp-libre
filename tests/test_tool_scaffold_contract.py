@@ -242,6 +242,10 @@ EXPECTED_BY_MODULE = {
         "rename_draw_page_live", "set_draw_page_size_live", "set_draw_page_background_live",
         "list_layers_live", "create_layer_live", "update_layer_live", "delete_layer_live",
         "assign_shape_layer_live", "export_draw_page_live", "export_selection_live",
+        # New tool, 2026-08-22 (Brian's new-tools assignment, priority #9,
+        # not part of the original spec this module was sourced from) --
+        # the Draw counterpart to Impress's activate_slide_live.
+        "activate_draw_page_live",
     },
 }
 

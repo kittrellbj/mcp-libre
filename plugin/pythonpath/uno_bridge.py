@@ -5668,6 +5668,18 @@ class UNOBridge:
         page = doc.getCurrentController().getCurrentPage()
         return {"index": self._draw_page_index(doc.getDrawPages(), page), "name": page.Name}
 
+    def activate_draw_page(self, doc: Any, page: Any) -> Dict[str, Any]:
+        """Activate a Draw page (new tool, Brian's new-tools assignment
+        priority #9) -- the Draw counterpart to Impress's activate_slide(),
+        which draw.py's own page tools never grew despite list_draw_pages/
+        get_active_draw_page/insert_draw_page already existing. Same
+        setCurrentPage() mechanism as activate_slide, resolved through
+        _resolve_draw_page() (index or name) rather than a fresh lookup."""
+        self._require_draw(doc, "activate_draw_page")
+        target = self._resolve_draw_page(doc, page)
+        doc.getCurrentController().setCurrentPage(target)
+        return {"index": self._draw_page_index(doc.getDrawPages(), target), "name": target.Name}
+
     def insert_draw_page(self, doc: Any, position: Optional[int] = None, name: Optional[str] = None) -> Dict[str, Any]:
         self._require_draw(doc, "insert_draw_page")
         pages = doc.getDrawPages()
