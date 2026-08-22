@@ -216,6 +216,17 @@ class FakeUnoBridge:
             result["notes"] = self.notes.get(entry["name"], "")
         return result
 
+    def get_presentation_content(self, doc, slides=None, include_notes=True,
+                                  include_shape_metadata=False, include_hidden=True):
+        refs = range(len(self.slides)) if slides is None else slides
+        entries = []
+        for ref in refs:
+            content = self.get_slide_content(doc, ref, include_notes, include_shape_metadata)
+            if not include_hidden and content["hidden"]:
+                continue
+            entries.append(content)
+        return {"slides": entries, "count": len(entries)}
+
     # -- transitions --
 
     def get_slide_transition(self, doc, slide):
@@ -576,6 +587,47 @@ def test_get_slide_content_live_unknown_slide():
     _install(active_document=FakeDocument())
     result = _handler("get_slide_content_live")(slide="Nonexistent")
     assert result["success"] is False
+
+
+def test_get_presentation_content_live_returns_every_slide_in_order():
+    context.reset()
+    uno_bridge, _, _ = _install(active_document=FakeDocument(), slide_names=["Slide 1", "Slide 2"])
+    uno_bridge.slides[0]["shapes"] = [{"name": "Title 1", "text": "Q1 Results", "type": "text"}]
+    uno_bridge.slides[1]["shapes"] = [{"name": "Title 2", "text": "Q2 Results", "type": "text"}]
+    result = _handler("get_presentation_content_live")()
+    assert result["success"] is True
+    assert result["result"]["count"] == 2
+    assert [s["name"] for s in result["result"]["slides"]] == ["Slide 1", "Slide 2"]
+    assert result["result"]["slides"][0]["text"] == [{"shape": "Title 1", "text": "Q1 Results"}]
+    assert result["result"]["slides"][1]["text"] == [{"shape": "Title 2", "text": "Q2 Results"}]
+
+
+def test_get_presentation_content_live_scopes_to_given_slides():
+    context.reset()
+    _install(active_document=FakeDocument(), slide_names=["Slide 1", "Slide 2", "Slide 3"])
+    result = _handler("get_presentation_content_live")(slides=["Slide 3"])
+    assert result["success"] is True
+    assert result["result"]["count"] == 1
+    assert result["result"]["slides"][0]["name"] == "Slide 3"
+
+
+def test_get_presentation_content_live_can_exclude_hidden_slides():
+    context.reset()
+    uno_bridge, _, _ = _install(active_document=FakeDocument(), slide_names=["Slide 1", "Slide 2"])
+    uno_bridge.slides[1]["hidden"] = True
+    result = _handler("get_presentation_content_live")(include_hidden=False)
+    assert result["success"] is True
+    assert result["result"]["count"] == 1
+    assert result["result"]["slides"][0]["name"] == "Slide 1"
+
+
+def test_get_presentation_content_live_omits_notes_key_when_not_requested():
+    context.reset()
+    uno_bridge, _, _ = _install(active_document=FakeDocument())
+    uno_bridge.notes["Slide 1"] = "Mention enterprise growth"
+    result = _handler("get_presentation_content_live")(include_notes=False)
+    assert result["success"] is True
+    assert "notes" not in result["result"]["slides"][0]
 
 
 # -- transitions --

@@ -220,6 +220,10 @@ EXPECTED_BY_MODULE = {
         # from) -- "give me all the content of slide 7" instead of
         # list_shapes_live + N get_shape_live calls.
         "get_slide_content_live",
+        # New tool, 2026-08-22 (Brian's new-tools assignment, priority #5) --
+        # bulk counterpart to get_slide_content_live, wraps it in a loop
+        # across the whole deck (or a chosen subset of slides).
+        "get_presentation_content_live",
     },
     # Phase D - "Draw - pages, masters, layers, vector operations".
     "draw": {
@@ -356,7 +360,7 @@ IMPLEMENTED_IMPRESS_TOOL_NAMES = {
     "list_custom_shows_live", "create_custom_show_live", "update_custom_show_live",
     "delete_custom_show_live", "start_slideshow_live", "stop_slideshow_live",
     "export_slide_image_live", "export_all_slides_images_live",
-    "get_slide_content_live",
+    "get_slide_content_live", "get_presentation_content_live",
 }
 
 

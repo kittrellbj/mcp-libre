@@ -6652,6 +6652,38 @@ class UNOBridge:
                 result["notes"] = None
         return result
 
+    def get_presentation_content(self, doc: Any, slides: Optional[List[Any]] = None,
+                                  include_notes: bool = True, include_shape_metadata: bool = False,
+                                  include_hidden: bool = True) -> Dict[str, Any]:
+        """New tool (Brian's new-tools assignment, priority #5, "give me
+        all the content of the whole deck" -- the bulk counterpart to
+        get_slide_content_live #3). Wraps get_slide_content() in a loop
+        exactly as flagged when that tool was built, rather than
+        duplicating its per-slide read logic.
+
+        slides omitted -> every slide in the deck, in order. slides given
+        -> just those (index or name each, same _resolve_slide()
+        convention every other per-slide impress.py tool uses; scoping a
+        bulk read to specific slides mirrors find_cells_live's sheet/range
+        scoping). include_hidden=False additionally filters out slides
+        whose own get_slide_content() reports hidden=True -- useful for a
+        caller that wants "what the audience sees" without a second
+        get_slide_content_live round-trip per slide to check.
+
+        include_notes/include_shape_metadata pass straight through to
+        get_slide_content() for every slide, same meaning as there.
+        """
+        self._require_impress(doc, "get_presentation_content")
+        pages = doc.getDrawPages()
+        refs: List[Any] = list(range(pages.getCount())) if slides is None else list(slides)
+        entries: List[Dict[str, Any]] = []
+        for ref in refs:
+            content = self.get_slide_content(doc, ref, include_notes, include_shape_metadata)
+            if not include_hidden and content["hidden"]:
+                continue
+            entries.append(content)
+        return {"slides": entries, "count": len(entries)}
+
     def get_slide_transition(self, doc: Any, slide: Any) -> Dict[str, Any]:
         page = self._resolve_slide(doc, slide)
         return {

@@ -1,7 +1,7 @@
 # LibreOffice MCP Server
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.13-blue.svg)](#versioning)
+[![Version](https://img.shields.io/badge/version-2.0.14-blue.svg)](#versioning)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](#requirements)
 [![LibreOffice](https://img.shields.io/badge/LibreOffice-24.2%2B-18A303.svg)](#requirements)
 
@@ -204,7 +204,7 @@ python build-oxt-windows.py
 The extension package is created at:
 
 ```text
-build/libreoffice-mcp-extension-2.0.13.oxt
+build/libreoffice-mcp-extension-2.0.14.oxt
 ```
 
 The Windows builder creates a LibreOffice-compatible ZIP/OXT structure with normalized archive paths.
@@ -218,7 +218,7 @@ PowerShell example:
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
 & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension
-& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.13.oxt"
+& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.14.oxt"
 ```
 
 Removing an extension that is not already installed may report that no matching extension exists. That is harmless.
@@ -269,7 +269,7 @@ A convenient rebuild/reinstall command in PowerShell is:
 
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
-python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.13.oxt"
+python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.14.oxt"
 ```
 
 Then reopen LibreOffice and start the MCP server from the Tools menu.
@@ -887,6 +887,43 @@ uv run pytest
 ---
 
 # Versioning
+
+## v2.0.14
+
+Step 5 of the typeset-run remediation, fourth tool: `get_presentation_content_live`,
+Brian's new-tools assignment priority #5 — the bulk counterpart to
+`get_slide_content_live` (#3). Schema was already fixed by #3's own
+design note: the per-slide entry shape `{index, name, hidden, text:
+[{shape, text}], notes}` was built to be reused here, so this tool is a
+loop over `get_slide_content`, not a new read path — `{slides: [...],
+count}`. New `UNOBridge.get_presentation_content()` (`uno_bridge.py`,
+right after `get_slide_content()`) plus the
+`get_presentation_content_live` tool wrapper in `impress.py`, right
+after `get_slide_content_live`. `slides` omitted → every slide in the
+deck, in order; `slides` given → just those, in the order given, same
+index-or-name resolution `get_slide_content()` already does, so there's
+no second resolution path to keep in sync. `include_notes`/
+`include_shape_metadata` pass straight through unchanged.
+`include_hidden=false` is the one genuinely new behavior over a
+hand-rolled loop of `get_slide_content_live` calls: it drops any slide
+whose own `hidden` comes back `true`, so a caller wanting "what the
+audience actually sees" doesn't need a second round-trip per slide to
+check first.
+
+Live-verified against real headless LibreOffice Impress with a new
+probe, `presentation-content-probe-windows.py` — 11 checks against a
+real 3-slide deck (slide 1 titled + notes, slide 2 hidden and empty,
+slide 3 titled), all passing: omitted `slides` returns all 3 in deck
+order with each slide's real text/notes; `include_hidden=false` drops
+the hidden slide and keeps `count` honest for what's left; `slides=[0,
+2]` scopes to just those two, in the order given; `include_notes=false`
+omits the `notes` key on every slide, not just null; `include_shape_
+metadata=true` adds type/geometry to every slide's text entries.
+
+- 487 automated tests passing (483 + 4 new fakes-based plumbing tests).
+- Full writeup: `docs/HARDENING_PLAN.md`'s "Phase 6" section, which also
+  tracks the rest of the new-tools list (10 more) and the
+  `get_document_statistics_live` rewrite still queued after it.
 
 ## v2.0.13
 

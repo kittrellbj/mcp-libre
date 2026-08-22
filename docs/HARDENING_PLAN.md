@@ -1083,7 +1083,7 @@ redundancy note -- `get_selection_live` already covers it.
 | 2 | `find_cells_live` | **Done, live-verified** -- see below |
 | 3 | `get_slide_content_live` | **Done, live-verified** -- see below |
 | 4 | `find_shape_text_live` | **Done, live-verified** -- see below |
-| 5 | `get_presentation_content_live` | Queued |
+| 5 | `get_presentation_content_live` | **Done, live-verified** -- see below |
 | 6 | Writer page number on `get_view_state_live` | Queued |
 | 7 | `goto_page_live` | Queued |
 | 8 | `list_fonts_live` | Queued |
@@ -1267,3 +1267,47 @@ pass actually has.
 483/483 tests passing (480 + 3 new). Same bare-`uv run pytest` collection
 gap noted above -- unchanged by this tool, still queued as the first
 item after step 5 wraps.
+
+**`get_presentation_content_live` (#5, bulk counterpart to
+`get_slide_content_live`).** Schema was already fixed by #3's own
+design note (see above) -- the per-slide entry shape `{index, name,
+hidden, text: [{shape, text}], notes}` was built to be reused here
+rather than guessed fresh, so this tool is a loop, not a new read path:
+`{slides: [...], count}`.
+
+New `UNOBridge.get_presentation_content()` (`uno_bridge.py`, placed
+right after `get_slide_content()`) plus the
+`get_presentation_content_live` tool wrapper in `impress.py`, right
+after `get_slide_content_live`. `slides` omitted -> every slide in the
+deck, in order (`doc.getDrawPages()`, index 0..N); `slides` given ->
+just those, in the order given, same index-or-name `_resolve_slide()`
+convention every per-slide call already uses, resolved by
+`get_slide_content()` itself so there's no second resolution path to
+keep in sync. `include_notes`/`include_shape_metadata` pass straight
+through to `get_slide_content()` unchanged, same meaning as there.
+`include_hidden=false` is the one genuinely new behavior this tool adds
+over a hand-rolled loop of `get_slide_content_live` calls: it drops any
+slide whose own `hidden` comes back `true`, so a caller wanting "what
+the audience actually sees" doesn't need a second round-trip per slide
+to check first.
+
+Fakes-based plumbing tests (`tests/test_impress.py`:
+`test_get_presentation_content_live_returns_every_slide_in_order`,
+`test_get_presentation_content_live_scopes_to_given_slides`,
+`test_get_presentation_content_live_can_exclude_hidden_slides`,
+`test_get_presentation_content_live_omits_notes_key_when_not_
+requested`) plus the registry-catalog entry
+(`tests/test_tool_scaffold_contract.py`). Live-verified against real
+headless LibreOffice Impress with a new probe,
+`presentation-content-probe-windows.py` -- 11 checks, all passing,
+against a real 3-slide deck (slide 1 titled + notes, slide 2 hidden and
+empty, slide 3 titled): omitted `slides` returns all 3 in deck order
+with each slide's real text/notes; `include_hidden=false` drops the
+hidden slide and keeps `count` honest for what's left; `slides=[0, 2]`
+scopes to just those two, in the order given; `include_notes=false`
+omits the `notes` key on every slide, not just null; `include_shape_
+metadata=true` adds type/geometry to every slide's text entries.
+
+487/487 tests passing (483 + 4 new). Same bare-`uv run pytest`
+collection gap noted above -- unchanged by this tool, still queued as
+the first item after step 5 wraps.
