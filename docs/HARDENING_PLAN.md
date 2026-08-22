@@ -1091,7 +1091,7 @@ redundancy note -- `get_selection_live` already covers it.
 | 10 | `get_draw_page_live` | **Done, live-verified** -- see below |
 | 11 | `update_cell_comment_live` | **Done, live-verified** -- see below |
 | 12 | `get_freeze_panes_live` | **Done, live-verified** -- see below |
-| 13 | `get_sheet_summary_live` | Queued |
+| 13 | `get_sheet_summary_live` | **Done, live-verified** -- see below |
 | 14 | `get_document_snapshot_live` | Queued |
 | 15 | `extract_document_text_live` | Queued |
 
@@ -1581,5 +1581,46 @@ row-only freeze (A3) each independently confirm the row correction
 holds in both edge cases, not just the combined case.
 
 507/507 tests passing (505 + 2 new). Same bare-`uv run pytest`
+collection gap noted above -- unchanged by this tool, still queued as
+the first item after step 5 wraps.
+
+**`get_sheet_summary_live` (#13).** New tool -- an at-a-glance summary
+(name, visibility, protection, used-range dimensions, freeze-panes
+state) in one call instead of `get_active_sheet_live` +
+`get_used_range_live` + `get_freeze_panes_live` (#12) + reading
+protection separately. `sheet` omitted -> the active sheet.
+
+Deliberately guards against a real edge case rather than trusting the
+underlying cursor mechanism blindly: `gotoStartOfUsedArea()`/
+`gotoEndOfUsedArea()` both collapse to cell A1 on a sheet with no
+content at all -- the same single cell `get_used_range()` itself would
+report -- so a single-cell result is checked for real content (text or
+formula) before being trusted as an actual used range. A genuinely
+blank sheet reports `used_range: null`, `row_count: 0`,
+`column_count: 0`, not a misleading "1x1 used."
+
+New `UNOBridge.get_sheet_summary()` (`uno_bridge.py`, right after
+`get_used_range()`) plus the `get_sheet_summary_live` tool wrapper in
+`calc_sheets.py`, right after `get_used_range_live`. `protected` reads
+`sheet_obj.isProtected()` (the paired getter for the `protect()`/
+`unprotect()` calls `protect_sheet_live`/`unprotect_sheet_live` already
+use). `frozen` reuses `get_freeze_panes()` (#12) as-is rather than
+re-deriving its active-sheet-switch-and-restore handling here --
+composing the two new tools instead of duplicating logic between them.
+
+Fakes-based plumbing tests (`tests/test_calc_sheets.py`:
+`test_get_sheet_summary_live_defaults_to_active_sheet`,
+`test_get_sheet_summary_live_by_name_includes_frozen_state`,
+`test_get_sheet_summary_live_unknown_sheet`) plus the registry-catalog
+entry (`tests/test_tool_scaffold_contract.py`). Live-verified against
+real headless LibreOffice Calc with a new probe,
+`get-sheet-summary-probe-windows.py` -- 10 checks, all passing: a
+genuinely blank sheet reports `used_range: null`/`row_count: 0`/
+`column_count: 0`/`frozen: false` rather than a misleading 1x1; a sheet
+with real content spanning B2:D5, a real freeze at B2, and real
+protection reports all four correctly and consistently with what was
+actually applied.
+
+510/510 tests passing (507 + 3 new). Same bare-`uv run pytest`
 collection gap noted above -- unchanged by this tool, still queued as
 the first item after step 5 wraps.

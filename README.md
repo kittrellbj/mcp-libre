@@ -1,7 +1,7 @@
 # LibreOffice MCP Server
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.21-blue.svg)](#versioning)
+[![Version](https://img.shields.io/badge/version-2.0.22-blue.svg)](#versioning)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](#requirements)
 [![LibreOffice](https://img.shields.io/badge/LibreOffice-24.2%2B-18A303.svg)](#requirements)
 
@@ -204,7 +204,7 @@ python build-oxt-windows.py
 The extension package is created at:
 
 ```text
-build/libreoffice-mcp-extension-2.0.21.oxt
+build/libreoffice-mcp-extension-2.0.22.oxt
 ```
 
 The Windows builder creates a LibreOffice-compatible ZIP/OXT structure with normalized archive paths.
@@ -218,7 +218,7 @@ PowerShell example:
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
 & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension
-& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.21.oxt"
+& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.22.oxt"
 ```
 
 Removing an extension that is not already installed may report that no matching extension exists. That is harmless.
@@ -269,7 +269,7 @@ A convenient rebuild/reinstall command in PowerShell is:
 
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
-python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.21.oxt"
+python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.22.oxt"
 ```
 
 Then reopen LibreOffice and start the MCP server from the Tools menu.
@@ -887,6 +887,39 @@ uv run pytest
 ---
 
 # Versioning
+
+## v2.0.22
+
+Step 5 of the typeset-run remediation, twelfth item: `get_sheet_summary_live`,
+Brian's new-tools assignment priority #13 — an at-a-glance summary
+(name, visibility, protection, used-range dimensions, freeze-panes
+state) in one call instead of `get_active_sheet_live` +
+`get_used_range_live` + `get_freeze_panes_live` + reading protection
+separately.
+
+Guards against a real edge case: `gotoStartOfUsedArea()`/
+`gotoEndOfUsedArea()` both collapse to cell A1 on a sheet with no
+content at all, so a single-cell result is checked for real content
+before being trusted as an actual used range. A genuinely blank sheet
+reports `used_range: null`, `row_count: 0`, `column_count: 0`, not a
+misleading "1x1 used."
+
+New `UNOBridge.get_sheet_summary()` plus the `get_sheet_summary_live`
+tool wrapper in `calc_sheets.py`. `frozen` reuses `get_freeze_panes()`
+(#12) as-is — composing the two new tools instead of duplicating logic
+between them.
+
+Live-verified against real headless LibreOffice Calc with a new probe,
+`get-sheet-summary-probe-windows.py` — 10 checks, all passing: a
+genuinely blank sheet reports the correct empty state; a sheet with
+real content spanning B2:D5, a real freeze at B2, and real protection
+reports all four fields correctly and consistently.
+
+- 510 automated tests passing (507 + 3 new fakes-based plumbing tests).
+- Full writeup: `docs/HARDENING_PLAN.md`'s "Phase 6" section, which also
+  tracks the last 2 new tools (`get_document_snapshot_live`,
+  `extract_document_text_live`) and the `get_document_statistics_live`
+  rewrite still queued after them.
 
 ## v2.0.21
 

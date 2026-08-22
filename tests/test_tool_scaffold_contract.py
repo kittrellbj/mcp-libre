@@ -187,6 +187,10 @@ EXPECTED_BY_MODULE = {
         # not part of the original spec) -- the getter freeze_panes_live/
         # unfreeze_panes_live never had.
         "get_freeze_panes_live",
+        # New tool, 2026-08-22 (Brian's new-tools assignment, priority #13,
+        # not part of the original spec) -- at-a-glance sheet summary in
+        # one call instead of several separate getters.
+        "get_sheet_summary_live",
     },
     # Phase C - Calc-complete, section 2: "Calc - data management, analysis,
     # pivots, validation, external data".

@@ -153,6 +153,18 @@ class FakeUnoBridge:
     def get_used_range(self, doc, sheet=None):
         return {"start_column": 0, "start_row": 0, "end_column": 3, "end_row": 5}
 
+    def get_sheet_summary(self, doc, sheet=None):
+        name = self._resolve_sheet_name(sheet)
+        idx, entry = next((i, s) for i, s in enumerate(self.sheets) if s["name"] == name)
+        used = self.get_used_range(doc, sheet)
+        return {
+            "index": idx, "name": name, "visible": entry["visible"], "protected": entry["protected"],
+            "used_range": used,
+            "row_count": used["end_row"] - used["start_row"] + 1,
+            "column_count": used["end_column"] - used["start_column"] + 1,
+            "frozen": self.get_freeze_panes(doc, sheet),
+        }
+
     def find_cells(self, doc, query, sheet=None, range=None, look_in="values", match="contains",
                     case_sensitive=False, max_results=100):
         if look_in not in ("values", "formulas", "comments", "all"):
@@ -584,6 +596,41 @@ def test_get_freeze_panes_live_reflects_a_real_freeze():
     assert result["result"]["cell"] == "B2"
 
 
+def test_get_sheet_summary_live_defaults_to_active_sheet():
+    # New tool, 2026-08-22 (Brian's new-tools assignment, priority #13) --
+    # at-a-glance sheet summary in one call.
+    context.reset()
+    _install(active_document=FakeDocument(), sheet_names=["Sheet1", "Sheet2"])
+    result = _handler("get_sheet_summary_live")()
+    assert result["success"] is True
+    r = result["result"]
+    assert r["index"] == 0
+    assert r["name"] == "Sheet1"
+    assert r["visible"] is True
+    assert r["protected"] is False
+    assert r["row_count"] == 6 and r["column_count"] == 4
+    assert r["frozen"] == {"frozen": False, "columns": 0, "rows": 0}
+
+
+def test_get_sheet_summary_live_by_name_includes_frozen_state():
+    context.reset()
+    _install(active_document=FakeDocument(), sheet_names=["Sheet1", "Sheet2"])
+    _handler("freeze_panes_live")(cell="B2")
+    result = _handler("get_sheet_summary_live")(sheet="Sheet2")
+    assert result["success"] is True
+    assert result["result"]["index"] == 1
+    assert result["result"]["name"] == "Sheet2"
+    assert result["result"]["frozen"]["frozen"] is True
+    assert result["result"]["frozen"]["cell"] == "B2"
+
+
+def test_get_sheet_summary_live_unknown_sheet():
+    context.reset()
+    _install(active_document=FakeDocument())
+    result = _handler("get_sheet_summary_live")(sheet="Nonexistent")
+    assert result["success"] is False
+
+
 def test_recalculate_live_hard_and_soft():
     context.reset()
     uno_bridge, _, _ = _install(active_document=FakeDocument())
@@ -660,6 +707,9 @@ if __name__ == "__main__":
         test_freeze_and_unfreeze_panes_live,
         test_get_freeze_panes_live_reports_unfrozen_by_default,
         test_get_freeze_panes_live_reflects_a_real_freeze,
+        test_get_sheet_summary_live_defaults_to_active_sheet,
+        test_get_sheet_summary_live_by_name_includes_frozen_state,
+        test_get_sheet_summary_live_unknown_sheet,
         test_recalculate_live_hard_and_soft,
         test_evaluate_formula_live,
         test_get_formula_dependencies_live_both_directions,

@@ -5150,6 +5150,47 @@ class UNOBridge:
             "end_column": end_addr.EndColumn, "end_row": end_addr.EndRow,
         }
 
+    def get_sheet_summary(self, doc: Any, sheet: Optional[str] = None) -> Dict[str, Any]:
+        """Return an at-a-glance summary of one sheet -- name, visibility,
+        protection, used-range dimensions, and freeze-panes state -- in
+        one call instead of get_active_sheet_live + get_used_range_live +
+        get_freeze_panes_live (#12) + reading IsVisible/protection
+        separately (new tool, Brian's new-tools assignment priority #13).
+
+        `used_range`/`row_count`/`column_count` are reported as empty
+        (None/0/0) for a genuinely blank sheet, not a misleading "1x1
+        used" -- gotoStartOfUsedArea()/gotoEndOfUsedArea() both collapse
+        to A1 on a sheet with no content at all (the same single cell
+        get_used_range() itself would report), so a single-cell result is
+        checked for real content (text or formula) before being trusted
+        as actual used range rather than this fallback.
+
+        `protected` reads sheet_obj.isProtected() (the paired getter for
+        the protect()/unprotect() calls protect_sheet_live/
+        unprotect_sheet_live already use). `frozen` reuses
+        get_freeze_panes() as-is rather than re-deriving its
+        active-sheet-switch-and-restore handling here.
+        """
+        self._require_calc(doc, "get_sheet_summary")
+        sheet_obj = self._resolve_sheet(doc, sheet)
+        index = sheet_obj.getCellRangeByName("A1").RangeAddress.Sheet
+        used = self.get_used_range(doc, sheet)
+        single_cell = used["start_column"] == used["end_column"] and used["start_row"] == used["end_row"]
+        has_content = True
+        if single_cell:
+            cell = sheet_obj.getCellByPosition(used["start_column"], used["start_row"])
+            has_content = bool(cell.getString()) or bool(cell.getFormula())
+        return {
+            "index": index,
+            "name": sheet_obj.Name,
+            "visible": bool(sheet_obj.IsVisible),
+            "protected": bool(sheet_obj.isProtected()),
+            "used_range": used if has_content else None,
+            "row_count": (used["end_row"] - used["start_row"] + 1) if has_content else 0,
+            "column_count": (used["end_column"] - used["start_column"] + 1) if has_content else 0,
+            "frozen": self.get_freeze_panes(doc, sheet),
+        }
+
     _FIND_CELLS_MAX_SCANNED_CELLS = 200000
 
     def find_cells(self, doc: Any, query: str, sheet: Optional[str] = None, range: Optional[str] = None,
