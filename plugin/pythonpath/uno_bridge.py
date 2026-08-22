@@ -923,6 +923,20 @@ class UNOBridge:
             except Exception as e:
                 state["current_page_name"] = None
                 state["warnings"] = [f"Could not read current page name: {e}"]
+        elif doc_type == "writer":
+            # New addition (Brian's new-tools assignment, priority #6) --
+            # get_view_state_live previously reported no page position at
+            # all for Writer, unlike calc's active_sheet/impress's
+            # current_page_name above. The view cursor implements
+            # com.sun.star.text.XPageCursor, whose getPage() returns the
+            # 1-based page the cursor is currently on -- the same number
+            # Writer's own status bar shows, not a 0-based index.
+            try:
+                view_cursor = controller.getViewCursor()
+                state["current_page_number"] = view_cursor.getPage() if hasattr(view_cursor, "getPage") else None
+            except Exception as e:
+                state["current_page_number"] = None
+                state["warnings"] = [f"Could not read current page number: {e}"]
         return state
 
     def set_zoom(self, doc: Any, percent: Optional[int] = None, mode: Optional[str] = None) -> Dict[str, Any]:

@@ -30,7 +30,7 @@ from tools.runtime_state import RuntimeState  # noqa: E402
 
 
 class FakeDocument:
-    def __init__(self, doc_type="writer", title="Untitled", url=""):
+    def __init__(self, doc_type="writer", title="Untitled", url="", current_page_number=1):
         self.doc_type = doc_type
         self.title = title
         self.url = url
@@ -40,6 +40,11 @@ class FakeDocument:
         self.has_selection = False
         self.selection_text = ""
         self.lock_count = 0
+        # Writer-only -- current_page_number on get_view_state_live (Brian's
+        # new-tools assignment priority #6), same convention as active_sheet
+        # for calc / current_page_name for impress/draw in the real
+        # uno_bridge.get_view_state().
+        self.current_page_number = current_page_number
 
 
 class FakeUnoBridge:
@@ -139,8 +144,11 @@ class FakeUnoBridge:
     # -- view state, zoom, selection, locking --
 
     def get_view_state(self, doc):
-        return {"type": doc.doc_type, "zoom_value": doc.zoom_value, "zoom_mode": doc.zoom_mode,
-                "has_selection": doc.has_selection}
+        state = {"type": doc.doc_type, "zoom_value": doc.zoom_value, "zoom_mode": doc.zoom_mode,
+                 "has_selection": doc.has_selection}
+        if doc.doc_type == "writer":
+            state["current_page_number"] = doc.current_page_number
+        return state
 
     def set_zoom(self, doc, percent=None, mode=None):
         if percent is None and mode is None:
@@ -436,7 +444,29 @@ def test_get_view_state_live_reports_zoom_and_selection():
     _install(active_document=doc)
     result = _handler("get_view_state_live")()
     assert result["success"] is True
-    assert result["result"] == {"type": "writer", "zoom_value": 150, "zoom_mode": "optimal", "has_selection": True}
+    assert result["result"] == {"type": "writer", "zoom_value": 150, "zoom_mode": "optimal",
+                                 "has_selection": True, "current_page_number": 1}
+
+
+def test_get_view_state_live_reports_writer_current_page_number():
+    # New tool addition, 2026-08-22 (Brian's new-tools assignment,
+    # priority #6) -- get_view_state_live previously reported no page
+    # position at all for Writer, unlike calc's active_sheet /
+    # impress's current_page_name.
+    context.reset()
+    doc = FakeDocument(current_page_number=4)
+    _install(active_document=doc)
+    result = _handler("get_view_state_live")()
+    assert result["success"] is True
+    assert result["result"]["current_page_number"] == 4
+
+
+def test_get_view_state_live_omits_page_number_for_non_writer_docs():
+    context.reset()
+    _install(active_document=FakeDocument(doc_type="calc"))
+    result = _handler("get_view_state_live")()
+    assert result["success"] is True
+    assert "current_page_number" not in result["result"]
 
 
 def test_get_view_state_live_no_active_document():
@@ -681,6 +711,8 @@ if __name__ == "__main__":
         test_get_session_state_live_reports_pending_undo_context_title,
         test_get_session_state_live_reports_none_after_cancel,
         test_get_view_state_live_reports_zoom_and_selection,
+        test_get_view_state_live_reports_writer_current_page_number,
+        test_get_view_state_live_omits_page_number_for_non_writer_docs,
         test_get_view_state_live_no_active_document,
         test_set_zoom_live_by_percent,
         test_set_zoom_live_by_mode,

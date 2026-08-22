@@ -1,7 +1,7 @@
 # LibreOffice MCP Server
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.14-blue.svg)](#versioning)
+[![Version](https://img.shields.io/badge/version-2.0.15-blue.svg)](#versioning)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](#requirements)
 [![LibreOffice](https://img.shields.io/badge/LibreOffice-24.2%2B-18A303.svg)](#requirements)
 
@@ -204,7 +204,7 @@ python build-oxt-windows.py
 The extension package is created at:
 
 ```text
-build/libreoffice-mcp-extension-2.0.14.oxt
+build/libreoffice-mcp-extension-2.0.15.oxt
 ```
 
 The Windows builder creates a LibreOffice-compatible ZIP/OXT structure with normalized archive paths.
@@ -218,7 +218,7 @@ PowerShell example:
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
 & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension
-& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.14.oxt"
+& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.15.oxt"
 ```
 
 Removing an extension that is not already installed may report that no matching extension exists. That is harmless.
@@ -269,7 +269,7 @@ A convenient rebuild/reinstall command in PowerShell is:
 
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
-python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.14.oxt"
+python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.15.oxt"
 ```
 
 Then reopen LibreOffice and start the MCP server from the Tools menu.
@@ -887,6 +887,34 @@ uv run pytest
 ---
 
 # Versioning
+
+## v2.0.15
+
+Step 5 of the typeset-run remediation, fifth item: Writer page number
+on `get_view_state_live`, Brian's new-tools assignment priority #6.
+Not a new tool — an enrichment to an existing one. `get_view_state_live`
+already reported a document-type-specific position for calc
+(`active_sheet`) and impress/draw (`current_page_name`), but Writer
+fell through both branches and reported no page position at all. Added
+a `writer` branch to `UNOBridge.get_view_state()`: `controller.
+getViewCursor()` implements `com.sun.star.text.XPageCursor`, whose
+`getPage()` returns the 1-based page the cursor is currently on — the
+same number Writer's own status bar shows. Same best-effort try/except-
+with-warning pattern the calc/impress branches already use.
+
+Live-verified against real headless LibreOffice Writer with a new
+probe, `view-state-page-number-probe-windows.py` — 6 checks, all
+passing: a fresh single-page document reports `current_page_number:
+1`; after `set_paragraph_text_live` + a real `insert_page_break_live`
+(which resyncs the view cursor to the new paragraph per the BUG #5
+fix), the same call reports `current_page_number: 2` — a real page
+break moving a real cursor, not a stale or cached value — while
+`zoom_value`/`has_selection` are still reported alongside it.
+
+- 489 automated tests passing (487 + 2 new fakes-based plumbing tests).
+- Full writeup: `docs/HARDENING_PLAN.md`'s "Phase 6" section, which also
+  tracks the rest of the new-tools list (9 more) and the
+  `get_document_statistics_live` rewrite still queued after it.
 
 ## v2.0.14
 

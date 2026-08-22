@@ -1084,7 +1084,7 @@ redundancy note -- `get_selection_live` already covers it.
 | 3 | `get_slide_content_live` | **Done, live-verified** -- see below |
 | 4 | `find_shape_text_live` | **Done, live-verified** -- see below |
 | 5 | `get_presentation_content_live` | **Done, live-verified** -- see below |
-| 6 | Writer page number on `get_view_state_live` | Queued |
+| 6 | Writer page number on `get_view_state_live` | **Done, live-verified** -- see below |
 | 7 | `goto_page_live` | Queued |
 | 8 | `list_fonts_live` | Queued |
 | 9 | `activate_draw_page_live` | Queued |
@@ -1309,5 +1309,39 @@ omits the `notes` key on every slide, not just null; `include_shape_
 metadata=true` adds type/geometry to every slide's text entries.
 
 487/487 tests passing (483 + 4 new). Same bare-`uv run pytest`
+collection gap noted above -- unchanged by this tool, still queued as
+the first item after step 5 wraps.
+
+**Writer page number on `get_view_state_live` (#6).** Not a new tool --
+an enrichment to an existing one. `get_view_state_live` already
+reported a document-type-specific position for calc (`active_sheet`)
+and impress/draw (`current_page_name`), but Writer fell through both
+`if`/`elif` branches and reported no page position at all. Added a
+`writer` branch to `UNOBridge.get_view_state()` (`uno_bridge.py`)
+alongside the existing two: `controller.getViewCursor()` implements
+`com.sun.star.text.XPageCursor`, whose `getPage()` returns the 1-based
+page the cursor is currently on -- the same number Writer's own status
+bar shows, not a 0-based index. Same best-effort try/except-with-
+warning pattern the calc/impress branches already use, so a read
+failure reports `current_page_number: None` plus a `warnings` entry
+rather than raising.
+
+Fakes-based plumbing tests (`tests/test_undo_view_selection.py`:
+`test_get_view_state_live_reports_writer_current_page_number`,
+`test_get_view_state_live_omits_page_number_for_non_writer_docs`; the
+existing `test_get_view_state_live_reports_zoom_and_selection` updated
+for the new field). No registry-catalog change needed -- this is an
+existing implemented tool, not a new name. Live-verified against real
+headless LibreOffice Writer with a new probe,
+`view-state-page-number-probe-windows.py` -- 6 checks, all passing: a
+fresh single-page document reports `current_page_number: 1`; after
+`set_paragraph_text_live` + a real `insert_page_break_live` (which
+resyncs the view cursor to the new paragraph per the BUG #5 fix --
+see `insert_page_break`'s docstring), the same call reports
+`current_page_number: 2` -- a real page break moving a real cursor,
+not a stale or cached value -- while `zoom_value`/`has_selection` are
+still reported alongside it.
+
+489/489 tests passing (487 + 2 new). Same bare-`uv run pytest`
 collection gap noted above -- unchanged by this tool, still queued as
 the first item after step 5 wraps.
