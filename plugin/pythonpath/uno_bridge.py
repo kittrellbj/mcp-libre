@@ -5427,6 +5427,17 @@ class UNOBridge:
         unprotect_sheet_live already use). `frozen` reuses
         get_freeze_panes() as-is rather than re-deriving its
         active-sheet-switch-and-restore handling here.
+
+        Follow-up pass, real gap flagged after this tool first shipped:
+        Brian's original spec also asked for "formula+error counts",
+        missing from the first version entirely. `formula_count`/
+        `error_count` scan this sheet's own used range (bounded by the
+        same `_FIND_CELLS_MAX_SCANNED_CELLS` backstop find_cells()/
+        get_document_statistics() already use, reported via
+        `counts_truncated` when hit) using the same `cell.getType() ==
+        CellContentType.FORMULA` idiom get_document_statistics() found
+        necessary -- `cell.getFormula()` truthiness is NOT "this cell
+        holds a real formula", it's non-empty for every non-blank cell.
         """
         self._require_calc(doc, "get_sheet_summary")
         sheet_obj = self._resolve_sheet(doc, sheet)
@@ -5437,6 +5448,25 @@ class UNOBridge:
         if single_cell:
             cell = sheet_obj.getCellByPosition(used["start_column"], used["start_row"])
             has_content = bool(cell.getString()) or bool(cell.getFormula())
+        formula_count = 0
+        error_count = 0
+        counts_truncated = False
+        if has_content:
+            width = used["end_column"] - used["start_column"] + 1
+            height = used["end_row"] - used["start_row"] + 1
+            if width * height > self._FIND_CELLS_MAX_SCANNED_CELLS:
+                counts_truncated = True
+            else:
+                formula_content_type = uno.Enum("com.sun.star.table.CellContentType", "FORMULA")
+                for r in builtins.range(used["start_row"], used["end_row"] + 1):
+                    for c in builtins.range(used["start_column"], used["end_column"] + 1):
+                        scan_cell = sheet_obj.getCellByPosition(c, r)
+                        if not (scan_cell.getString() or scan_cell.getFormula()):
+                            continue
+                        if scan_cell.getType() == formula_content_type:
+                            formula_count += 1
+                        if scan_cell.getError() != 0:
+                            error_count += 1
         return {
             "index": index,
             "name": sheet_obj.Name,
@@ -5445,6 +5475,9 @@ class UNOBridge:
             "used_range": used if has_content else None,
             "row_count": (used["end_row"] - used["start_row"] + 1) if has_content else 0,
             "column_count": (used["end_column"] - used["start_column"] + 1) if has_content else 0,
+            "formula_count": formula_count,
+            "error_count": error_count,
+            "counts_truncated": counts_truncated,
             "frozen": self.get_freeze_panes(doc, sheet),
         }
 

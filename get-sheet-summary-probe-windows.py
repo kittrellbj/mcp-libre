@@ -9,6 +9,14 @@ sheet (must NOT report a misleading "1x1 used" -- gotoStartOfUsedArea/
 gotoEndOfUsedArea both collapse to A1 on an empty sheet), a sheet with
 real content and a real freeze, and a protected sheet.
 
+Follow-up pass, real gap flagged after this tool first shipped: Brian's
+original spec also asked for "formula+error counts", missing entirely
+from the first version. This probe also sets a real formula cell and a
+real DIV/0-erroring formula cell, then checks formula_count/error_count
+against those real, independently-created cells -- reusing the same
+cell.getFormula()-truthiness gotcha get_document_statistics_live's
+probe caught (a plain value cell is NOT a formula cell).
+
 Usage: python get-sheet-summary-probe-windows.py
 Environment: LIBREOFFICE_PROGRAM_DIR, same convention as the other probes.
 """
@@ -165,14 +173,23 @@ def main():
           r.get("success") and r["result"]["row_count"] == 0 and r["result"]["column_count"] == 0)
     check("blank sheet reports frozen: false",
           r.get("success") and r["result"]["frozen"]["frozen"] is False)
+    check("blank sheet reports formula_count/error_count: 0, counts_truncated: false",
+          r.get("success") and r["result"]["formula_count"] == 0 and r["result"]["error_count"] == 0 and
+          r["result"]["counts_truncated"] is False)
 
-    print("\n[5/5] get_sheet_summary_live with real content, a real freeze, and protection")
+    print("\n[5/5] get_sheet_summary_live with real content, a real freeze, protection, a real formula, and a real error")
     r = http_post("/tools/set_cell_live", {"cell": "B2", "value": "Revenue"})
     if not r.get("success"):
         fail(f"set_cell_live failed: {r}")
     r = http_post("/tools/set_cell_live", {"cell": "D5", "value": 100})
     if not r.get("success"):
         fail(f"set_cell_live (D5) failed: {r}")
+    r = http_post("/tools/set_cell_live", {"cell": "E5", "formula": "=D5*2"})
+    if not r.get("success"):
+        fail(f"set_cell_live (E5 real formula) failed: {r}")
+    r = http_post("/tools/set_cell_live", {"cell": "E6", "formula": "=D5/0"})
+    if not r.get("success"):
+        fail(f"set_cell_live (E6 real DIV/0 error) failed: {r}")
     r = http_post("/tools/freeze_panes_live", {"cell": "B2"})
     if not r.get("success"):
         fail(f"freeze_panes_live failed: {r}")
@@ -182,14 +199,20 @@ def main():
 
     r = http_post("/tools/get_sheet_summary_live", {})
     check("request succeeds with real content/freeze/protection", r.get("success") is True)
-    check("used_range reflects the real content span (B2:D5)",
-          r.get("success") and r["result"]["used_range"] == {"start_column": 1, "start_row": 1, "end_column": 3, "end_row": 4})
-    check("row_count/column_count match the real span (4 rows, 3 columns)",
-          r.get("success") and r["result"]["row_count"] == 4 and r["result"]["column_count"] == 3)
+    check("used_range reflects the real content span (B2:E6)",
+          r.get("success") and r["result"]["used_range"] == {"start_column": 1, "start_row": 1, "end_column": 4, "end_row": 5})
+    check("row_count/column_count match the real span (5 rows, 4 columns)",
+          r.get("success") and r["result"]["row_count"] == 5 and r["result"]["column_count"] == 4)
     check("protected: true after a real protect_sheet_live call",
           r.get("success") and r["result"]["protected"] is True)
     check("frozen state matches the real freeze at B2",
           r.get("success") and r["result"]["frozen"]["frozen"] is True and r["result"]["frozen"]["cell"] == "B2")
+    check("formula_count is 2 (E5's real formula + E6's erroring formula), not counting D5's plain value",
+          r.get("success") and r["result"]["formula_count"] == 2)
+    check("error_count is 1 (only E6's real DIV/0), not E5's valid formula",
+          r.get("success") and r["result"]["error_count"] == 1)
+    check("counts_truncated is false for a small real sheet",
+          r.get("success") and r["result"]["counts_truncated"] is False)
 
     kill_soffice()
     run([str(UNOPKG_EXE), "remove", EXTENSION_ID])

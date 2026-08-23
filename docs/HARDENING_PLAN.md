@@ -1842,3 +1842,34 @@ collection gap noted above -- unchanged by this tool, still queued as
 the next item. Remaining before this branch is ready to close: #13
 (`get_sheet_summary_live` formula/error counts), then the
 pytest-collection/venv drift cleanup.
+
+**`get_sheet_summary_live` (#13) follow-up: formula/error counts.**
+Flagged against Brian's original spec message after #13 first shipped:
+the spec asked for "formula+error counts" alongside the rest of the
+summary, missing entirely from the first version. Adds `formula_count`
+and `error_count` (scoped to the sheet's own used range, same
+"skip if falsy" cell-content check the rest of `get_sheet_summary()`
+already uses) plus a `counts_truncated` flag, bounded by the same
+`_FIND_CELLS_MAX_SCANNED_CELLS` backstop `find_cells()`/
+`get_document_statistics()` already established -- reuses the exact
+`cell.getType() == CellContentType.FORMULA` idiom `get_document_
+statistics()`'s live probe proved necessary (`cell.getFormula()`
+truthiness is NOT "this cell holds a real formula": it's non-empty for
+every non-blank cell, including a plain typed value).
+
+Fakes-based tests updated (`FakeUnoBridge.get_sheet_summary` derives
+`formula_count`/`error_count` from its existing per-sheet cell dict;
+new `test_get_sheet_summary_live_reports_formula_and_error_counts`;
+the defaults test extended to assert the new fields are zeroed on a
+sheet with no formulas). Live-verified against real headless
+LibreOffice with the existing `get-sheet-summary-probe-windows.py`,
+extended with 3 new checks on the blank sheet and 3 on the real-content
+sheet (14 total, all passing): a real formula cell (`=D5*2`) and a real
+DIV/0-erroring formula cell (`=D5/0`) set alongside the existing plain
+value cells, `formula_count` confirmed as 2 (both formula cells, not
+the plain value), `error_count` confirmed as 1 (only the erroring
+one).
+
+522/522 tests passing (521 + 1 new). Remaining before this branch is
+ready to close: the pytest-collection/venv drift cleanup on the 3
+flagged test files.

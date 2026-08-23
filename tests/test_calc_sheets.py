@@ -157,11 +157,15 @@ class FakeUnoBridge:
         name = self._resolve_sheet_name(sheet)
         idx, entry = next((i, s) for i, s in enumerate(self.sheets) if s["name"] == name)
         used = self.get_used_range(doc, sheet)
+        sheet_cells = self.cells.get(name, {})
         return {
             "index": idx, "name": name, "visible": entry["visible"], "protected": entry["protected"],
             "used_range": used,
             "row_count": used["end_row"] - used["start_row"] + 1,
             "column_count": used["end_column"] - used["start_column"] + 1,
+            "formula_count": sum(1 for c in sheet_cells.values() if c.get("formula")),
+            "error_count": sum(1 for c in sheet_cells.values() if c.get("error")),
+            "counts_truncated": False,
             "frozen": self.get_freeze_panes(doc, sheet),
         }
 
@@ -609,7 +613,25 @@ def test_get_sheet_summary_live_defaults_to_active_sheet():
     assert r["visible"] is True
     assert r["protected"] is False
     assert r["row_count"] == 6 and r["column_count"] == 4
+    assert r["formula_count"] == 0 and r["error_count"] == 0 and r["counts_truncated"] is False
     assert r["frozen"] == {"frozen": False, "columns": 0, "rows": 0}
+
+
+def test_get_sheet_summary_live_reports_formula_and_error_counts():
+    # Follow-up pass, real gap flagged after this tool first shipped:
+    # Brian's original spec also asked for "formula+error counts",
+    # missing from the first version entirely.
+    context.reset()
+    uno_bridge, _, _ = _install(active_document=FakeDocument(), sheet_names=["Sheet1"])
+    _handler("set_cell_live")(cell="A1", formula="=1+1")
+    _handler("set_cell_live")(cell="A2", value=5)
+    uno_bridge.cells["Sheet1"]["A3"] = {"value": 0.0, "formula": "=1/0", "display": "#DIV/0!", "error": 532}
+    result = _handler("get_sheet_summary_live")()
+    assert result["success"] is True
+    r = result["result"]
+    assert r["formula_count"] == 2  # A1's real formula plus A3's erroring one
+    assert r["error_count"] == 1  # only A3 has a nonzero error code
+    assert r["counts_truncated"] is False
 
 
 def test_get_sheet_summary_live_by_name_includes_frozen_state():
@@ -708,6 +730,7 @@ if __name__ == "__main__":
         test_get_freeze_panes_live_reports_unfrozen_by_default,
         test_get_freeze_panes_live_reflects_a_real_freeze,
         test_get_sheet_summary_live_defaults_to_active_sheet,
+        test_get_sheet_summary_live_reports_formula_and_error_counts,
         test_get_sheet_summary_live_by_name_includes_frozen_state,
         test_get_sheet_summary_live_unknown_sheet,
         test_recalculate_live_hard_and_soft,

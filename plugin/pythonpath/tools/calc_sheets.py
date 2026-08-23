@@ -367,10 +367,11 @@ def get_used_range_live(sheet: Optional[str] = None) -> Dict[str, Any]:
     priority="P1",
     purpose=(
         "Return an at-a-glance sheet summary (name, visibility, "
-        "protection, used-range dimensions, freeze-panes state) in one "
-        "call -- Brian's new-tools assignment priority #13, instead of "
-        "get_active_sheet_live + get_used_range_live + "
-        "get_freeze_panes_live + reading protection separately."
+        "protection, used-range dimensions, formula+error counts, "
+        "freeze-panes state) in one call -- Brian's new-tools assignment "
+        "priority #13, instead of get_active_sheet_live + "
+        "get_used_range_live + get_freeze_panes_live + reading "
+        "protection separately."
     ),
     parameters=schema({"sheet": {"type": "string"}}),
     status="implemented",
