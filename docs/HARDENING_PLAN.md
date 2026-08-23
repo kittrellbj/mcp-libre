@@ -1873,3 +1873,56 @@ one).
 522/522 tests passing (521 + 1 new). Remaining before this branch is
 ready to close: the pytest-collection/venv drift cleanup on the 3
 flagged test files.
+
+**Pytest-collection/venv drift cleanup.** Previously characterized (and
+tracked all through this remediation effort) as a bare `uv run pytest`
+collection nuisance on 3 unrelated files. Root-caused this pass: it's
+larger than a test-only issue. `pyproject.toml` pinned `mcp[cli]>=
+1.10.1` with no upper bound; at some point `uv sync` resolved that to
+the newly-released `mcp==2.0.0`, which renamed/removed the 1.x API
+surface the code actually targets (`mcp.server.fastmcp.FastMCP`,
+`mcp.shared.memory.create_connected_server_and_client_session`). That
+silently broke **`src/libremcp.py` itself** -- the "external server,"
+documented in `README.md` as "the one usable directly with MCP clients
+such as Claude Desktop today" -- not just its tests. The `mcp-libre`
+console-script entry point (`pyproject.toml`'s `[project.scripts]`)
+was unimportable in this venv before this fix.
+
+Fix: pinned `mcp[cli]>=1.10.1,<2.0.0` (resolves to `1.29.0`, the
+highest 1.x release, matching the API the code was actually written
+against) and added `requests>=2.31.0` to `[tool.uv].dev-dependencies`
+(`plugin/test_plugin.py`'s separate, unrelated `ModuleNotFoundError`).
+`uv sync` applied both. Verified `src/libremcp.py` imports cleanly
+post-fix, restoring the real production entry point, not just test
+collection.
+
+With imports fixed, `tests/test_client.py`'s `test_mcp_client` (now
+collectible) surfaced a second, narrower issue: a bare `async def`
+function pytest tries to call synchronously with no `pytest-asyncio`
+marker, since this repo has no `asyncio_mode=auto` config -- "async
+def functions are not natively supported." Inspected the function
+itself first rather than reaching for a marker: it shells out to a
+real `soffice` process via `libremcp.py`'s `create_document`/etc. (same
+category as this repo's root-level `*-probe-windows.py` live-
+verification scripts, which are deliberately never pytest-collected),
+uses `print()` instead of assertions, and predates the fakes-based
+test convention the rest of `tests/` follows -- a manual demo script,
+not a real automated unit test. Renamed `test_mcp_client` ->
+`demo_mcp_client` (pytest no longer tries to collect it; still runs
+standalone via `python tests/test_client.py`), with a docstring
+explaining why, rather than forcing it into strict-mode async-test
+compliance for a script it was never designed to be.
+
+`tests/test_insert_fix.py` (2 tests) and `plugin/test_plugin.py`
+(script-only, no `test_`-prefixed functions, always collects 0 items --
+confirmed pre-existing and unrelated, not a defect from this fix) both
+now import and collect cleanly too.
+
+Bare `uv run pytest` (no `--ignore` flags, the actual CI-shaped
+command) now passes clean: **524/524 tests passing**, 0 collection
+errors, 2 pre-existing/unrelated warnings left as-is (a
+`pydantic_settings` forward-reference deprecation warning, and
+`test_insert_fix.py::test_insert_text_fix` returning a `bool` instead
+of asserting -- neither introduced by or in scope for this fix).
+
+**This closes the last open item before the branch is ready to close.**

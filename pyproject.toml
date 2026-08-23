@@ -1,6 +1,6 @@
 [project]
 name = "mcp-libre"
-version = "2.0.27"
+version = "2.0.28"
 description = "LibreOffice Model Context Protocol Server - Provides tools and resources for interacting with LibreOffice documents"
 readme = "README.md"
 license = {text = "MIT"}
@@ -20,7 +20,7 @@ classifiers = [
 requires-python = ">=3.12"
 dependencies = [
     "httpx>=0.28.1",
-    "mcp[cli]>=1.10.1",
+    "mcp[cli]>=1.10.1,<2.0.0",
     "pydantic>=2.0.0",
 ]
 
@@ -38,4 +38,5 @@ packages = ["libremcp.py", "main.py"]
 dev-dependencies = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
+    "requests>=2.31.0",
 ]
