@@ -99,10 +99,12 @@ def activate_draw_page_live(page: Any) -> Dict[str, Any]:
     name="get_draw_page_live",
     priority="P1",
     purpose=(
-        "Return all text content of a Draw page (shapes with text) in one "
+        "Return page metadata (name, dimensions, background, shape count) "
+        "plus all text content of a Draw page (shapes with text) in one "
         "call, instead of list_shapes_live + N get_shape_live -- Brian's "
         "new-tools assignment priority #10, the Draw counterpart to "
-        "Impress's get_slide_content_live. page omitted -> the active page."
+        "Impress's get_slide_content_live. page omitted -> the active page. "
+        "Never activates the page (no setCurrentPage call)."
     ),
     parameters=schema({
         "page": {"description": "Page index or name. Omitted -> the active page."},

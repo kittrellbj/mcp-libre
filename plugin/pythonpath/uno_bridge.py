@@ -6024,24 +6024,66 @@ class UNOBridge:
         doc.getCurrentController().setCurrentPage(target)
         return {"index": self._draw_page_index(doc.getDrawPages(), target), "name": target.Name}
 
+    @staticmethod
+    def _draw_page_background_summary(page: Any) -> Dict[str, Any]:
+        """Best-effort summary of a Draw page's Background. Live-verified
+        (see set_draw_page_background()'s docstring): a Draw page's own
+        PropertySetInfo does NOT expose "IsBackgroundVisible"/"FillColor"
+        directly the way an Impress slide's does (get_slide_layout()'s
+        background_visible) -- only the opaque "Background" object
+        reference and the read-only "IsBackgroundDark" flag. Reads
+        through to the Background object's own FillStyle/FillColor when
+        one is actually set, rather than reporting nothing."""
+        summary: Dict[str, Any] = {"set": False, "is_dark": None}
+        try:
+            summary["is_dark"] = bool(page.IsBackgroundDark)
+        except Exception:
+            pass
+        background = getattr(page, "Background", None)
+        summary["set"] = background is not None
+        if background is not None:
+            try:
+                summary["fill_style"] = str(background.FillStyle)
+            except Exception:
+                pass
+            try:
+                summary["fill_color"] = background.FillColor
+            except Exception:
+                pass
+        return summary
+
     def get_draw_page(self, doc: Any, page: Any = None, include_shape_metadata: bool = False) -> Dict[str, Any]:
-        """Return all text content of a Draw page (new tool, Brian's
-        new-tools assignment priority #10) -- the Draw counterpart to
-        get_slide_content() (#3): "give me all the content of this page"
-        instead of list_shapes_live + N get_shape_live calls. page
+        """Return page metadata plus all text content of a Draw page (new
+        tool, Brian's new-tools assignment priority #10) -- the Draw
+        counterpart to get_slide_content() (#3): "give me everything
+        about this page" instead of list_shapes_live + N get_shape_live
+        calls, without activating it (never calls setCurrentPage). page
         omitted -> the active page, same _resolve_draw_page() convention
         every other draw.py page tool uses.
+
+        Follow-up pass, real gap flagged after this tool first shipped:
+        Brian's original spec asked for "name, dimensions, background,
+        shape count, etc., without activating it" -- the first version
+        shipped only the shape-text dump (mirroring get_slide_content()),
+        missing width/height/background/shape_count entirely. Both are
+        useful, so this adds the metadata fields alongside the existing
+        text dump rather than replacing it -- get_document_snapshot()'s
+        active_page and extract_document_text()'s Draw branch already
+        compose this method for its text field, and dropping that would
+        break both.
 
         Same shape-text extraction loop as get_slide_content() (only
         shapes with non-empty getString() text are included, same
         "skip if falsy" convention _shape_summary() established), reused
-        rather than re-derived. Deliberately narrower than
-        get_slide_content()'s result, though: Draw pages don't carry
-        Impress's hidden/notes concepts in this tool catalog (no
-        hide_draw_page_live or Draw notes tooling exists), so this
-        result is just {index, name, text: [...]}, not a stripped-down
-        copy of the Impress shape padded with fields that would never
-        mean anything here.
+        rather than re-derived.
+
+        Live-verified via get-draw-page-probe-windows.py: width/height
+        are a document-wide setting in real LibreOffice Draw -- every
+        page reports the same values regardless of which page's
+        set_draw_page_size() call last set them. Background, unlike
+        size, genuinely is per-page. Reported here as-is (page.Width/
+        page.Height) rather than silently deduplicated to a document
+        field, since that's what the underlying API actually exposes.
         """
         self._require_draw(doc, "get_draw_page")
         target_page = self._resolve_draw_page(doc, page)
@@ -6064,6 +6106,10 @@ class UNOBridge:
         return {
             "index": self._draw_page_index(doc.getDrawPages(), target_page),
             "name": target_page.Name,
+            "width": target_page.Width,
+            "height": target_page.Height,
+            "shape_count": target_page.getCount(),
+            "background": self._draw_page_background_summary(target_page),
             "text": text_entries,
         }
 

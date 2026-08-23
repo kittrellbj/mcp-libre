@@ -1793,3 +1793,52 @@ rewrite plus all 14 new tools) done and live-verified. The only
 remaining item before this branch is ready to close is the
 pre-existing pytest-collection/venv drift on the 3 test files flagged
 above.
+
+**`get_draw_page_live` (#10) follow-up: page metadata gap.** Flagged
+against Brian's original spec message after #10 first shipped: the
+spec asked for "name, dimensions, background, shape count, etc.,
+without activating it," but the first version shipped only the
+shape-text dump (mirroring `get_slide_content_live`). This pass adds
+`width`, `height`, `shape_count`, and a `background` summary alongside
+the existing `text` field -- `get_document_snapshot_live`'s
+`active_page` and `extract_document_text_live`'s Draw branch both
+compose `get_draw_page()` for its `text` field, so the additive fields
+don't touch either.
+
+New `UNOBridge._draw_page_background_summary()` static helper: a Draw
+page's own `PropertySetInfo` does NOT expose `IsBackgroundVisible`/
+`FillColor` directly the way an Impress slide's does -- only the
+opaque `Background` object reference and the read-only
+`IsBackgroundDark` flag. Reads through to the `Background` object's
+own `FillStyle`/`FillColor` when one is actually set.
+
+Real behavior caught by the live probe, not assumed from the API:
+Draw page **width/height are a document-wide setting**, not truly
+per-page -- every page reports the same values regardless of which
+page's `set_draw_page_size_live` call last set them. Background,
+unlike size, genuinely is per-page. Reported as-is (`page.Width`/
+`page.Height`) rather than silently deduplicating to a document-level
+field, since that's what the underlying API actually exposes; noted in
+`get_draw_page()`'s docstring so the next person touching this doesn't
+re-derive it.
+
+Fakes-based test updated (`tests/test_draw.py`'s `FakeUnoBridge.
+get_draw_page` now returns `width`/`height`/`shape_count`/
+`background`) plus a new `test_get_draw_page_live_includes_page_
+metadata`; `test_get_draw_page_live_defaults_to_active_page` extended
+to assert `shape_count` counts every shape on the page (2), not
+`len(text)` (1). Live-verified against real headless LibreOffice with
+the existing `get-draw-page-probe-windows.py`, extended with 5 new
+checks (13 total, all passing): a real `set_draw_page_size_live` +
+`set_draw_page_background_live` call on page 1, cross-checked directly
+against `get_draw_page_live`'s reported `width`/`height`/`background`;
+`shape_count` on page 1 confirmed as 2 (titled shape + the empty
+rectangle that's excluded from `text`); page 2 confirmed to report its
+own unset `background` (not page 1's leaking across pages) and its own
+`shape_count` of 1.
+
+521/521 tests passing (520 + 1 new). Same bare-`uv run pytest`
+collection gap noted above -- unchanged by this tool, still queued as
+the next item. Remaining before this branch is ready to close: #13
+(`get_sheet_summary_live` formula/error counts), then the
+pytest-collection/venv drift cleanup.

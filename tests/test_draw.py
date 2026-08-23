@@ -98,7 +98,17 @@ class FakeUnoBridge:
                 item["width"] = s.get("width", 1000)
                 item["height"] = s.get("height", 500)
             text_entries.append(item)
-        return {"index": idx, "name": name, "text": text_entries}
+        page_width, page_height, _unit = self.page_size.get(name, (28000, 21000, "mm"))
+        background = self.page_background.get(name)
+        return {
+            "index": idx,
+            "name": name,
+            "width": page_width,
+            "height": page_height,
+            "shape_count": len(entry.get("shapes", [])),
+            "background": {"set": background is not None, "properties": background or {}},
+            "text": text_entries,
+        }
 
     def insert_draw_page(self, doc, position=None, name=None):
         idx = position if position is not None else len(self.pages)
@@ -262,6 +272,26 @@ def test_get_draw_page_live_defaults_to_active_page():
     assert result["result"]["index"] == 0
     assert result["result"]["name"] == "page1"
     assert result["result"]["text"] == [{"shape": "Title 1", "text": "Org Chart"}]
+    # shape_count reflects every shape on the page, including the one
+    # skipped from "text" for having no text -- not len(text).
+    assert result["result"]["shape_count"] == 2
+
+
+def test_get_draw_page_live_includes_page_metadata():
+    # Follow-up pass, real gap flagged after this tool first shipped:
+    # Brian's original spec asked for "name, dimensions, background,
+    # shape count, etc." -- the first version shipped only the shape-text
+    # dump. This covers the metadata fields added alongside it.
+    context.reset()
+    uno_bridge, _, _ = _install(active_document=FakeDocument(), page_names=["page1"])
+    uno_bridge.set_draw_page_background(None, "page1", {"FillColor": 16711680})
+    result = _handler("get_draw_page_live")()
+    assert result["success"] is True
+    assert result["result"]["width"] == 28000
+    assert result["result"]["height"] == 21000
+    assert result["result"]["shape_count"] == 0
+    assert result["result"]["background"]["set"] is True
+    assert result["result"]["background"]["properties"] == {"FillColor": 16711680}
 
 
 def test_get_draw_page_live_by_name():
@@ -431,6 +461,7 @@ if __name__ == "__main__":
         test_activate_draw_page_live_by_index,
         test_activate_draw_page_live_unknown_page,
         test_get_draw_page_live_defaults_to_active_page,
+        test_get_draw_page_live_includes_page_metadata,
         test_get_draw_page_live_by_name,
         test_get_draw_page_live_with_shape_metadata,
         test_get_draw_page_live_unknown_page,

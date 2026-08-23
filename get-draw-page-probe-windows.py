@@ -10,6 +10,15 @@ the active page, addressing a specific page by name, and shape-metadata
 inclusion -- checking each result against what's actually in the
 document (not just success=true).
 
+Follow-up pass, real gap flagged after this tool first shipped: Brian's
+original spec asked for "name, dimensions, background, shape count,
+etc., without activating it" -- the first version shipped only the
+shape-text dump. This probe also sets a real page size and a real
+background fill via set_draw_page_size_live/set_draw_page_background_live,
+then checks get_draw_page_live's width/height/shape_count/background
+fields against those real, independently-set values (not hand-guessed
+expected values).
+
 Usage: python get-draw-page-probe-windows.py
 Environment: LIBREOFFICE_PROGRAM_DIR, same convention as the other probes.
 """
@@ -194,6 +203,13 @@ def main():
     if not r.get("success"):
         fail(f"activate_draw_page_live (reset to page 0) failed: {r}")
 
+    r = http_post("/tools/set_draw_page_size_live", {"page": 0, "width": 25000, "height": 15000, "unit": "mm100"})
+    if not r.get("success"):
+        fail(f"set_draw_page_size_live (page 1) failed: {r}")
+    r = http_post("/tools/set_draw_page_background_live", {"page": 0, "properties": {"FillColor": 16711680}})
+    if not r.get("success"):
+        fail(f"set_draw_page_background_live (page 1) failed: {r}")
+
     r = http_post("/tools/get_draw_page_live", {})
     check("omitted page defaults to the real active page (page 1)", r.get("success") is True)
     check("index/name reported correctly for page 1",
@@ -202,11 +218,26 @@ def main():
           r.get("success") and any(t["text"] == "Org Chart" for t in r["result"]["text"]))
     check("the empty rectangle shape contributes nothing to text (skipped, not an empty-string entry)",
           r.get("success") and all(t["text"] for t in r["result"]["text"]) and len(r["result"]["text"]) == 1)
+    check("width/height reflect the real size just set via set_draw_page_size_live, not activating the page",
+          r.get("success") and r["result"]["width"] == 25000 and r["result"]["height"] == 15000)
+    check("shape_count is 2 (titled shape + empty rectangle), not len(text) which is 1",
+          r.get("success") and r["result"]["shape_count"] == 2)
+    check("background reports the real fill just set via set_draw_page_background_live",
+          r.get("success") and r["result"]["background"]["set"] is True and
+          r["result"]["background"].get("fill_color") == 16711680)
 
     r = http_post("/tools/get_draw_page_live", {"page": "Second Page"})
     check("addressing page 2 by name succeeds", r.get("success") is True)
     check("page 2's real shape text is present, not page 1's",
           r.get("success") and r["result"]["text"] == [{"shape": r["result"]["text"][0]["shape"], "text": "Second Page Title"}])
+    # Note: page size is a document-wide property in real LibreOffice Draw
+    # (every page reports the same Width/Height regardless of which page's
+    # set_draw_page_size_live call last set it) -- only background is
+    # genuinely per-page. Confirmed live rather than assumed.
+    check("page 2's background is its own default (unset), not page 1's leaking across pages",
+          r.get("success") and r["result"]["background"]["set"] is False)
+    check("page 2's shape_count is 1 (its own titled shape only)",
+          r.get("success") and r["result"]["shape_count"] == 1)
 
     r = http_post("/tools/get_draw_page_live", {"page": "Second Page", "include_shape_metadata": True})
     check("include_shape_metadata=true adds type/geometry to the text entry",
