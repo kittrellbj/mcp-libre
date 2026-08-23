@@ -456,6 +456,63 @@ def set_speaker_notes_live(slide: Any, text: str) -> Dict[str, Any]:
 
 
 @register_tool(
+    name="get_slide_content_live",
+    priority="P1",
+    purpose="Return all text content of one slide (shapes + notes) in one call, instead of list_shapes_live + N get_shape_live.",
+    parameters=schema({
+        "slide": {"description": "Slide index or name."},
+        "include_notes": {"type": "boolean"},
+        "include_shape_metadata": {"type": "boolean"},
+    }, required=["slide"]),
+    status="implemented",
+)
+def get_slide_content_live(slide: Any, include_notes: bool = True,
+                            include_shape_metadata: bool = False) -> Dict[str, Any]:
+    start = envelope.start_timer()
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        result = ctx.uno_bridge.get_slide_content(doc, slide, include_notes, include_shape_metadata)
+        return envelope.build_success(result=result, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
+
+
+@register_tool(
+    name="get_presentation_content_live",
+    priority="P1",
+    purpose=(
+        "Return all text content of the whole deck (or a chosen subset of "
+        "slides) in one call -- the bulk counterpart to get_slide_content_live "
+        "(Brian's new-tools assignment, priority #5). Wraps get_slide_content "
+        "in a loop rather than duplicating its per-slide read logic, per the "
+        "schema flagged when #3 was built."
+    ),
+    parameters=schema({
+        "slides": {"type": "array", "items": {}, "description": "Slide indices or names to include. Omit for every slide, in order."},
+        "include_notes": {"type": "boolean", "default": True},
+        "include_shape_metadata": {"type": "boolean", "default": False},
+        "include_hidden": {"type": "boolean", "default": True, "description": "False also drops slides whose own get_slide_content reports hidden=True."},
+    }, required=[]),
+    status="implemented",
+)
+def get_presentation_content_live(slides: Optional[List[Any]] = None, include_notes: bool = True,
+                                   include_shape_metadata: bool = False,
+                                   include_hidden: bool = True) -> Dict[str, Any]:
+    start = envelope.start_timer()
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        result = ctx.uno_bridge.get_presentation_content(
+            doc, slides=slides, include_notes=include_notes,
+            include_shape_metadata=include_shape_metadata, include_hidden=include_hidden,
+        )
+        return envelope.build_success(result=result, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
+
+
+@register_tool(
     name="get_slide_transition_live",
     priority="P1",
     purpose="Return transition/effect/duration/advance settings.",

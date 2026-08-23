@@ -186,7 +186,15 @@ def close_document_live(document_id: Optional[str] = None, save: Any = False) ->
 @register_tool(
     name="get_document_statistics_live",
     priority="P1",
-    purpose="Return pages/slides/sheets/words/chars/tables/images/etc. as applicable.",
+    purpose=(
+        "Comprehensive per-type document inventory (Brian's original priority #1, "
+        "the get_document_statistics_live rewrite, \"Part 4\"): Writer gets page/word/"
+        "character counts plus tables/images/shapes/fields/bookmarks/hyperlinks/"
+        "sections/footnotes/endnotes/comments/tracked changes; Calc gets sheets plus "
+        "used-cell/formula/error counts and chart/pivot-table counts; Impress/Draw "
+        "get slide-or-page count plus a shape-type breakdown, and (Impress only) "
+        "notes and hidden-slide counts."
+    ),
     parameters=schema({"document_id": {"type": "string"}}),
     status="implemented",
 )
@@ -197,6 +205,57 @@ def get_document_statistics_live(document_id: Optional[str] = None) -> Dict[str,
         doc, resolved_id = _resolve_and_register(ctx, document_id)
         stats = ctx.uno_bridge.get_document_statistics(doc)
         return envelope.build_success(result=stats, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start, document_id=document_id)
+
+
+@register_tool(
+    name="get_document_snapshot_live",
+    priority="P1",
+    purpose=(
+        "Return a compact, type-appropriate \"what's open right now\" "
+        "snapshot -- document identity, full statistics, view state, and "
+        "selection, plus a document-type-specific active object (active "
+        "sheet/slide/page for Calc/Impress/Draw) -- Brian's new-tools "
+        "assignment priority #14, for a caller starting a session without "
+        "already knowing what kind of document is active."
+    ),
+    parameters=schema({"document_id": {"type": "string"}}),
+    status="implemented",
+)
+def get_document_snapshot_live(document_id: Optional[str] = None) -> Dict[str, Any]:
+    start = envelope.start_timer()
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx, document_id)
+        result = ctx.uno_bridge.get_document_snapshot(doc)
+        return envelope.build_success(result=result, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start, document_id=document_id)
+
+
+@register_tool(
+    name="extract_document_text_live",
+    priority="P1",
+    purpose=(
+        "Return a flat plain-text extraction of the whole document, "
+        "regardless of type -- Brian's new-tools assignment priority #15, "
+        "the last item in the Phase 6 new-tools list -- for search/"
+        "embedding/context use rather than a structured per-container read."
+    ),
+    parameters=schema({"document_id": {"type": "string"}}),
+    status="implemented",
+)
+def extract_document_text_live(document_id: Optional[str] = None) -> Dict[str, Any]:
+    start = envelope.start_timer()
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx, document_id)
+        result = ctx.uno_bridge.extract_document_text(doc)
+        warnings = []
+        if result.get("truncated"):
+            warnings.append("Calc extraction stopped early after the scan backstop was hit -- text may be incomplete.")
+        return envelope.build_success(result=result, document_id=resolved_id, warnings=warnings, elapsed_ms=envelope.elapsed_ms_since(start))
     except Exception as e:
         return _error_response(e, start, document_id=document_id)
 
@@ -312,9 +371,25 @@ def get_document_properties_live(document_id: Optional[str] = None) -> Dict[str,
 @register_tool(
     name="set_document_properties_live",
     priority="P1",
-    purpose="Set standard document metadata.",
+    purpose=(
+        "Set standard document metadata. properties is a flat {name: value} dict "
+        "(not PropertyValue pairs), keys matched case-insensitively (BUG #13 fix). "
+        "Recognized keys: title, subject, author, description, keywords (a list of "
+        "strings). Any other key is silently skipped and named in the response's "
+        "warnings."
+    ),
     parameters=schema({
-        "properties": {"type": "object"},
+        "properties": {
+            "type": "object",
+            "description": "Flat {name: value} dict. Recognized keys: title, subject, author, description, keywords.",
+            "properties": {
+                "title": {"type": "string"},
+                "subject": {"type": "string"},
+                "author": {"type": "string"},
+                "description": {"type": "string"},
+                "keywords": {"type": "array", "items": {"type": "string"}},
+            },
+        },
         "document_id": {"type": "string"},
     }, required=["properties"]),
     status="implemented",

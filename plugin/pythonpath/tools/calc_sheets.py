@@ -363,6 +363,69 @@ def get_used_range_live(sheet: Optional[str] = None) -> Dict[str, Any]:
 
 
 @register_tool(
+    name="get_sheet_summary_live",
+    priority="P1",
+    purpose=(
+        "Return an at-a-glance sheet summary (name, visibility, "
+        "protection, used-range dimensions, formula+error counts, "
+        "freeze-panes state) in one call -- Brian's new-tools assignment "
+        "priority #13, instead of get_active_sheet_live + "
+        "get_used_range_live + get_freeze_panes_live + reading "
+        "protection separately."
+    ),
+    parameters=schema({"sheet": {"type": "string"}}),
+    status="implemented",
+)
+def get_sheet_summary_live(sheet: Optional[str] = None) -> Dict[str, Any]:
+    start = envelope.start_timer()
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        result = ctx.uno_bridge.get_sheet_summary(doc, sheet)
+        return envelope.build_success(result=result, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
+
+
+@register_tool(
+    name="find_cells_live",
+    priority="P1",
+    purpose=(
+        "Search cell values/formulas/comments for a query string, across "
+        "one sheet or the whole workbook -- the Calc search primitive "
+        "this catalog was missing (Brian's priority #2, 2026-08-21 new-"
+        "tools assignment: 'the biggest obvious Calc hole'). Scoped to "
+        "the given range, else each searched sheet's own used range, "
+        "never the full 1M+-row grid."
+    ),
+    parameters=schema({
+        "query": {"type": "string"},
+        "sheet": {"type": "string"},
+        "range": {"type": "string"},
+        "look_in": {"type": "string", "enum": ["values", "formulas", "comments", "all"], "default": "values"},
+        "match": {"type": "string", "enum": ["contains", "exact", "regex"], "default": "contains"},
+        "case_sensitive": {"type": "boolean", "default": False},
+        "max_results": {"type": "integer", "default": 100},
+    }, required=["query"]),
+    status="implemented",
+)
+def find_cells_live(query: str, sheet: Optional[str] = None, range: Optional[str] = None,
+                     look_in: str = "values", match: str = "contains", case_sensitive: bool = False,
+                     max_results: int = 100) -> Dict[str, Any]:
+    start = envelope.start_timer()
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        result = ctx.uno_bridge.find_cells(
+            doc, query, sheet=sheet, range=range, look_in=look_in, match=match,
+            case_sensitive=case_sensitive, max_results=max_results,
+        )
+        return envelope.build_success(result=result, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
+
+
+@register_tool(
     name="insert_rows_live",
     priority="P1",
     purpose="Insert rows.",
@@ -850,6 +913,30 @@ def unfreeze_panes_live(sheet: Optional[str] = None) -> Dict[str, Any]:
         doc, resolved_id = _resolve_and_register(ctx)
         ctx.uno_bridge.unfreeze_panes(doc, sheet)
         return envelope.build_success(result={"unfrozen": True}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
+
+
+@register_tool(
+    name="get_freeze_panes_live",
+    priority="P1",
+    purpose=(
+        "Return the current freeze-panes state -- Brian's new-tools "
+        "assignment priority #12, the getter freeze_panes_live/"
+        "unfreeze_panes_live never had. sheet omitted -> the active "
+        "sheet; reading a non-active sheet's freeze state does not "
+        "change which sheet is active afterward."
+    ),
+    parameters=schema({"sheet": {"type": "string"}}),
+    status="implemented",
+)
+def get_freeze_panes_live(sheet: Optional[str] = None) -> Dict[str, Any]:
+    start = envelope.start_timer()
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        result = ctx.uno_bridge.get_freeze_panes(doc, sheet)
+        return envelope.build_success(result=result, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
     except Exception as e:
         return _error_response(e, start)
 

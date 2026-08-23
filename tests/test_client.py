@@ -1,7 +1,16 @@
 #!/usr/bin/env python3
 """
-Test script for the LibreOffice MCP Server
-This demonstrates basic usage of the server tools
+Manual demo script for the LibreOffice MCP Server's external server
+(src/libremcp.py) -- exercises real tool calls (including shelling out
+to a real soffice process) via an in-memory MCP client session, same
+category as this repo's root-level *-probe-windows.py live-verification
+scripts, not the fakes-based automated suite the rest of tests/ uses.
+
+Not pytest-collected on purpose: `demo_mcp_client` (deliberately not
+prefixed `test_` -- pytest would otherwise try to call it as a
+synchronous test function and fail with "async def functions are not
+natively supported", since this repo doesn't run under pytest-asyncio
+strict-mode markers). Run directly instead: `python tests/test_client.py`.
 """
 
 import asyncio
@@ -15,7 +24,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), 'src
 from mcp.shared.memory import create_connected_server_and_client_session as client_session
 from libremcp import mcp
 
-async def test_mcp_client():
+async def demo_mcp_client():
     """Test the MCP server by calling its tools as a client would"""
     print("Testing LibreOffice MCP Server Tools")
     print("=" * 50)
@@ -140,4 +149,4 @@ async def test_mcp_client():
                 print(f"   ⚠ Could not remove {file}: {e}")
 
 if __name__ == "__main__":
-    asyncio.run(test_mcp_client())
+    asyncio.run(demo_mcp_client())

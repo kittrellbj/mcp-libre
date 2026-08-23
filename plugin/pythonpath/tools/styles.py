@@ -102,7 +102,14 @@ def get_style_live(family: str, style_name: str) -> Dict[str, Any]:
 @register_tool(
     name="create_style_live",
     priority="P1",
-    purpose="Create a user style in a supported family.",
+    purpose=(
+        "Create a user style in a supported family. family selects the kind of "
+        "style, not a separate tool -- e.g. family='ParagraphStyles' creates what "
+        "a caller might otherwise look for as 'create_paragraph_style_live' (no "
+        "such tool exists; this is the one). Supported family values: "
+        "ParagraphStyles, CharacterStyles, PageStyles, FrameStyles, "
+        "NumberingStyles, CellStyles."
+    ),
     parameters=schema({
         "family": {"type": "string"},
         "style_name": {"type": "string"},

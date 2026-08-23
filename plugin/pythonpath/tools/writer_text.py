@@ -73,7 +73,15 @@ from .registry import register_tool, schema
 @register_tool(
     name="insert_paragraph_live",
     priority="P1",
-    purpose="Insert a paragraph before/after current or specified paragraph.",
+    purpose=(
+        "Insert a paragraph before/after a paragraph. at_paragraph is 1-based; "
+        "position defaults to 'after'. If at_paragraph is omitted, the anchor is "
+        "wherever the last insert_paragraph_live/insert_heading_live/"
+        "insert_page_break_live call (in this session, single or batched) left off, "
+        "not a fixed 'current selection' -- pass at_paragraph explicitly for an "
+        "absolute target (BUG #7 finding: this was previously undocumented and "
+        "flaky under batch_execute_live, see BUG #5's fix)."
+    ),
     parameters=schema({
         "text": {"type": "string", "default": ""},
         "at_paragraph": {"type": "integer"},
@@ -96,7 +104,13 @@ def insert_paragraph_live(text: str = "", at_paragraph: Optional[int] = None,
 @register_tool(
     name="append_paragraph_live",
     priority="P1",
-    purpose="Append a paragraph to the end of the document.",
+    purpose=(
+        "Append a paragraph to the end of the document. style_name is validated "
+        "before anything is inserted, so an unknown name now fails atomically "
+        "(nothing appended) rather than partially applying (BUG #9 fix). "
+        "Doc note: a fresh Writer document exposes the default body style as "
+        "'Standard', not the ODF-standard 'Default Paragraph Style' name."
+    ),
     parameters=schema({
         "text": {"type": "string", "default": ""},
         "style_name": {"type": "string"},
@@ -117,7 +131,12 @@ def append_paragraph_live(text: str = "", style_name: Optional[str] = None) -> D
 @register_tool(
     name="insert_heading_live",
     priority="P1",
-    purpose="Insert a heading with outline level/style.",
+    purpose=(
+        "Insert a heading with outline level/style. Same at_paragraph/position "
+        "contract as insert_paragraph_live -- 1-based, defaults to 'after', and "
+        "an omitted at_paragraph anchors off the last insert in this session "
+        "(see BUG #7/#5 finding on insert_paragraph_live)."
+    ),
     parameters=schema({
         "text": {"type": "string"},
         "level": {"type": "integer", "default": 1},

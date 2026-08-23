@@ -2075,6 +2075,29 @@ carving an exception into a deliberately coarse, already-hardened lock
 for one blocking tool is a real concurrency-design decision, not a
 same-pass fix.
 
+**Decided (2026-08-21) and implemented (2026-08-21) -- but live
+re-verification shows the primary use case above is still not restored,
+routed back to Morgan.** See `docs/EVENT_WAIT_CONCURRENCY_DECISION.md`
+for the decision and `docs/HARDENING_PLAN.md`'s "Phase 5" section for
+the full implementation, the measured (not guessed) cap value, and the
+live evidence. Summary: the cap (`min(timeout_ms,
+_MAX_WAIT_LOCK_HOLD_MS)`, 500ms, measured from 100 real edit-call round
+trips) works exactly as specified -- every wait call now holds the lock
+for ~500ms max, never the full requested `timeout_ms`, confirmed live --
+and the negative control (an event from outside this tool's own lock)
+is still correctly observed, no regression. But the positive pair (same
+agent's own edit and wait through this same HTTP surface, the tool's
+primary intended use) still fails, even across 8 poll attempts -- not
+because the cap is too short, but because the wait's per-call snapshot
+(taken fresh at each call's entry) and the shared lock together mean the
+edit's event is always already "in the past" by the time any wait call's
+snapshot could see it as new, independent of cap size. Confirmed live: a
+diagnostic read shows the edit's event genuinely fired and sits in the
+buffer, just never observed. A real fix needs a further design change
+(e.g. caller-supplied continuity across polls) outside this pass's
+scope ("no other change to the wait loop itself" per the decision doc) --
+open question for Morgan, not silently redesigned.
+
 **Testing:** 472/472 passing (up from 471): `test_drawing_objects.py`'s
 `test_activate_embedded_object_live_defaults_to_running`/`_accepts_case_
 insensitive_verb` replace the old UI_ACTIVE-default/`"active"`-verb
@@ -2186,13 +2209,17 @@ extension.
   `UNSUPPORTED_CAPABILITY` rather than being implemented. `LOADED`/
   `RUNNING` are real and live-verified. See "Live-verification pass:
   mcp-libre Part 2's newest 4 tools" below.
-- **`wait_for_document_event_live` can't observe an event from another
-  tool call through the same HTTP server** -- live-verified: it blocks
-  while holding the process-wide `_UNO_EXECUTION_LOCK`, so a second tool
-  call meant to trigger the awaited event queues behind it instead of
-  running concurrently. Works only for events from outside the tool-call
-  path (e.g. a human editing in a GUI session). Not fixed this pass --
-  see "Live-verification pass: mcp-libre Part 2's newest 4 tools" below.
+- **`wait_for_document_event_live` still can't observe an event from
+  another tool call through the same HTTP server, even after the
+  2026-08-21 capped-wait fix.** The cap bounds how long one wait call
+  can starve an *unrelated* queued call (500ms max, measured and
+  live-verified), but the tool's own primary use case (same agent's edit
+  and wait) fails for a different, cap-independent reason: the wait's
+  per-call snapshot is always taken after its own edit's event would
+  already be captured, given the two calls share one lock. Works only
+  for events from outside the tool-call path (e.g. a human editing in a
+  GUI session, or a raw UNO connection). See `docs/HARDENING_PLAN.md`'s
+  Phase 5 section for the full evidence; routed back to Morgan.
 - **The 308 remaining stub tools are still not wired into the live server
   by default** -- see the `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS` env var gate
   above. (The 58 implemented tools ARE always-on now, unconditionally.)

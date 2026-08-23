@@ -8,17 +8,22 @@ types where supported).
 UNO basis per spec: XUndoManagerSupplier/XUndoManager, XController/XFrame,
 document events, view data.
 
-All 14 of this module's tools are now real (status="implemented"),
-following the same pattern as core_runtime.py/document_lifecycle.py:
-tools.context.get_context() for live UNOBridge/DocumentRegistry/
-RuntimeState, _resolve_and_register/_error_response/_map_exception_to_code
-reused from document_lifecycle.py rather than re-derived here (single
-source of truth for that mapping):
+All 14 of this module's original-spec tools are real (status=
+"implemented"), following the same pattern as core_runtime.py/
+document_lifecycle.py: tools.context.get_context() for live UNOBridge/
+DocumentRegistry/RuntimeState, _resolve_and_register/_error_response/
+_map_exception_to_code reused from document_lifecycle.py rather than
+re-derived here (single source of truth for that mapping). A 15th tool,
+goto_page_live, was added 2026-08-22 (Brian's new-tools assignment,
+priority #7) -- not part of the original spec, see its own docstring.
   - The 6 undo tools: get_undo_state_live, undo_live, redo_live,
     begin_undo_context_live, end_undo_context_live, cancel_undo_context_live.
   - The 6 view/selection/locking tools: get_view_state_live, set_zoom_live,
     get_selection_live, clear_selection_live, lock_document_updates_live,
     unlock_document_updates_live.
+  - goto_page_live: Writer-only page navigation, the write-side companion
+    to get_view_state_live's current_page_number addition (#6) -- see
+    below for details.
   - The 2 event tools: get_document_events_live, wait_for_document_event_live
     -- landed in a deliberately separate pass from the other 12 (this
     module's own history has them as the last two stubs closed out): event
@@ -289,6 +294,31 @@ def set_zoom_live(percent: Optional[int] = None, mode: Optional[str] = None) -> 
 
 
 @register_tool(
+    name="goto_page_live",
+    priority="P2",
+    purpose=(
+        "Move the Writer view cursor to a given page number (1-based, same "
+        "numbering get_view_state_live's current_page_number reports) -- "
+        "Brian's new-tools assignment priority #7, the write-side companion "
+        "to that read-only addition (#6)."
+    ),
+    parameters=schema({"page": {"type": "integer"}}, required=["page"]),
+    status="implemented",
+)
+def goto_page_live(page: int) -> Dict[str, Any]:
+    start = envelope.start_timer()
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        result = ctx.uno_bridge.goto_page(doc, page)
+        warnings = result.pop("warnings", [])
+        return envelope.build_success(result=result, document_id=resolved_id, warnings=warnings,
+                                       elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
+
+
+@register_tool(
     name="get_selection_live",
     priority="P1",
     purpose="Return normalized current selection with document-type-specific details.",
@@ -413,7 +443,27 @@ def get_document_events_live(limit: int = 100, event_types: Optional[List[str]] 
 @register_tool(
     name="wait_for_document_event_live",
     priority="P3",
-    purpose="Block until a matching document event or timeout.",
+    purpose=(
+        "Block until a matching document event or timeout. Waits are "
+        "capped at uno_bridge._MAX_WAIT_LOCK_HOLD_MS (500ms) per call "
+        "regardless of the requested timeout_ms, since this call holds "
+        "the process-wide UNO execution lock for its full wait duration "
+        "-- an uncapped wait would starve any OTHER concurrent tool call "
+        "queued behind it for up to the full requested timeout_ms. "
+        "IMPORTANT, live-verified 2026-08-21: this cap bounds that "
+        "starvation, but does NOT make this tool able to observe an "
+        "event caused by your OWN edit call through this same HTTP "
+        "surface, even by re-polling -- both calls serialize on the same "
+        "lock, so your edit can only run in the gap between one wait call "
+        "ending and the next starting, and by the time it completes "
+        "(firing its event synchronously) that event is already 'in the "
+        "past' relative to the next wait call's fresh snapshot. Reliably "
+        "works only for events from OUTSIDE this tool's own lock (a "
+        "separate raw UNO connection, or a human editing in the GUI) -- "
+        "see docs/EVENT_WAIT_CONCURRENCY_DECISION.md for the fix and "
+        "docs/HARDENING_PLAN.md's Phase 5 note for this finding and its "
+        "live evidence."
+    ),
     parameters=schema({
         "event_types": {"type": "array", "items": {"type": "string"}},
         "timeout_ms": {"type": "integer"},
@@ -421,6 +471,10 @@ def get_document_events_live(limit: int = 100, event_types: Optional[List[str]] 
     status="implemented",
 )
 def wait_for_document_event_live(event_types: List[str], timeout_ms: int) -> Dict[str, Any]:
+    """Waits are internally clamped to uno_bridge._MAX_WAIT_LOCK_HOLD_MS
+    per call -- see that constant's comment and this tool's own `purpose`
+    string for why, and for the live-verified limitation on observing
+    same-HTTP-path self-triggered events even with the cap in place."""
     start = envelope.start_timer()
     error = _validate_event_types(event_types, start, required=True) or _validate_timeout_ms(timeout_ms, start)
     if error is not None:

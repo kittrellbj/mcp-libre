@@ -96,6 +96,15 @@ class FakeUnoBridge:
             },
         }
 
+    def list_fonts(self):
+        return {
+            "fonts": [
+                {"name": "Liberation Sans", "styles": ["Bold", "Italic", "Regular"]},
+                {"name": "Liberation Serif", "styles": ["Regular"]},
+            ],
+            "count": 2,
+        }
+
     # -- undo manager (only what batch_execute_live's undo_label wiring
     # needs to exercise -- see tests/test_undo_view_selection.py for the
     # fuller fake/tests of the 6 undo tools themselves) --
@@ -142,8 +151,8 @@ def _noop_handler(**kwargs):
 
 
 def _build_tools_dict(extra=None):
-    """Real scaffold registry (366 tools, including the 12 real core_runtime
-    ones) reduced to the {description, parameters, handler} shape
+    """Real scaffold registry (366+ tools, including the 13 real
+    core_runtime ones) reduced to the {description, parameters, handler} shape
     mcp_server.py's self.tools actually has, plus a couple of fake
     legacy-named entries (any handler works -- LEGACY_TOOL_PROFILES looks
     tools up by name before consulting the handler's module)."""
@@ -189,7 +198,7 @@ def test_get_server_info_live_reports_real_fields():
     result = _handler("get_server_info_live")()
     assert result["success"] is True
     r = result["result"]
-    assert r["extension_version"] == "2.0.6"
+    assert r["extension_version"] == "2.0.28"
     assert r["libreoffice_version"] == "24.2.0.3"
     assert "python_version" in r and r["python_version"]
     assert r["transport"] == "http"
@@ -204,6 +213,27 @@ def test_get_server_info_live_warns_when_version_query_fails():
     assert result["success"] is True
     assert result["result"]["libreoffice_version"] == "unknown"
     assert len(result["warnings"]) == 1
+
+
+def test_list_fonts_live_reports_fonts_grouped_by_name():
+    # New tool, 2026-08-22 (Brian's new-tools assignment, priority #8) --
+    # not document-scoped, so no active document is needed to succeed.
+    context.reset()
+    _install()
+    result = _handler("list_fonts_live")()
+    assert result["success"] is True
+    assert result["result"]["count"] == 2
+    names = [f["name"] for f in result["result"]["fonts"]]
+    assert "Liberation Sans" in names and "Liberation Serif" in names
+    sans = next(f for f in result["result"]["fonts"] if f["name"] == "Liberation Sans")
+    assert sans["styles"] == ["Bold", "Italic", "Regular"]
+
+
+def test_list_fonts_live_requires_no_active_document():
+    context.reset()
+    _install(active_document=None, open_documents=[])
+    result = _handler("list_fonts_live")()
+    assert result["success"] is True
 
 
 def test_get_capabilities_live_with_no_active_document():
@@ -541,6 +571,8 @@ if __name__ == "__main__":
         test_ping_live_echoes_and_reports_session_id,
         test_get_server_info_live_reports_real_fields,
         test_get_server_info_live_warns_when_version_query_fails,
+        test_list_fonts_live_reports_fonts_grouped_by_name,
+        test_list_fonts_live_requires_no_active_document,
         test_get_capabilities_live_with_no_active_document,
         test_get_capabilities_live_with_registered_document_id,
         test_get_capabilities_live_with_unknown_document_id,

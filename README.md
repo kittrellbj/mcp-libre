@@ -1,7 +1,7 @@
 # LibreOffice MCP Server
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.6-blue.svg)](#versioning)
+[![Version](https://img.shields.io/badge/version-2.0.24-blue.svg)](#versioning)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](#requirements)
 [![LibreOffice](https://img.shields.io/badge/LibreOffice-24.2%2B-18A303.svg)](#requirements)
 
@@ -204,7 +204,7 @@ python build-oxt-windows.py
 The extension package is created at:
 
 ```text
-build/libreoffice-mcp-extension-2.0.6.oxt
+build/libreoffice-mcp-extension-2.0.24.oxt
 ```
 
 The Windows builder creates a LibreOffice-compatible ZIP/OXT structure with normalized archive paths.
@@ -218,7 +218,7 @@ PowerShell example:
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
 & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension
-& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.6.oxt"
+& "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.24.oxt"
 ```
 
 Removing an extension that is not already installed may report that no matching extension exists. That is harmless.
@@ -269,7 +269,7 @@ A convenient rebuild/reinstall command in PowerShell is:
 
 ```powershell
 $RepoDir = "E:\Tools\mcp-libre"  # adjust to your clone location
-python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.6.oxt"
+python "$RepoDir\build-oxt-windows.py"; Stop-Process -Name soffice,soffice.bin -Force -ErrorAction SilentlyContinue; & "E:\LibreOffice\program\unopkg.com" remove org.mcp.libreoffice.extension; & "E:\LibreOffice\program\unopkg.com" add "$RepoDir\build\libreoffice-mcp-extension-2.0.24.oxt"
 ```
 
 Then reopen LibreOffice and start the MCP server from the Tools menu.
@@ -878,7 +878,7 @@ For Windows native extension changes, verify at minimum:
 [ ] PDF export works
 ```
 
-Run the automated test suite (471 tests):
+Run the automated test suite (474 tests):
 
 ```bash
 uv run pytest
@@ -887,6 +887,539 @@ uv run pytest
 ---
 
 # Versioning
+
+## v2.0.24
+
+Step 5 of the typeset-run remediation, fourteenth item, and the last of
+the Phase 6 new-tools list: `extract_document_text_live`, Brian's
+new-tools assignment priority #15 — a flat plain-text extraction of the
+whole document regardless of type, for search/embedding/context use.
+
+Writer: plain body text. Calc: each sheet's used range via bulk
+`getDataArray()`, stopping (`truncated: true`) after a scan backstop.
+Impress/Draw: composes `get_presentation_content()`/`get_draw_page()`
+(#5/#10) per slide/page. Real edge case guarded against: a genuinely
+blank Calc sheet's used-range cursors collapse to a single cell (the
+same behavior `get_sheet_summary()` already found), which would
+otherwise leak a spurious "0.0" into the extraction — live-verified
+with a real blank sheet inserted alongside real content, confirming
+the extraction stays clean.
+
+New `UNOBridge.extract_document_text()` plus the
+`extract_document_text_live` tool wrapper in `document_lifecycle.py`.
+
+Live-verified against real headless LibreOffice across all four
+document types with a new probe,
+`extract-document-text-probe-windows.py` — 15 checks, all passing:
+Writer's real paragraph text; Calc's real text/numeric content with
+the blank-sheet guard confirmed; Impress's real shape text and speaker
+notes; Draw's real shape text.
+
+**Phase 6 new-tools list (items #2-15) is now fully complete.** The
+only item remaining before this branch closes is the
+`get_document_statistics_live` rewrite (Brian's priority #1, tracked
+separately as Part 4).
+
+- 518 automated tests passing (515 + 3 new fakes-based plumbing tests).
+- Full writeup: `docs/HARDENING_PLAN.md`'s "Phase 6" section.
+
+## v2.0.23
+
+Step 5 of the typeset-run remediation, thirteenth item:
+`get_document_snapshot_live`, Brian's new-tools assignment priority
+#14 — a compact, type-appropriate "what's open right now" snapshot in
+one call, for a caller starting a session without already knowing what
+kind of document is active.
+
+Deliberately does NOT reuse `get_document_statistics()` (queued for its
+own separate rewrite, Brian's priority #1) — Writer counts are derived
+independently. For Calc/Impress/Draw, composes the bulk-read tools this
+same pass already built for the active sheet/slide/page —
+`get_sheet_summary()` (#13), `get_slide_content()` (#3),
+`get_draw_page()` (#10) — rather than re-deriving their per-type logic.
+
+New `UNOBridge.get_document_snapshot()` plus the
+`get_document_snapshot_live` tool wrapper in `document_lifecycle.py`.
+
+Live-verified against real headless LibreOffice across all four
+document types with a new probe,
+`get-document-snapshot-probe-windows.py` — 17 checks, all passing:
+Writer reports the real paragraph/page counts with no other doc type's
+fields leaking in; Calc reports the real sheet count and active
+sheet's real used range; Impress reports the real slide count and
+active slide's real shape text; Draw reports the real page count and
+active page's real name.
+
+- 515 automated tests passing (510 + 5 new fakes-based plumbing tests).
+- Full writeup: `docs/HARDENING_PLAN.md`'s "Phase 6" section, which also
+  tracks the last new tool (`extract_document_text_live`) and the
+  `get_document_statistics_live` rewrite still queued after it.
+
+## v2.0.22
+
+Step 5 of the typeset-run remediation, twelfth item: `get_sheet_summary_live`,
+Brian's new-tools assignment priority #13 — an at-a-glance summary
+(name, visibility, protection, used-range dimensions, freeze-panes
+state) in one call instead of `get_active_sheet_live` +
+`get_used_range_live` + `get_freeze_panes_live` + reading protection
+separately.
+
+Guards against a real edge case: `gotoStartOfUsedArea()`/
+`gotoEndOfUsedArea()` both collapse to cell A1 on a sheet with no
+content at all, so a single-cell result is checked for real content
+before being trusted as an actual used range. A genuinely blank sheet
+reports `used_range: null`, `row_count: 0`, `column_count: 0`, not a
+misleading "1x1 used."
+
+New `UNOBridge.get_sheet_summary()` plus the `get_sheet_summary_live`
+tool wrapper in `calc_sheets.py`. `frozen` reuses `get_freeze_panes()`
+(#12) as-is — composing the two new tools instead of duplicating logic
+between them.
+
+Live-verified against real headless LibreOffice Calc with a new probe,
+`get-sheet-summary-probe-windows.py` — 10 checks, all passing: a
+genuinely blank sheet reports the correct empty state; a sheet with
+real content spanning B2:D5, a real freeze at B2, and real protection
+reports all four fields correctly and consistently.
+
+- 510 automated tests passing (507 + 3 new fakes-based plumbing tests).
+- Full writeup: `docs/HARDENING_PLAN.md`'s "Phase 6" section, which also
+  tracks the last 2 new tools (`get_document_snapshot_live`,
+  `extract_document_text_live`) and the `get_document_statistics_live`
+  rewrite still queued after them.
+
+## v2.0.21
+
+Step 5 of the typeset-run remediation, eleventh item: `get_freeze_panes_live`,
+Brian's new-tools assignment priority #12 — the getter
+`freeze_panes_live`/`unfreeze_panes_live` never had. `sheet` omitted ->
+the active sheet; reading a non-active sheet's freeze state does not
+leave it active afterward.
+
+Live-verified quirk, not a guess, and the main finding of this pass:
+this LibreOffice build's `controller.SplitRow` reads back one higher
+than the row actually passed to `freezeAtPosition()` whenever any row
+is really frozen (`SplitColumn` has no such offset). Confirmed against
+freezes at every combination — row-only, column-only, both, neither —
+via direct `curl` probing against a live running instance before
+finalizing the implementation. Corrected in `UNOBridge.get_freeze_panes()`
+so `columns`/`rows`/`cell` all agree with what `freeze_panes_live` was
+actually given.
+
+Live-verified against real headless LibreOffice Calc with a new probe,
+`get-freeze-panes-probe-windows.py` — 10 checks, all passing: a fresh
+sheet reports `frozen: false, columns: 0, rows: 0`; freezing at C3
+reports the real, corrected `columns: 2, rows: 2, cell: "C3"`; reading
+a second sheet's freeze state succeeds without leaving it active; a
+real unfreeze reports `frozen: false` again; column-only and row-only
+freezes each independently confirm the row correction.
+
+- 507 automated tests passing (505 + 2 new fakes-based plumbing tests).
+- Full writeup: `docs/HARDENING_PLAN.md`'s "Phase 6" section, which also
+  tracks the rest of the new-tools list (2 more) and the
+  `get_document_statistics_live` rewrite still queued after it.
+
+## v2.0.20
+
+Step 5 of the typeset-run remediation, tenth item: `update_cell_comment_live`,
+Brian's new-tools assignment priority #11 — distinct from the existing
+`add_cell_comment_live`'s upsert semantics. This one requires the
+comment to already exist (`OBJECT_NOT_FOUND` if there's none at the
+target cell) and is the only cell-comment tool that can toggle
+`IsVisible` (the "always shown, not just on hover" display flag).
+`text`/`author`/`visible` are all independently optional — only the
+fields actually given are touched, reported back in an `updated` list.
+
+New `UNOBridge.update_cell_comment()` plus the `update_cell_comment_live`
+tool wrapper in `calc_page.py`. Same author-readonly handling as
+`add_cell_comment` (live-verified this LibreOffice build won't let
+`Author` be set): caught so a caller-supplied author that can't be
+honored doesn't take an otherwise-successful text/visible update down
+with it.
+
+Live-verified against real headless LibreOffice Calc with a new probe,
+`update-cell-comment-probe-windows.py` — 6 checks, all passing: a
+text-only update reports `updated: ["text"]` and `list_cell_comments_live`
+confirms the real comment text changed; a visibility-only update
+reports `updated: ["visible"]` without touching text; updating a cell
+with no existing comment reports a clean `OBJECT_NOT_FOUND` failure.
+
+- 505 automated tests passing (502 + 3 new fakes-based plumbing tests).
+- Full writeup: `docs/HARDENING_PLAN.md`'s "Phase 6" section, which also
+  tracks the rest of the new-tools list (3 more) and the
+  `get_document_statistics_live` rewrite still queued after it.
+
+## v2.0.19
+
+Step 5 of the typeset-run remediation, ninth item: `get_draw_page_live`,
+Brian's new-tools assignment priority #10 — the Draw counterpart to
+Impress's `get_slide_content_live` (#3). `page` omitted -> the active
+page. Deliberately narrower than `get_slide_content_live`'s result:
+Draw pages don't carry Impress's hidden/notes concepts anywhere in
+this tool catalog, so the result is just `{index, name, text: [...]}`.
+
+New `UNOBridge.get_draw_page()` plus the `get_draw_page_live` tool
+wrapper in `draw.py`. Same shape-text extraction loop as
+`get_slide_content()` (only shapes with non-empty text are included),
+reused rather than re-derived.
+
+Live-verified against real headless LibreOffice Draw with a new probe,
+`get-draw-page-probe-windows.py` — 8 checks against a real 2-page
+document, all passing: omitted `page` defaults to the real active
+page; addressing page 2 by name returns page 2's real text, not page
+1's; an empty shape contributes nothing; `include_shape_metadata=true`
+adds real type/geometry; an unknown page name fails cleanly.
+
+- 502 automated tests passing (498 + 4 new fakes-based plumbing tests).
+- Full writeup: `docs/HARDENING_PLAN.md`'s "Phase 6" section, which also
+  tracks the rest of the new-tools list (5 more) and the
+  `get_document_statistics_live` rewrite still queued after it.
+
+## v2.0.18
+
+Step 5 of the typeset-run remediation, eighth item: `activate_draw_page_live`,
+Brian's new-tools assignment priority #9 — the Draw counterpart to
+Impress's `activate_slide_live`, an omission `draw.py`'s own page tools
+never grew despite covering every other page operation. `page` (index
+or name) in, `{index, name}` out — same shape `get_active_draw_page_live`
+already reports.
+
+New `UNOBridge.activate_draw_page()` plus the `activate_draw_page_live`
+tool wrapper in `draw.py`. Same `setCurrentPage()` mechanism
+`activate_slide()` uses for Impress, resolved through Draw's own
+`_resolve_draw_page()`.
+
+Live-verified against real headless LibreOffice Draw with a new probe,
+`activate-draw-page-probe-windows.py` — 8 checks against a real 3-page
+document, all passing: activating by name and by index both move the
+real active page (confirmed against `get_active_draw_page_live`'s own
+read afterward); activating an unknown page name reports a clean
+failure.
+
+- 498 automated tests passing (495 + 3 new fakes-based plumbing tests).
+- Full writeup: `docs/HARDENING_PLAN.md`'s "Phase 6" section, which also
+  tracks the rest of the new-tools list (6 more) and the
+  `get_document_statistics_live` rewrite still queued after it.
+
+## v2.0.17
+
+Step 5 of the typeset-run remediation, seventh item: `list_fonts_live`,
+Brian's new-tools assignment priority #8. Unlike every other tool in
+this batch, it isn't document-scoped at all — font availability is a
+property of the LibreOffice installation, same category as
+`get_server_info_live`/`get_capabilities_live`, so it lives in
+`core_runtime.py` and takes no `document_id`.
+
+New `UNOBridge.list_fonts()` uses the standard UNO idiom for font
+enumeration — a throwaway screen-compatible `XDevice`'s
+`getFontDescriptors()`, the same technique OOo Basic "list installed
+fonts" macros have used since UNO's font APIs never grew a simpler
+call. Returns one `FontDescriptor` per (name, style) combination
+actually installed; grouped by name into `{name, styles: [...]}` rather
+than a flat list with the same name repeated once per style variant.
+
+Live-verified against real headless LibreOffice with a new probe,
+`list-fonts-probe-windows.py` — 7 checks against the real bundled font
+set (no document even open), all passing: the real fonts list is
+non-empty and its `count` matches; no duplicate names; at least one
+real bundled family (Liberation/DejaVu) is present; at least one font
+reports more than one real installed style; every font's `styles` list
+comes back sorted.
+
+- 495 automated tests passing (493 + 2 new fakes-based plumbing tests).
+- Full writeup: `docs/HARDENING_PLAN.md`'s "Phase 6" section, which also
+  tracks the rest of the new-tools list (7 more) and the
+  `get_document_statistics_live` rewrite still queued after it.
+
+## v2.0.16
+
+Step 5 of the typeset-run remediation, sixth item: `goto_page_live`,
+Brian's new-tools assignment priority #7 — the write-side companion to
+`get_view_state_live`'s `current_page_number` addition (#6). `page`
+(1-based, same numbering `current_page_number` reports) in, `{page}`
+out. New `UNOBridge.goto_page()` plus the `goto_page_live` tool wrapper
+in `undo_view_selection.py`, navigating through the same view cursor's
+`com.sun.star.text.XPageCursor` interface `get_view_state_live` reads
+from (`jumpToPage()`), not a second mechanism.
+
+Live-verified finding, not a guess: `jumpToPage()` past the document's
+real last page does not raise and does not leave the cursor where it
+was — it silently clamps to the last real page. Reported back via a
+warning naming both the requested and the real page reached.
+
+Live-verified against real headless LibreOffice Writer with a new
+probe, `goto-page-probe-windows.py` — 9 checks against a real 3-page
+document (2 forced page breaks), all passing: jumping back to page 1
+and forward to page 3 both actually move the real view cursor (checked
+against `get_view_state_live`'s own read); jumping to page 99 clamps to
+page 3 and reports a warning naming both numbers; `page=0` reports a
+clean `INVALID_PARAMETER` failure.
+
+- 493 automated tests passing (489 + 4 new fakes-based plumbing tests).
+- Full writeup: `docs/HARDENING_PLAN.md`'s "Phase 6" section, which also
+  tracks the rest of the new-tools list (8 more) and the
+  `get_document_statistics_live` rewrite still queued after it.
+
+## v2.0.15
+
+Step 5 of the typeset-run remediation, fifth item: Writer page number
+on `get_view_state_live`, Brian's new-tools assignment priority #6.
+Not a new tool — an enrichment to an existing one. `get_view_state_live`
+already reported a document-type-specific position for calc
+(`active_sheet`) and impress/draw (`current_page_name`), but Writer
+fell through both branches and reported no page position at all. Added
+a `writer` branch to `UNOBridge.get_view_state()`: `controller.
+getViewCursor()` implements `com.sun.star.text.XPageCursor`, whose
+`getPage()` returns the 1-based page the cursor is currently on — the
+same number Writer's own status bar shows. Same best-effort try/except-
+with-warning pattern the calc/impress branches already use.
+
+Live-verified against real headless LibreOffice Writer with a new
+probe, `view-state-page-number-probe-windows.py` — 6 checks, all
+passing: a fresh single-page document reports `current_page_number:
+1`; after `set_paragraph_text_live` + a real `insert_page_break_live`
+(which resyncs the view cursor to the new paragraph per the BUG #5
+fix), the same call reports `current_page_number: 2` — a real page
+break moving a real cursor, not a stale or cached value — while
+`zoom_value`/`has_selection` are still reported alongside it.
+
+- 489 automated tests passing (487 + 2 new fakes-based plumbing tests).
+- Full writeup: `docs/HARDENING_PLAN.md`'s "Phase 6" section, which also
+  tracks the rest of the new-tools list (9 more) and the
+  `get_document_statistics_live` rewrite still queued after it.
+
+## v2.0.14
+
+Step 5 of the typeset-run remediation, fourth tool: `get_presentation_content_live`,
+Brian's new-tools assignment priority #5 — the bulk counterpart to
+`get_slide_content_live` (#3). Schema was already fixed by #3's own
+design note: the per-slide entry shape `{index, name, hidden, text:
+[{shape, text}], notes}` was built to be reused here, so this tool is a
+loop over `get_slide_content`, not a new read path — `{slides: [...],
+count}`. New `UNOBridge.get_presentation_content()` (`uno_bridge.py`,
+right after `get_slide_content()`) plus the
+`get_presentation_content_live` tool wrapper in `impress.py`, right
+after `get_slide_content_live`. `slides` omitted → every slide in the
+deck, in order; `slides` given → just those, in the order given, same
+index-or-name resolution `get_slide_content()` already does, so there's
+no second resolution path to keep in sync. `include_notes`/
+`include_shape_metadata` pass straight through unchanged.
+`include_hidden=false` is the one genuinely new behavior over a
+hand-rolled loop of `get_slide_content_live` calls: it drops any slide
+whose own `hidden` comes back `true`, so a caller wanting "what the
+audience actually sees" doesn't need a second round-trip per slide to
+check first.
+
+Live-verified against real headless LibreOffice Impress with a new
+probe, `presentation-content-probe-windows.py` — 11 checks against a
+real 3-slide deck (slide 1 titled + notes, slide 2 hidden and empty,
+slide 3 titled), all passing: omitted `slides` returns all 3 in deck
+order with each slide's real text/notes; `include_hidden=false` drops
+the hidden slide and keeps `count` honest for what's left; `slides=[0,
+2]` scopes to just those two, in the order given; `include_notes=false`
+omits the `notes` key on every slide, not just null; `include_shape_
+metadata=true` adds type/geometry to every slide's text entries.
+
+- 487 automated tests passing (483 + 4 new fakes-based plumbing tests).
+- Full writeup: `docs/HARDENING_PLAN.md`'s "Phase 6" section, which also
+  tracks the rest of the new-tools list (10 more) and the
+  `get_document_statistics_live` rewrite still queued after it.
+
+## v2.0.13
+
+Step 5 of the typeset-run remediation, third tool: `find_shape_text_live`,
+Brian's new-tools assignment priority #4 ("shared search across
+Impress/Draw shapes, optionally Writer/Calc drawing objects") — the
+shape-level counterpart to `find_cells_live`'s cell-level search. No
+exact schema was given for this one; `query`/`match`/`case_sensitive`/
+`max_results` reuse `find_cells_live`'s established search-tool shape.
+New `UNOBridge.find_shape_text()` (`uno_bridge.py`, right after
+`get_shape_details`) plus the `find_shape_text_live` tool wrapper in
+`drawing_objects.py`, placed right after `list_shapes_live` since both
+are container-scoped shape enumeration primitives. Container scoping
+mirrors `find_cells_live`'s "container given → just that one; omitted →
+every candidate, each match reporting which one it came from" discipline
+across all four shape-capable doc types (Writer's single document-wide
+draw page, a Calc sheet's own draw page, an Impress/Draw page). Stops as
+soon as `max_results` matches are found or a 5000-shape scan backstop is
+hit — the same runaway-scan pattern `find_cells` established, scaled
+down since a document's shape count is normally orders of magnitude
+below its cell count.
+
+Live-verified against real headless LibreOffice Impress with a new
+probe, `find-shape-text-probe-windows.py` — 10 checks against real data
+(matching shapes on two different slides, a deliberately empty shape,
+duplicate text across slides), all passing, including negative checks
+(container scopes the search to one slide, `match=exact` rejects a
+non-exact substring, an invalid regex reports `INVALID_PARAMETER`
+cleanly, `max_results` truncation is reported honestly). Writer/Calc
+container resolution shares the same `_resolve_shape_container()`-family
+helpers already live-verified across all four doc types by
+`list_shapes_live`/`get_shape_live`/`insert_shape_live` in the original
+`drawing_objects.py` pass — not independently re-verified by this probe,
+which is scoped to Impress (the doc type Brian's assignment names
+first).
+
+- 483 automated tests passing (480 + 3 new fakes-based plumbing tests).
+- Full writeup: `docs/HARDENING_PLAN.md`'s "Phase 6" section, which also
+  tracks the rest of the new-tools list (11 more) and the
+  `get_document_statistics_live` rewrite still queued.
+
+---
+
+## v2.0.12
+
+Step 5 of the typeset-run remediation, second tool: `get_slide_content_live`,
+Brian's new-tools assignment priority #3 ("give me all the content of
+slide 7" instead of `list_shapes_live` + N `get_shape_live` calls). New
+`UNOBridge.get_slide_content()` (placed right after `get_speaker_notes`/
+`set_speaker_notes`, whose `_find_notes_shape` it reuses) returns the
+same per-slide shape the still-queued `get_presentation_content_live`
+(priority #5) will wrap in bulk — built once so that tool can reuse it
+via a loop rather than duplicating the logic. Only shapes with non-empty
+text are included; `include_shape_metadata=true` adds each entry's
+short type name and geometry; `include_notes=false` omits the `notes`
+key entirely rather than reporting it as `null`, so callers can tell
+"didn't ask" apart from "asked, page genuinely has no notes".
+Live-verified against real headless LibreOffice Impress with a new
+probe, `slide-content-probe-windows.py` — 10 checks against real data
+(a titled shape, a deliberately empty shape, real speaker notes, a
+hidden second slide), all passing, including negative checks (the empty
+shape contributes nothing to `text`, `include_shape_metadata=false`
+omits type/geometry, an unknown slide name fails cleanly rather than a
+raw traceback).
+
+- 480 automated tests passing (476 + 4 new fakes-based plumbing tests).
+- Full writeup: `docs/HARDENING_PLAN.md`'s "Phase 6" section, which also
+  tracks the rest of the new-tools list (12 more) and the
+  `get_document_statistics_live` rewrite still queued.
+- Flagged, not fixed this pass: `tests/test_client.py`, `plugin/
+  test_plugin.py`, and `tests/test_insert_fix.py` fail at collection
+  (pre-existing `mcp` package/venv drift — `ImportError`/
+  `ModuleNotFoundError` on `mcp.shared.memory`/`mcp.server.fastmcp`,
+  confirmed via `git stash` to predate this commit, not a regression
+  from this pass). The 480 count above is the fakes-based suite these
+  three files sit outside of; `uv run pytest` alone currently aborts
+  collection before reaching it — a real environment issue worth its
+  own pass, not something to silently work around here.
+
+## v2.0.11
+
+Step 5 of the typeset-run remediation, first tool: `find_cells_live`,
+Brian's new-tools assignment priority #2 ("the biggest obvious Calc
+hole") — Calc had no basic find-this-value/formula/comment-anywhere
+primitive despite full range/formula/sort/filter manipulation. Built to
+Brian's exact schema. Scope deliberately bounded (given range, else each
+searched sheet's own used range, never the full grid; given sheet, else
+every sheet in the workbook). Live-verified against real headless
+LibreOffice Calc with a new probe, `find-cells-probe-windows.py` — 12
+checks against real data, all passing, including negative checks
+(values mode correctly does NOT match formula/comment text, `match=
+"exact"` correctly rejects a partial substring `"contains"` would
+accept, an invalid regex reports `INVALID_PARAMETER` cleanly rather than
+a raw traceback).
+
+- 476 automated tests passing (474 + 2 new fakes-based plumbing tests).
+- Full writeup: `docs/HARDENING_PLAN.md`'s new "Phase 6" section, which
+  also tracks the rest of the new-tools list (13 more) and the
+  `get_document_statistics_live` rewrite still queued.
+
+## v2.0.10
+
+Step 4 of the 2026-08-19 typeset-run remediation: implemented Morgan's
+capped-wait decision for `wait_for_document_event_live`
+(`docs/EVENT_WAIT_CONCURRENCY_DECISION.md`) exactly as specified —
+`uno_bridge.py`'s `wait_for_document_event()` clamps its actual wait to
+`min(timeout_ms, _MAX_WAIT_LOCK_HOLD_MS)`. The cap (500ms) is measured,
+not guessed, per the decision's explicit ask: `edit-latency-probe-
+windows.py`, 100 real HTTP round trips of the typeset-run's dominant
+call shape (`append_paragraph_live`/`insert_heading_live`) against a
+real headless LibreOffice instance — min 5.0ms, median 29.1ms, p95
+44.8ms, max 62.7ms. (First measurement attempt returned a suspicious
+uniform ~2000ms per call — traced to `urllib.request` resolving
+`"localhost"` adding a large, constant connection delay on this Windows
+box, unrelated to any server-side work; switching to `127.0.0.1`
+dropped every sample ~40x to the real numbers above.)
+
+**Re-verified with the same positive/negative pair per Morgan's
+instruction — and the result diverges from what the decision doc
+predicted.** New probe, `event-wait-concurrency-probe-windows.py`. The
+cap mechanics work exactly as specified (every wait call now holds the
+lock for ~500ms max, confirmed live, never the full requested
+`timeout_ms`), and the negative control (an event from outside this
+tool's own lock) is still correctly observed, no regression. But the
+positive pair — the tool's own primary use case, one agent's edit and
+wait through the same HTTP surface — still fails, even across 8 poll
+attempts, for a cap-independent reason: a diagnostic read confirms the
+edit's event genuinely fires and is captured, it's just never seen as
+"new" by any wait call's per-call snapshot, because the wait and the
+edit fully serialize on the same lock with no overlap window where a
+wait call could be both past-snapshot and still-blocked when the event
+lands. This holds for any positive cap size, not specifically 500ms.
+
+Corrected the tool's own `purpose` string and docstring (written before
+this evidence existed) to state this plainly rather than leave an
+overclaim standing. Full mechanism, evidence, and the open question
+routed back to Morgan: `docs/HARDENING_PLAN.md`'s "Phase 5" section.
+
+- 474 automated tests passing (no count change — no fakes-based
+  regression test possible, same UNO-only constraint as the rest of this
+  remediation).
+
+## v2.0.9
+
+Phase 4 of the 2026-08-19 typeset-run remediation: corrected the bug
+count (13 real defects, not 15 — #8 and #11 were misdiagnoses, see
+v2.0.8 below) and wrote up durable guidance in `docs/HARDENING_PLAN.md`
+for the six standing-decision bullets Buddy's original assignment asked
+for. Auditing bullet 3 (batching safe-or-unsafe) against the actual code
+rather than the fix already landed found a real, previously-undocumented
+gap: BUG #5's view-cursor resync fix (`insert_paragraph`/
+`insert_heading`/`insert_page_break`) never reached two structurally
+identical functions, `apply_page_style_live` and `remove_page_break_live`
+— both resolve an omitted position through the same stale view cursor
+with nothing to resync it. Fixed with the identical pattern. Live-verified
+with a new probe, `batch-page-style-probe-windows.py`, mutation-tested
+both directions: reverting the fix, the same repro's `remove_page_break`
+resolves paragraph 4 (a stale, unrelated position) instead of the
+expected 1; with the fix, 1.
+
+- 474 automated tests passing (no count change — no fakes-based
+  regression test possible for this fix, same `UNOBridge`-can't-
+  instantiate-outside-LibreOffice constraint every other UNO-only fix in
+  this project has hit).
+- Full findings, the corrected-count table, and each of the six bullets'
+  concrete status: `docs/HARDENING_PLAN.md`'s "Phase 4" section.
+
+## v2.0.8
+
+Investigated BUGs #8 and #11 from 2026-08-19's typeset-run log. **Neither was a real defect** — both were misdiagnoses by the original testing agent, settled with live evidence rather than assumed clean and dropped silently.
+
+**BUG #8 — "catalog/dispatcher divergence: `create_paragraph_style_live` advertised but rejected."** Not real. `create_paragraph_style_live` has never existed in this project's history (`git log -S` across all commits returns zero results) — the tool for creating a paragraph style is `create_style_live` with `family="ParagraphStyles"`, unchanged since it was first scaffolded. Decisively confirmed against the original tester's own captured `GET /tools` catalog snapshot from that exact session: it never contained `create_paragraph_style_live` either. The catalog (`GET /tools`) and dispatcher (`POST /execute`/`/tools/<name>`) read the same `self.tools` dict off the same server singleton — there is no code path where they could diverge. The tester guessed a plausible-but-nonexistent name by analogy with the real `create_page_style_live` and got a correct rejection, then misreported it as a catalog/dispatcher mismatch. Two small hardening improvements made anyway, since the underlying failure class (a caller guessing a wrong tool name) is real even though this instance wasn't a bug: `execute_tool`'s "Unknown tool" error now includes a `did_you_mean` field (`difflib.get_close_matches` against the real registry — live-verified: querying the nonexistent name surfaces `create_style_live` as a top match), and `create_style_live`'s `purpose` string now explicitly says it's the tool a caller might otherwise look for as `create_paragraph_style_live`, with the full list of supported `family` values.
+
+**BUG #11 — "`set_shape_geometry_live` doesn't actually resize."** Not real. `set_shape_geometry`'s UNO code (`uno_bridge.py`) sets `shape.Size` directly on the resolved shape object — exactly what the bug report itself recommended as the fix — and has been unchanged since it was first written, before the bug was even logged. Confirmed two ways: (1) the saved output artifact from that exact test session has 23 image frames from differently-sized source PNGs all showing the *one* uniform width the calling script requested, which is only possible if the resize took effect; (2) live-verified fresh this pass — inserted a rectangle at 3000×2000 (1/100mm), called `set_shape_geometry_live` to resize it to 9000×6000, and read it back independently via `get_shape_live` (which queries the live UNO object, not an echo of the request): came back 8999×6001, real resize confirmed end to end. The original ~12:07 observation of an unchanged exported image size most likely reflects that same session's separate, already-documented stale-document-reference problem (see the v2.0.x entries on `save_as_document_live`/export resolving a stale frame), not this function.
+
+- 474 automated tests passing (no count change — no new tests added; `MCPServer.execute_tool`'s `did_you_mean` addition has no existing test harness to extend, since every current test exercises tool handlers directly through the `tools/` registry rather than through the `MCPServer` class — flagged as a real coverage gap, not silently left uncovered)
+- Live-verified both investigation conclusions and both hardening additions end to end on a fresh headless LibreOffice instance: `create_paragraph_style_live` rejection now includes `did_you_mean: [..., "create_style_live", ...]`; `create_style_live`'s schema reflects the clarified description; a real shape's `Size` round-tripped correctly through `set_shape_geometry_live` → `get_shape_live`
+
+## v2.0.7
+
+Six of the fifteen bugs from 2026-08-19's extended agentic typeset-run log (P2/P3 tier), fixed and live-verified end to end against a fresh headless LibreOffice instance before this push, per standing policy.
+
+**BUG #7 — `insert_paragraph_live`/`insert_heading_live`/`insert_page_break_live`'s shared anchor contract was undocumented.** An omitted `at_paragraph`/`at_position` anchors off wherever the *last* insert-family call (single or batched) left off, not a fixed "current selection" — this was real, working behavior the whole time, just never written down, so it read as flaky under `batch_execute_live`. Doc-only fix: all three tools' `purpose` strings now state the contract explicitly and cross-reference each other.
+
+**BUG #9 — `append_paragraph_live` could partially apply on an unknown `style_name`.** The style-name lookup used to run *after* the text was already inserted, so an unknown style raised `success: false` while the paragraph landed anyway, unstyled — a caller that only checks `success` silently drops content that's actually there. Fixed by validating `style_name` before touching the document at all: an unknown style now fails atomically, nothing inserted. Live-verified both directions (unknown style rejected with zero document-length change; valid append with no style still succeeds).
+
+**BUG #10 — `soffice.exe --version` hangs instead of exiting on this project's own Windows dev environment.** It launches the full app rather than printing a version and returning. Doc-only fix: `docs/PREREQUISITES.md` now recommends a file-existence check (`Test-Path`) as the Windows verification method instead, matching `smoke-test-windows.py`'s own convention. Not confirmed on Linux/macOS.
+
+**BUG #12 — `insert_toc_live` created a duplicate table of contents on a repeat call.** Fixed with a get-or-create: a repeat call matching an existing `com.sun.star.text.ContentIndex` (by title, or any existing ToC when title is omitted) now returns that index instead of inserting a second one. Live-verified: `list_document_indexes_live`'s own count stays at 1 across two repeat calls. **Caveat, confirmed live this pass, not just assumed:** the returned `index_id` itself can differ across repeat calls — a raw-UNO probe showed two `getDocumentIndexes().getByIndex()` fetches of the *same* underlying ContentIndex return proxies with different `hash()` values, so the object registry's identity-keyed dict mints a second id even though no second index was created. Each id still resolves correctly for its own later `get`/`update`/`delete`. Documented in `writer_layout.py`'s module docstring and the tool's `purpose` string so a caller doesn't mistake this for the fix not working.
+
+**BUG #13 — `set_document_properties_live` silently dropped capitalized property keys.** The field-name lookup matched exact-case only (`"title"`, not `"Title"`), with no case-insensitivity and no schema documenting the requirement. Fixed by lowercasing the lookup key. Live-verified: `{"Title": ..., "AUTHOR": ...}` now applies and round-trips correctly through `get_document_properties_live`.
+
+**BUG #14 — `get_document_statistics_live`'s `paragraph_count` disagreed with `get_paragraph_count_live` whenever the document contained a table.** The statistics path counted every top-level text element via a raw enumeration (a `TextTable` counts as one element of its own), while the dedicated tool used a filtered count — live-verified this diverged by exactly the table count (13 vs. 12 on a 12-paragraph, 1-table document). Fixed by having statistics share the same filtered `_count_paragraphs()` helper. Live-verified: both tools now report the same count on a document containing a table.
+
+- 474 automated tests passing (up from 473, net +1): `test_insert_toc_live_is_idempotent` covers BUG #12's get-or-create contract, including the deliberate-second-ToC-via-distinct-title case
+- Live-verified end to end on a fresh headless LibreOffice instance, rebuilding/redeploying after the fixes, independently re-checking real document state for each of the four fixes with runtime behavior (#9, #12, #13, #14); #7 and #10 are documentation-only, confirmed correct by reading the underlying behavior/environment directly rather than re-executing unchanged code
 
 ## v2.0.6
 

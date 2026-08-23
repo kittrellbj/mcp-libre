@@ -25,6 +25,7 @@ something a fake can usefully assert.
 """
 
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugin", "pythonpath"))
@@ -45,9 +46,10 @@ class FakeDocument:
 
 
 class FakeShape:
-    def __init__(self, shape_type="rectangle", x=0, y=0, width=1000, height=1000):
+    def __init__(self, shape_type="rectangle", x=0, y=0, width=1000, height=1000, container="page1"):
         self.shape_type = shape_type
         self.x, self.y, self.width, self.height = x, y, width, height
+        self.container = container  # which page/sheet find_shape_text() reports this shape under
         self.rotation = 0
         self.text = ""
         self.title = None
@@ -94,6 +96,36 @@ class FakeUnoBridge:
 
     def list_shapes_in_container(self, doc, container=None, type_filter=None):
         return [s for s in self.shapes if type_filter is None or s.shape_type == type_filter]
+
+    def find_shape_text(self, doc, query, container=None, match="contains",
+                         case_sensitive=False, max_results=100):
+        if match not in ("contains", "exact", "regex"):
+            raise ValueError(f"match must be one of contains/exact/regex, got {match!r}")
+        self.last_find_shape_text_call = {
+            "query": query, "container": container, "match": match,
+            "case_sensitive": case_sensitive, "max_results": max_results,
+        }
+        if match == "regex":
+            pattern = re.compile(query, flags=0 if case_sensitive else re.IGNORECASE)
+
+            def is_match(candidate):
+                return pattern.search(candidate) is not None
+        else:
+            needle = query if case_sensitive else query.lower()
+
+            def is_match(candidate):
+                candidate = candidate if case_sensitive else candidate.lower()
+                return candidate == needle if match == "exact" else needle in candidate
+
+        found = []
+        for shape in self.shapes:
+            if container is not None and shape.container != container:
+                continue
+            if not shape.text or not is_match(shape.text):
+                continue
+            found.append((shape.container, shape))
+        truncated = len(found) > max_results
+        return {"shapes": found[:max_results], "truncated": truncated}
 
     @staticmethod
     def get_shape_summary(shape, shape_id):
@@ -390,6 +422,50 @@ def test_list_shapes_live_type_filter():
     result = _handler("list_shapes_live")(type_filter="ellipse")
     assert result["result"]["count"] == 1
     assert result["result"]["shapes"][0]["type"] == "ellipse"
+
+
+# -- find_shape_text_live --
+
+def test_find_shape_text_live_registers_and_returns_ids():
+    context.reset()
+    title = FakeShape("rectangle", container="Slide 1")
+    title.text = "Quarterly Revenue"
+    other = FakeShape("ellipse", container="Slide 2")
+    other.text = "Unrelated"
+    bridge, _, _ = _install(active_document=FakeDocument(doc_type="impress"), shapes=[title, other])
+    result = _handler("find_shape_text_live")(query="Revenue")
+    assert result["success"] is True
+    assert result["result"]["count"] == 1
+    match = result["result"]["matches"][0]
+    assert match["container"] == "Slide 1"
+    assert match["type"] == "rectangle"
+    assert "shape_id" in match
+    # Argument passthrough, not just a truthy result -- confirms the tool
+    # wrapper forwards every parameter rather than silently dropping one.
+    assert bridge.last_find_shape_text_call == {
+        "query": "Revenue", "container": None, "match": "contains",
+        "case_sensitive": False, "max_results": 100,
+    }
+
+
+def test_find_shape_text_live_container_scopes_the_search():
+    context.reset()
+    a = FakeShape("rectangle", container="Slide 1")
+    a.text = "Same Text"
+    b = FakeShape("rectangle", container="Slide 2")
+    b.text = "Same Text"
+    _install(active_document=FakeDocument(doc_type="impress"), shapes=[a, b])
+    result = _handler("find_shape_text_live")(query="Same Text", container="Slide 2")
+    assert result["result"]["count"] == 1
+    assert result["result"]["matches"][0]["container"] == "Slide 2"
+
+
+def test_find_shape_text_live_rejects_invalid_match():
+    context.reset()
+    _install(active_document=FakeDocument(doc_type="impress"), shapes=[])
+    result = _handler("find_shape_text_live")(query="x", match="bogus")
+    assert result["success"] is False
+    assert result["error"]["code"] == "INVALID_PARAMETER"
 
 
 def test_get_shape_live_round_trips_through_registry():

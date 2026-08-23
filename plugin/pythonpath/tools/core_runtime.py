@@ -44,10 +44,11 @@ from . import documents
 from . import envelope
 from . import runtime_state as runtime_state_module
 from . import undo_view_selection
+from .document_lifecycle import _error_response
 from .registry import register_tool, schema
 
 # Kept in sync manually with plugin/description.xml's <version value="..."/>.
-EXTENSION_VERSION = "2.0.6"
+EXTENSION_VERSION = "2.0.28"
 
 # registration.py hardcodes ai_interface.start_ai_interface(port=8765, ...)
 # with no configuration path that changes it -- safe to report as a constant.
@@ -200,6 +201,28 @@ def get_server_info_live() -> Dict[str, Any]:
         "uptime_seconds": round(ctx.runtime_state.uptime_seconds, 1),
     }
     return envelope.build_success(result=result, warnings=warnings, elapsed_ms=envelope.elapsed_ms_since(start))
+
+
+@register_tool(
+    name="list_fonts_live",
+    priority="P2",
+    purpose=(
+        "Return the fonts available to this LibreOffice installation, "
+        "grouped by name with their installed styles -- Brian's new-tools "
+        "assignment priority #8. Not document-scoped: font availability is "
+        "an installation property, like get_server_info_live above, so "
+        "this takes no document_id."
+    ),
+    status="implemented",
+)
+def list_fonts_live() -> Dict[str, Any]:
+    start = envelope.start_timer()
+    ctx = context.get_context()
+    try:
+        result = ctx.uno_bridge.list_fonts()
+        return envelope.build_success(result=result, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
 
 
 @register_tool(
@@ -385,7 +408,20 @@ def get_session_state_live() -> Dict[str, Any]:
 @register_tool(
     name="batch_execute_live",
     priority="P1",
-    purpose="Execute multiple MCP operations in order, optionally as one undo context.",
+    purpose=(
+        "Execute multiple MCP operations in order, optionally as one undo context. "
+        "BUG #15, deliberately not fixed this pass, flagged for an architecture "
+        "decision rather than a band-aid: each op runs synchronously in-process, "
+        "holding the same process-wide UNO execution lock every tool call already "
+        "shares, so there is no per-op timeout -- a single hung op (a wedged UNO "
+        "round-trip) blocks the whole batch and the HTTP response indefinitely, "
+        "with no partial results visible until it returns. A real fix needs "
+        "either subprocess-level isolation per op or a cooperative cancellation "
+        "token threaded through uno_bridge -- a thread-based fake timeout would "
+        "abandon a zombie thread that keeps holding the process-wide lock, "
+        "blocking every future tool call, not just this batch. Keep operations "
+        "short and known-safe; avoid batching anything that could genuinely hang."
+    ),
     parameters=schema({
         "operations": {"type": "array", "items": {"type": "object"}, "description": "Ordered list of {tool_name, parameters} operations."},
         "stop_on_error": {"type": "boolean", "default": True},

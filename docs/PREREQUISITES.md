@@ -74,6 +74,16 @@ choco install nodejs openjdk
 # Check LibreOffice
 libreoffice --version
 libreoffice --headless --help
+```
+
+> **Windows note (BUG #10):** `soffice.exe --version` has been observed to
+> hang instead of returning on this project's own Windows dev environment
+> -- it launches the full app rather than printing a version and exiting.
+> Verify a Windows install with a file-existence check instead (e.g.
+> `Test-Path "E:\LibreOffice\program\soffice.exe"`), the same convention
+> `smoke-test-windows.py` uses. Not confirmed on Linux/macOS.
+
+```bash
 
 # Check Python
 python3 --version

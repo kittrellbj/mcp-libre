@@ -153,6 +153,35 @@ class FakeUnoBridge:
     def get_used_range(self, doc, sheet=None):
         return {"start_column": 0, "start_row": 0, "end_column": 3, "end_row": 5}
 
+    def get_sheet_summary(self, doc, sheet=None):
+        name = self._resolve_sheet_name(sheet)
+        idx, entry = next((i, s) for i, s in enumerate(self.sheets) if s["name"] == name)
+        used = self.get_used_range(doc, sheet)
+        sheet_cells = self.cells.get(name, {})
+        return {
+            "index": idx, "name": name, "visible": entry["visible"], "protected": entry["protected"],
+            "used_range": used,
+            "row_count": used["end_row"] - used["start_row"] + 1,
+            "column_count": used["end_column"] - used["start_column"] + 1,
+            "formula_count": sum(1 for c in sheet_cells.values() if c.get("formula")),
+            "error_count": sum(1 for c in sheet_cells.values() if c.get("error")),
+            "counts_truncated": False,
+            "frozen": self.get_freeze_panes(doc, sheet),
+        }
+
+    def find_cells(self, doc, query, sheet=None, range=None, look_in="values", match="contains",
+                    case_sensitive=False, max_results=100):
+        if look_in not in ("values", "formulas", "comments", "all"):
+            raise ValueError(f"look_in must be one of values/formulas/comments/all, got {look_in!r}")
+        if match not in ("contains", "exact", "regex"):
+            raise ValueError(f"match must be one of contains/exact/regex, got {match!r}")
+        self.last_find_cells_call = {
+            "query": query, "sheet": sheet, "range": range, "look_in": look_in,
+            "match": match, "case_sensitive": case_sensitive, "max_results": max_results,
+        }
+        matches = [{"sheet": sheet or "Sheet1", "address": "B2", "value": query, "formula": None}]
+        return {"matches": matches, "count": len(matches), "truncated": False}
+
     def insert_rows(self, doc, index, sheet=None, count=1):
         pass
 
@@ -223,6 +252,11 @@ class FakeUnoBridge:
 
     def unfreeze_panes(self, doc, sheet=None):
         self.frozen_at = None
+
+    def get_freeze_panes(self, doc, sheet=None):
+        if self.frozen_at is None:
+            return {"frozen": False, "columns": 0, "rows": 0}
+        return {"frozen": True, "columns": 1, "rows": 1, "cell": self.frozen_at}
 
     def recalculate(self, doc, hard=False):
         self.recalculated = "hard" if hard else "soft"
@@ -399,6 +433,30 @@ def test_get_used_range_live():
     assert result["result"]["end_row"] == 5
 
 
+def test_find_cells_live():
+    context.reset()
+    bridge, _, _ = _install(active_document=FakeDocument())
+    result = _handler("find_cells_live")(query="Travel", sheet="Budget", look_in="all", match="regex")
+    assert result["success"] is True
+    assert result["result"]["count"] == 1
+    assert result["result"]["matches"][0]["address"] == "B2"
+    # Argument passthrough, not just a truthy result -- confirms the tool
+    # wrapper forwards every parameter rather than silently dropping one.
+    assert bridge.last_find_cells_call == {
+        "query": "Travel", "sheet": "Budget", "range": None, "look_in": "all",
+        "match": "regex", "case_sensitive": False, "max_results": 100,
+    }
+
+
+def test_find_cells_live_rejects_invalid_look_in_and_match():
+    context.reset()
+    _install(active_document=FakeDocument())
+    for kwargs in ({"query": "x", "look_in": "bogus"}, {"query": "x", "match": "bogus"}):
+        result = _handler("find_cells_live")(**kwargs)
+        assert result["success"] is False
+        assert result["error"]["code"] == "INVALID_PARAMETER"
+
+
 # -- rows / columns --
 
 def test_insert_and_delete_rows_columns_live():
@@ -522,6 +580,79 @@ def test_freeze_and_unfreeze_panes_live():
     assert uno_bridge.frozen_at is None
 
 
+def test_get_freeze_panes_live_reports_unfrozen_by_default():
+    # New tool, 2026-08-22 (Brian's new-tools assignment, priority #12) --
+    # freeze_panes_live/unfreeze_panes_live never had a getter.
+    context.reset()
+    _install(active_document=FakeDocument())
+    result = _handler("get_freeze_panes_live")()
+    assert result["success"] is True
+    assert result["result"] == {"frozen": False, "columns": 0, "rows": 0}
+
+
+def test_get_freeze_panes_live_reflects_a_real_freeze():
+    context.reset()
+    uno_bridge, _, _ = _install(active_document=FakeDocument())
+    _handler("freeze_panes_live")(cell="B2")
+    result = _handler("get_freeze_panes_live")()
+    assert result["success"] is True
+    assert result["result"]["frozen"] is True
+    assert result["result"]["cell"] == "B2"
+
+
+def test_get_sheet_summary_live_defaults_to_active_sheet():
+    # New tool, 2026-08-22 (Brian's new-tools assignment, priority #13) --
+    # at-a-glance sheet summary in one call.
+    context.reset()
+    _install(active_document=FakeDocument(), sheet_names=["Sheet1", "Sheet2"])
+    result = _handler("get_sheet_summary_live")()
+    assert result["success"] is True
+    r = result["result"]
+    assert r["index"] == 0
+    assert r["name"] == "Sheet1"
+    assert r["visible"] is True
+    assert r["protected"] is False
+    assert r["row_count"] == 6 and r["column_count"] == 4
+    assert r["formula_count"] == 0 and r["error_count"] == 0 and r["counts_truncated"] is False
+    assert r["frozen"] == {"frozen": False, "columns": 0, "rows": 0}
+
+
+def test_get_sheet_summary_live_reports_formula_and_error_counts():
+    # Follow-up pass, real gap flagged after this tool first shipped:
+    # Brian's original spec also asked for "formula+error counts",
+    # missing from the first version entirely.
+    context.reset()
+    uno_bridge, _, _ = _install(active_document=FakeDocument(), sheet_names=["Sheet1"])
+    _handler("set_cell_live")(cell="A1", formula="=1+1")
+    _handler("set_cell_live")(cell="A2", value=5)
+    uno_bridge.cells["Sheet1"]["A3"] = {"value": 0.0, "formula": "=1/0", "display": "#DIV/0!", "error": 532}
+    result = _handler("get_sheet_summary_live")()
+    assert result["success"] is True
+    r = result["result"]
+    assert r["formula_count"] == 2  # A1's real formula plus A3's erroring one
+    assert r["error_count"] == 1  # only A3 has a nonzero error code
+    assert r["counts_truncated"] is False
+
+
+def test_get_sheet_summary_live_by_name_includes_frozen_state():
+    context.reset()
+    _install(active_document=FakeDocument(), sheet_names=["Sheet1", "Sheet2"])
+    _handler("freeze_panes_live")(cell="B2")
+    result = _handler("get_sheet_summary_live")(sheet="Sheet2")
+    assert result["success"] is True
+    assert result["result"]["index"] == 1
+    assert result["result"]["name"] == "Sheet2"
+    assert result["result"]["frozen"]["frozen"] is True
+    assert result["result"]["frozen"]["cell"] == "B2"
+
+
+def test_get_sheet_summary_live_unknown_sheet():
+    context.reset()
+    _install(active_document=FakeDocument())
+    result = _handler("get_sheet_summary_live")(sheet="Nonexistent")
+    assert result["success"] is False
+
+
 def test_recalculate_live_hard_and_soft():
     context.reset()
     uno_bridge, _, _ = _install(active_document=FakeDocument())
@@ -596,6 +727,12 @@ if __name__ == "__main__":
         test_set_row_height_and_column_width_live,
         test_hide_and_show_rows_columns_live,
         test_freeze_and_unfreeze_panes_live,
+        test_get_freeze_panes_live_reports_unfrozen_by_default,
+        test_get_freeze_panes_live_reflects_a_real_freeze,
+        test_get_sheet_summary_live_defaults_to_active_sheet,
+        test_get_sheet_summary_live_reports_formula_and_error_counts,
+        test_get_sheet_summary_live_by_name_includes_frozen_state,
+        test_get_sheet_summary_live_unknown_sheet,
         test_recalculate_live_hard_and_soft,
         test_evaluate_formula_live,
         test_get_formula_dependencies_live_both_directions,

@@ -65,6 +65,11 @@ EXPECTED_BY_MODULE = {
         "list_tools_live", "set_tool_profile_live", "get_session_state_live",
         "ping_live", "batch_execute_live", "validate_tool_call_live",
         "get_recent_errors_live", "get_diagnostics_live", "clear_diagnostics_live",
+        # New tool, 2026-08-22 (Brian's new-tools assignment, priority #8,
+        # not part of the original spec this module was sourced from) --
+        # installation-level font listing, not document-scoped, same as
+        # get_server_info_live above.
+        "list_fonts_live",
     },
     "document_lifecycle": {
         "get_active_document_live", "activate_document_live", "open_document_live",
@@ -75,6 +80,17 @@ EXPECTED_BY_MODULE = {
         "get_modified_state_live", "set_modified_state_live", "refresh_document_live",
         "reload_document_live", "print_document_live", "get_print_settings_live",
         "set_print_settings_live",
+        # New tool, 2026-08-22 (Brian's new-tools assignment, priority #14,
+        # not part of the original spec) -- compact cross-doc-type "what's
+        # open right now" snapshot, composing get_sheet_summary_live/
+        # get_slide_content_live/get_draw_page_live for the active
+        # sheet/slide/page.
+        "get_document_snapshot_live",
+        # New tool, 2026-08-22 (Brian's new-tools assignment, priority #15,
+        # not part of the original spec, last item in the Phase 6
+        # new-tools list) -- flat plain-text extraction across all doc
+        # types.
+        "extract_document_text_live",
     },
     "undo_view_selection": {
         "get_undo_state_live", "undo_live", "redo_live", "begin_undo_context_live",
@@ -82,6 +98,11 @@ EXPECTED_BY_MODULE = {
         "set_zoom_live", "get_selection_live", "clear_selection_live",
         "get_document_events_live", "wait_for_document_event_live",
         "lock_document_updates_live", "unlock_document_updates_live",
+        # New tool, 2026-08-22 (Brian's new-tools assignment, priority #7,
+        # not part of the original spec this module was sourced from) --
+        # write-side companion to get_view_state_live's current_page_number
+        # addition (priority #6): navigate the Writer view cursor to a page.
+        "goto_page_live",
     },
     "styles": {
         "list_style_families_live", "list_styles_live", "get_style_live", "create_style_live",
@@ -141,6 +162,10 @@ EXPECTED_BY_MODULE = {
         "list_glue_points_live", "add_glue_point_live", "delete_glue_point_live", "insert_image_live",
         "replace_image_live", "set_image_properties_live", "export_shape_live", "list_embedded_objects_live",
         "insert_embedded_object_live", "activate_embedded_object_live", "delete_embedded_object_live",
+        # New tool, 2026-08-22 (Brian's new-tools assignment, priority #4,
+        # not part of the original 484-tool spec this section was sourced
+        # from) -- shape-level search counterpart to find_cells_live.
+        "find_shape_text_live",
     },
     # Phase C - "Charts and data visualizations" (Calc primarily; embedded
     # charts in Writer/Impress/Draw).
@@ -165,6 +190,18 @@ EXPECTED_BY_MODULE = {
         "set_column_width_live", "hide_rows_live", "show_rows_live", "hide_columns_live", "show_columns_live",
         "freeze_panes_live", "unfreeze_panes_live", "recalculate_live", "evaluate_formula_live",
         "get_formula_dependencies_live", "get_formula_errors_live",
+        # New tool, 2026-08-21 (Brian's new-tools assignment, priority #2,
+        # not part of the original 484-tool spec this section was sourced
+        # from) -- the missing Calc search primitive.
+        "find_cells_live",
+        # New tool, 2026-08-22 (Brian's new-tools assignment, priority #12,
+        # not part of the original spec) -- the getter freeze_panes_live/
+        # unfreeze_panes_live never had.
+        "get_freeze_panes_live",
+        # New tool, 2026-08-22 (Brian's new-tools assignment, priority #13,
+        # not part of the original spec) -- at-a-glance sheet summary in
+        # one call instead of several separate getters.
+        "get_sheet_summary_live",
     },
     # Phase C - Calc-complete, section 2: "Calc - data management, analysis,
     # pivots, validation, external data".
@@ -191,6 +228,11 @@ EXPECTED_BY_MODULE = {
         "add_cell_comment_live", "list_cell_comments_live", "delete_cell_comment_live", "protect_sheet_live",
         "unprotect_sheet_live", "set_cell_protection_live", "list_number_formats_live",
         "create_number_format_live", "apply_number_format_live",
+        # New tool, 2026-08-22 (Brian's new-tools assignment, priority #11,
+        # not part of the original spec this module was sourced from) --
+        # strict update (comment must already exist) + IsVisible toggle,
+        # distinct from add_cell_comment_live's upsert.
+        "update_cell_comment_live",
     },
     # Phase D - "Impress - slides, masters, notes, transitions, animations, slideshow".
     "impress": {
@@ -207,6 +249,15 @@ EXPECTED_BY_MODULE = {
         "delete_custom_show_live", "start_slideshow_live", "stop_slideshow_live",
         "next_slideshow_effect_live", "previous_slideshow_effect_live", "goto_slideshow_slide_live",
         "export_slide_image_live", "export_all_slides_images_live",
+        # New tool, 2026-08-22 (Brian's new-tools assignment, priority #3,
+        # not part of the original 484-tool spec this section was sourced
+        # from) -- "give me all the content of slide 7" instead of
+        # list_shapes_live + N get_shape_live calls.
+        "get_slide_content_live",
+        # New tool, 2026-08-22 (Brian's new-tools assignment, priority #5) --
+        # bulk counterpart to get_slide_content_live, wraps it in a loop
+        # across the whole deck (or a chosen subset of slides).
+        "get_presentation_content_live",
     },
     # Phase D - "Draw - pages, masters, layers, vector operations".
     "draw": {
@@ -215,6 +266,14 @@ EXPECTED_BY_MODULE = {
         "rename_draw_page_live", "set_draw_page_size_live", "set_draw_page_background_live",
         "list_layers_live", "create_layer_live", "update_layer_live", "delete_layer_live",
         "assign_shape_layer_live", "export_draw_page_live", "export_selection_live",
+        # New tool, 2026-08-22 (Brian's new-tools assignment, priority #9,
+        # not part of the original spec this module was sourced from) --
+        # the Draw counterpart to Impress's activate_slide_live.
+        "activate_draw_page_live",
+        # New tool, 2026-08-22 (Brian's new-tools assignment, priority #10,
+        # not part of the original spec) -- the Draw counterpart to
+        # Impress's get_slide_content_live.
+        "get_draw_page_live",
     },
 }
 
@@ -343,6 +402,7 @@ IMPLEMENTED_IMPRESS_TOOL_NAMES = {
     "list_custom_shows_live", "create_custom_show_live", "update_custom_show_live",
     "delete_custom_show_live", "start_slideshow_live", "stop_slideshow_live",
     "export_slide_image_live", "export_all_slides_images_live",
+    "get_slide_content_live", "get_presentation_content_live",
 }
 
 

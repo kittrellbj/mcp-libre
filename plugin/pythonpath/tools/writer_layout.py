@@ -21,20 +21,26 @@ ranges, and document indexes have no natural unique name and resolve
 pattern this file's own list functions follow: `uno_bridge` returns raw
 objects, this file registers them and builds the response).
 
-**`document_index_id`/pivot-table-style caveat, carried forward from
-calc_data.py's pass:** `list_document_indexes_live` was not
-independently re-verified this pass for the same identity-across-fetches
-gap `calc_data.py`'s pivot tables hit (a fresh `XDataPilotTable`/legacy
-`ConditionalFormat` entry fetch not comparing equal to an earlier one of
-the *same* underlying object) -- if `com.sun.star.text.ContentIndex`/
-`DocumentIndex` objects have the same gap, calling `list_document_
-indexes_live` twice for the same index would mint two different
-`index_id`s, though each id would still work correctly for its own
-later `get`/`update`/`delete` call (all three resolve through the held
-reference directly, never by re-locating via comparison). Flagged
-proactively rather than assumed safe, per Buddy's standing note that
-this kind of caveat belongs in the caller-visible surface, not just a
-commit message.
+**`document_index_id`/pivot-table-style caveat, confirmed for ContentIndex
+this pass (BUG #12 live-verification):** `list_document_indexes_live`
+does have the same identity-across-fetches gap `calc_data.py`'s pivot
+tables hit (a fresh `XDataPilotTable`/legacy `ConditionalFormat` entry
+fetch not comparing equal to an earlier one of the *same* underlying
+object) -- confirmed live, not assumed: a raw-UNO probe against a
+running document showed two separate `getDocumentIndexes().getByIndex()`
+fetches of the identical `com.sun.star.text.ContentIndex` return proxies
+with different `hash()` values, so `ObjectRegistry`'s identity-keyed dict
+(`register_object`) never matches them and mints a second `index_id`.
+`insert_toc_live`'s BUG #12 get-or-create fix is still correct on its
+actual contract -- calling it twice never creates a second *document*
+index (`list_document_indexes_live`'s own `count` stays 1, live-verified)
+-- but a caller that calls `insert_toc_live` twice and compares the two
+`index_id`s for equality will see them differ. Each id still works
+correctly for its own later `get`/`update`/`delete` call (all three
+resolve through the held reference directly, never by re-locating via
+comparison). Flagged proactively rather than assumed safe, per Buddy's
+standing note that this kind of caveat belongs in the caller-visible
+surface, not just a commit message.
 
 **Hyperlinks confirmed to have the same pivot-table-style id churn --
 READ THIS BEFORE CALLING list_hyperlinks_live twice:** live-verified
@@ -265,7 +271,13 @@ def set_page_columns_live(count: int, spacing: Optional[float] = None, widths: O
 @register_tool(
     name="insert_page_break_live",
     priority="P1",
-    purpose="Insert page break with optional next page style/page number.",
+    purpose=(
+        "Insert page break with optional next page style/page number. Same "
+        "at_position contract as insert_paragraph_live -- 1-based, splits before "
+        "the target paragraph; an omitted at_position anchors off the last "
+        "insert_paragraph_live/insert_heading_live/insert_page_break_live call "
+        "in this session (see BUG #7/#5 finding on insert_paragraph_live)."
+    ),
     parameters=schema({
         "at_position": {"type": "integer"},
         "page_style": {"type": "string"},
@@ -867,7 +879,14 @@ def list_document_indexes_live() -> Dict[str, Any]:
 @register_tool(
     name="insert_toc_live",
     priority="P1",
-    purpose="Insert table of contents with level/style/options.",
+    purpose=(
+        "Insert table of contents with level/style/options. Idempotent (BUG #12 "
+        "fix): a repeat call that would otherwise match an existing table-of-"
+        "contents index (same title when title is given, or any existing ToC "
+        "when title is omitted) returns that existing index instead of inserting "
+        "a duplicate. Pass a distinct title to intentionally insert a second, "
+        "differently-titled TOC."
+    ),
     parameters=schema({
         "at_position": {"type": "integer"},
         "title": {"type": "string"},
@@ -883,6 +902,22 @@ def insert_toc_live(at_position: Optional[int] = None, title: Optional[str] = No
     try:
         doc, resolved_id = _resolve_and_register(ctx)
         object_registry = _get_object_registry(ctx, resolved_id)
+
+        # BUG #12 fix: get-or-create by name instead of always inserting a new
+        # index. A ToC is identified by its own service name
+        # (com.sun.star.text.ContentIndex, distinct from the alphabetical/
+        # bibliography/etc. index types insert_alphabetical_index_live and
+        # friends create); a match on title (or, when title is omitted, any
+        # existing ToC -- an unnamed request means "the" table of contents)
+        # returns the existing index rather than creating a duplicate.
+        for existing in ctx.uno_bridge.list_document_indexes(doc):
+            if existing.getServiceName() != "com.sun.star.text.ContentIndex":
+                continue
+            if title is not None and getattr(existing, "Title", None) != title:
+                continue
+            existing_id = object_registry.register_object(existing)
+            summary = ctx.uno_bridge.get_index_summary(existing, existing_id)
+            return envelope.build_success(result=summary, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
         toc = ctx.uno_bridge.insert_toc(doc, at_position, title, max_level, options)
         index_id = object_registry.register_object(toc)
         summary = ctx.uno_bridge.get_index_summary(toc, index_id)
@@ -899,13 +934,58 @@ def insert_toc_live(at_position: Optional[int] = None, title: Optional[str] = No
     status="implemented",
 )
 def update_index_live(index_id: str) -> Dict[str, Any]:
+    """BUG #4 finding (live-verified): a bare index.update() was reported
+    to silently revert the whole document to an earlier state, with
+    success=true and no error -- reran both of the original report's own
+    repro scripts (repro_toc_large.py, repro_save.py) against a session
+    with BUG #2's fix applied (explicit frame activation on every
+    document-creating call, see uno_bridge.create_document()'s docstring),
+    compounding state across both runs (2 stray TOC indexes, 363
+    paragraphs incl. an image, 2 update_index_live calls) -- neither
+    reproduced any reversion; the saved file matched the live count
+    exactly. That points at BUG #2's same root cause (desktop.
+    getCurrentComponent() drifting to a stale document across separate
+    calls in headless mode) rather than a defect in index.update() itself:
+    a later stats/count call re-resolving "the active document" from
+    scratch could silently land on an older, smaller document than the one
+    just built, and report ITS paragraph count -- indistinguishable from
+    data loss to a caller, but nothing was actually deleted.
+
+    Not willing to bet the whole fix on having reproduced the exact
+    multi-hour, multi-session drift Brian's original run hit (the log
+    itself flagged a second suspect, a possible second soffice instance,
+    never fully pinned) -- so this also adds the fail-loud guard Buddy's
+    standing decision asked for regardless of mechanism: paragraph count
+    is read directly off the SAME resolved `doc` object before and after
+    index.update() (not re-resolved via "the active document", which is
+    exactly the unstable path under suspicion), and a drop refuses to
+    report success. Real index refreshes only ever add/update generated
+    entries, never remove body paragraphs, so any decrease is by
+    definition either the reversion bug or something equally wrong -- a
+    caller must never see success=true either way.
+    """
     start = envelope.start_timer()
     ctx = context.get_context()
     try:
         doc, resolved_id = _resolve_and_register(ctx)
         index = _get_object_registry(ctx, resolved_id).resolve_object(index_id)
+        before = ctx.uno_bridge.get_paragraph_count(doc)
+        if not before.get("success"):
+            raise RuntimeError(f"update_index_live: could not read paragraph count before update: {before.get('error')}")
         ctx.uno_bridge.update_index(index)
-        return envelope.build_success(result={"updated": index_id}, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+        after = ctx.uno_bridge.get_paragraph_count(doc)
+        if not after.get("success"):
+            raise RuntimeError(f"update_index_live: could not read paragraph count after update: {after.get('error')}")
+        before_count, after_count = before["count"], after["count"]
+        if after_count < before_count:
+            raise RuntimeError(
+                f"update_index_live: paragraph count dropped from {before_count} to {after_count} "
+                f"while refreshing index {index_id!r} -- refusing to report success on a document "
+                f"that may have reverted to an earlier state."
+            )
+        return envelope.build_success(
+            result={"updated": index_id, "paragraph_count_before": before_count, "paragraph_count_after": after_count},
+            document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
     except Exception as e:
         return _error_response(e, start)
 

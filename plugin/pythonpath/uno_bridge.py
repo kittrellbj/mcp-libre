@@ -72,6 +72,47 @@ def _is_instance(obj, cls):
 # once eviction starts once maxlen is hit.
 _DOCUMENT_EVENT_BUFFER_MAXLEN = 500
 
+# Per docs/EVENT_WAIT_CONCURRENCY_DECISION.md: wait_for_document_event()
+# holds ai_interface.py's process-wide _UNO_EXECUTION_LOCK for its full
+# wait duration (that lock wraps the entire tool-execution sequence, not
+# just mutations -- see the comment above its definition), so an
+# uncapped wait starves any OTHER concurrent tool call queued behind it
+# for up to the full requested timeout_ms. Clamped instead of carving an
+# exception into that lock (disproportionate risk to a correctness-
+# critical, already-hardened primitive for one P3 tool -- see the
+# decision doc's alternatives section).
+#
+# 500ms, derived from measurement, not guessed: edit-latency-probe-
+# windows.py ran 100 real HTTP round trips of append_paragraph_live/
+# insert_heading_live (the typeset-run's dominant call shape) against a
+# real headless LibreOffice instance -- min 5.0ms, median 29.1ms, p95
+# 44.8ms, max 62.7ms, each already including its own full
+# _UNO_EXECUTION_LOCK hold. 500ms gives roughly 8x headroom over the
+# measured max for heavier, unmeasured call shapes this pass didn't
+# probe (image/table inserts, saves) while keeping the worst case a
+# single wait call can cost a queued OTHER call an order of magnitude
+# below the original 2000ms placeholder.
+#
+# IMPORTANT, live-verified 2026-08-21 (event-wait-concurrency-probe-
+# windows.py, both directions): this cap does NOT restore the tool's
+# advertised primary use case ("one agent edits, same agent waits"). A
+# same-HTTP-path edit and a wait call fully serialize on this one lock --
+# the edit can only run in the gap between one wait call ending and the
+# next starting, and by the time it completes (firing its event
+# synchronously, still holding the lock) that event is already behind
+# the NEXT wait call's fresh entry-time snapshot (`snapshot_seq =
+# self._event_seq`) -- confirmed the event genuinely fires and is
+# captured (present in the buffer), just never seen as "new" by any
+# poll, across 8 attempts / 4s, twice independently. This is a property
+# of the cap being any positive size, not of 500ms specifically -- a
+# 1ms or 100000ms cap would fail identically. The negative control (an
+# edit from OUTSIDE this lock entirely -- a separate raw UNO connection,
+# same mechanism as a human GUI edit -- fired genuinely concurrently
+# with an active wait call) IS reliably observed, no regression from
+# pre-fix behavior. See docs/HARDENING_PLAN.md's Phase 5 note for the
+# full evidence and the open question this raises for Morgan.
+_MAX_WAIT_LOCK_HOLD_MS = 500
+
 
 if XDocumentEventListener is not None:
     class _DocumentEventCapture(unohelper.Base, XDocumentEventListener):
@@ -158,6 +199,36 @@ class UNOBridge:
             logger.error(f"Failed to read application version: {e}")
             return {"success": False, "error": str(e)}
 
+    def list_fonts(self) -> Dict[str, Any]:
+        """Return the fonts available to this LibreOffice installation
+        (new tool, Brian's new-tools assignment priority #8).
+
+        Font availability is a property of the LibreOffice installation
+        itself, not of any open document -- like get_application_version()
+        just above, this deliberately takes no doc parameter and isn't
+        routed through _resolve_and_register at the tool layer.
+
+        Technique: the standard UNO idiom for font enumeration (the same
+        one OOo Basic "list installed fonts" macros have used since UNO's
+        font APIs never grew a simpler call) -- a throwaway
+        screen-compatible XDevice's getFontDescriptors(), which returns
+        one FontDescriptor per (name, style) combination actually
+        installed. Grouped by name (styles like "Bold"/"Italic" are
+        variants of the same font, not different fonts a caller would
+        pick between), each style deduplicated and sorted, then the
+        font list itself sorted case-insensitively for a stable,
+        readable result.
+        """
+        toolkit = self.smgr.createInstanceWithContext("com.sun.star.awt.Toolkit", self.ctx)
+        device = toolkit.createScreenCompatibleDevice(0, 0)
+        by_name: Dict[str, set] = {}
+        for descriptor in device.getFontDescriptors():
+            style = descriptor.StyleName or "Regular"
+            by_name.setdefault(descriptor.Name, set()).add(style)
+        fonts = [{"name": name, "styles": sorted(styles)} for name, styles in by_name.items()]
+        fonts.sort(key=lambda f: f["name"].lower())
+        return {"fonts": fonts, "count": len(fonts)}
+
     def get_capabilities(self) -> Dict[str, Any]:
         """
         Return which optional UNO interfaces this bridge resolved at import
@@ -183,26 +254,42 @@ class UNOBridge:
     def create_document(self, doc_type: str = "writer") -> Any:
         """
         Create new document using UNO API
-        
+
         Args:
             doc_type: Type of document ('writer', 'calc', 'impress', 'draw')
-            
+
         Returns:
             Document object
+
+        BUG #2 fix (live-verified): loadComponentFromURL() creating a new
+        top-level frame does NOT make desktop.getCurrentComponent() see it
+        in this headless server -- confirmed directly: a fresh
+        private:factory/swriter load left getCurrentComponent() at None
+        (or a prior document) every time, with no window manager present
+        to fire the focus/activate event an interactive session gets for
+        free. That's the mechanism behind "session gets permanently stuck
+        after the last open document is closed" -- create_document_live
+        reported success but get_active_document_live still saw
+        NO_ACTIVE_DOCUMENT. Fixed by explicitly activating the new
+        document's own frame (the same activate_document() helper
+        activate_document_live already uses) before returning it, so the
+        new document is unconditionally the active one regardless of
+        whatever had focus before.
         """
         try:
             url_map = {
                 "writer": "private:factory/swriter",
-                "calc": "private:factory/scalc", 
+                "calc": "private:factory/scalc",
                 "impress": "private:factory/simpress",
                 "draw": "private:factory/sdraw"
             }
-            
+
             url = url_map.get(doc_type, "private:factory/swriter")
             doc = self.desktop.loadComponentFromURL(url, "_blank", 0, ())
+            self.activate_document(doc)
             logger.info(f"Created new {doc_type} document")
             return doc
-            
+
         except Exception as e:
             logger.error(f"Failed to create document: {e}")
             raise
@@ -476,6 +563,15 @@ class UNOBridge:
         doc = self.desktop.loadComponentFromURL(url, "_blank", 0, tuple(props))
         if doc is None:
             raise RuntimeError(f"LibreOffice returned no document for {file_path} (unsupported format or filter?)")
+        if not hidden:
+            # Same BUG #2 mechanism as create_document(): a non-hidden load
+            # doesn't become getCurrentComponent()'s answer on its own in
+            # this headless server. Skip for hidden=True -- there's no
+            # foreground concept for a document the caller explicitly asked
+            # to stay off-screen, and activating it would silently steal
+            # "active document" status from whatever the caller is actually
+            # working on.
+            self.activate_document(doc)
         logger.info(f"Opened document from {file_path}")
         return doc
 
@@ -488,6 +584,7 @@ class UNOBridge:
         doc = self.desktop.loadComponentFromURL(url, "_blank", 0, props)
         if doc is None:
             raise RuntimeError(f"LibreOffice returned no document for template {template_path}")
+        self.activate_document(doc)  # BUG #2 fix, same mechanism as create_document()
         logger.info(f"Created document from template {template_path} (as_template={as_template})")
         return doc
 
@@ -524,8 +621,43 @@ class UNOBridge:
             pass  # best-effort in headless environments with no real window
 
     def get_document_statistics(self, doc: Any) -> Dict[str, Any]:
-        """Return counts appropriate to the document's type (pages/words/
-        chars for Writer; sheets for Calc; slides/pages for Impress/Draw)."""
+        """Comprehensive canonical "tell me what's in this document" read
+        (Brian's new-tools assignment priority #1 -- Part 4, the last item
+        of the Phase 6 queue, tracked separately from items #2-15 since it
+        rewrites this existing tool's shape rather than adding a new one).
+
+        Writer: full structural inventory -- page/word/character counts
+        plus paragraphs, tables, images, shapes, fields, bookmarks,
+        hyperlinks, sections, footnotes, endnotes, comments, tracked
+        changes. Calc: sheet count/names plus per-cell content stats
+        (used cells, formulas, errors) and container counts (charts,
+        pivot tables). Impress/Draw: slide-or-page count plus a
+        shape-type breakdown (images vs. text objects vs. other), and
+        (Impress only) notes and hidden-slide counts.
+
+        Every count here reuses this file's own established enumeration
+        for that concept rather than re-deriving it: _count_paragraphs()
+        (paragraph_count -- BUG #14 fix, live-verified: a plain top-level
+        enumeration also counts non-paragraph elements like TextTables,
+        so this shares the same filtered enumeration
+        get_paragraph_count_live already uses instead of silently
+        diverging), _enumerate_comments()/_count_non_comment_text_fields()
+        (comment_count vs. field_count -- kept mutually exclusive, not
+        double-counted, since Writer TextFields includes annotation
+        fields), list_hyperlinks(), the getTextTables()/getBookmarks()/
+        getTextSections()/getFootnotes()/getEndnotes() idioms
+        list_tables()/list_bookmarks()/list_sections()/list_footnotes()/
+        list_endnotes() already use, the redlines guard
+        get_track_changes_status() already established, the shape
+        container + _get_shape_type() classification drawing_objects.py's
+        tools use, the single-cursor gotoStartOfUsedArea(False)/
+        gotoEndOfUsedArea(True) walk get_formula_errors() already uses
+        (plus the genuinely-blank-sheet guard and
+        _FIND_CELLS_MAX_SCANNED_CELLS runaway-scan backstop
+        extract_document_text()/find_cells() already established),
+        list_charts(), list_pivot_tables(), and list_slides()'s hidden
+        flag.
+        """
         doc_type = self._get_document_type(doc)
         stats: Dict[str, Any] = {"type": doc_type}
 
@@ -534,29 +666,238 @@ class UNOBridge:
             content = text.getString()
             stats["word_count"] = len(content.split())
             stats["character_count"] = len(content)
-            paragraph_count = 0
-            enum = text.createEnumeration()
-            while enum.hasMoreElements():
-                enum.nextElement()
-                paragraph_count += 1
-            stats["paragraph_count"] = paragraph_count
+            stats["character_count_no_spaces"] = len("".join(content.split()))
+            stats["paragraph_count"] = self._count_paragraphs(doc)
             try:
                 stats["page_count"] = doc.getCurrentController().PageCount
             except Exception:
                 stats["page_count"] = None
+            stats["table_count"] = doc.getTextTables().getCount()
+            draw_page = doc.getDrawPage()
+            shape_count = draw_page.getCount()
+            stats["shape_count"] = shape_count
+            stats["image_count"] = sum(
+                1 for i in range(shape_count)
+                if self._get_shape_type(draw_page.getByIndex(i)) == "image"
+            )
+            stats["field_count"] = self._count_non_comment_text_fields(doc)
+            stats["bookmark_count"] = doc.getBookmarks().getCount()
+            stats["hyperlink_count"] = len(self.list_hyperlinks(doc))
+            stats["section_count"] = doc.getTextSections().getCount()
+            stats["footnote_count"] = doc.getFootnotes().getCount()
+            stats["endnote_count"] = doc.getEndnotes().getCount()
+            stats["comment_count"] = len(self._enumerate_comments(doc))
+            stats["tracked_change_count"] = doc.getRedlines().getCount() if hasattr(doc, "getRedlines") else None
         elif doc_type == "calc":
             sheets = doc.getSheets()
-            stats["sheet_count"] = sheets.getCount()
-            stats["sheet_names"] = [sheets.getByIndex(i).getName() for i in range(sheets.getCount())]
+            sheet_count = sheets.getCount()
+            stats["sheet_count"] = sheet_count
+            stats["sheet_names"] = [sheets.getByIndex(i).getName() for i in range(sheet_count)]
+            used_cell_count = 0
+            formula_count = 0
+            error_count = 0
+            scanned = 0
+            truncated = False
+            formula_content_type = uno.Enum("com.sun.star.table.CellContentType", "FORMULA")
+            for i in range(sheet_count):
+                if truncated:
+                    break
+                sheet_obj = sheets.getByIndex(i)
+                used = self.get_used_range(doc, sheet_obj.Name)
+                single_cell = used["start_column"] == used["end_column"] and used["start_row"] == used["end_row"]
+                if single_cell:
+                    cell = sheet_obj.getCellByPosition(used["start_column"], used["start_row"])
+                    if not (cell.getString() or cell.getFormula()):
+                        continue  # genuinely blank sheet -- same edge case get_sheet_summary()/extract_document_text() guard against
+                width = used["end_column"] - used["start_column"] + 1
+                height = used["end_row"] - used["start_row"] + 1
+                if scanned + (width * height) > self._FIND_CELLS_MAX_SCANNED_CELLS:
+                    truncated = True
+                    break
+                for r in builtins.range(used["start_row"], used["end_row"] + 1):
+                    for c in builtins.range(used["start_column"], used["end_column"] + 1):
+                        cell = sheet_obj.getCellByPosition(c, r)
+                        if not (cell.getString() or cell.getFormula()):
+                            continue
+                        used_cell_count += 1
+                        # Live-verified: cell.getFormula() truthiness is NOT
+                        # "has a real formula" -- it returns a non-empty
+                        # formula-syntax string for every non-blank cell,
+                        # including plain typed values (e.g. a cell holding
+                        # the number 10 reports getFormula() == "10", not
+                        # ""). getType() against CellContentType.FORMULA is
+                        # the actual "is this a formula cell" signal.
+                        if cell.getType() == formula_content_type:
+                            formula_count += 1
+                        if cell.getError() != 0:
+                            error_count += 1
+                scanned += width * height
+            stats["used_cell_count"] = used_cell_count
+            stats["formula_count"] = formula_count
+            stats["error_count"] = error_count
+            stats["truncated"] = truncated
+            stats["chart_count"] = sum(sheets.getByIndex(i).getCharts().getCount() for i in range(sheet_count))
+            stats["pivot_count"] = sum(sheets.getByIndex(i).DataPilotTables.getCount() for i in range(sheet_count))
         elif doc_type in ("impress", "draw"):
-            try:
-                stats["page_count"] = doc.getDrawPages().getCount()
-            except Exception:
-                stats["page_count"] = None
+            pages = doc.getDrawPages()
+            page_count = pages.getCount()
+            stats["page_count"] = page_count
+            shape_count = 0
+            image_count = 0
+            text_object_count = 0
+            for i in range(page_count):
+                page = pages.getByIndex(i)
+                shape_count += page.getCount()
+                for j in range(page.getCount()):
+                    shape_type = self._get_shape_type(page.getByIndex(j))
+                    if shape_type == "image":
+                        image_count += 1
+                    elif shape_type == "text":
+                        text_object_count += 1
+            stats["shape_count"] = shape_count
+            stats["image_count"] = image_count
+            stats["text_object_count"] = text_object_count
+            if doc_type == "impress":
+                notes_count = 0
+                for i in range(page_count):
+                    try:
+                        if self._find_notes_shape(pages.getByIndex(i).NotesPage).getString():
+                            notes_count += 1
+                    except LookupError:
+                        pass
+                stats["notes_count"] = notes_count
+                stats["hidden_slide_count"] = sum(1 for i in range(page_count) if not pages.getByIndex(i).Visible)
         else:
             stats["warning"] = f"No statistics available for document type '{doc_type}'"
 
         return stats
+
+    def get_document_snapshot(self, doc: Any) -> Dict[str, Any]:
+        """Return a compact, type-appropriate "what's open right now"
+        snapshot (new tool, Brian's new-tools assignment priority #14) --
+        document identity plus a lightweight per-type status, in one call
+        for a caller starting a session without already knowing what kind
+        of document is active.
+
+        Follow-up pass (folded into Part 4, the get_document_statistics
+        rewrite, per Buddy's direction): the original shipped version
+        deliberately did NOT reuse get_document_statistics() because that
+        tool was still separately queued for its own rewrite -- Writer's
+        counts were derived independently instead, and Calc/Impress/Draw
+        only got sheet_count/slide_count/page_count, not the fuller
+        statistics/view_state/selection Brian's original spec asked for
+        ("document info + statistics + modified state + view state +
+        selection + document-type-specific active object"). Now that
+        get_document_statistics() has the comprehensive shape, this
+        composes it directly (plus get_view_state()/get_selection(),
+        already-implemented tools this was always meant to reuse) rather
+        than re-deriving any of their per-type logic a second time. For
+        Calc/Impress/Draw, the "active object" detail still composes the
+        bulk-read tools this file already built (get_sheet_summary() #13,
+        get_slide_content() #3, get_draw_page() #10) for the active
+        sheet/slide/page.
+        """
+        info = self.get_document_info(doc)
+        doc_type = info.get("type")
+        snapshot: Dict[str, Any] = {
+            "type": doc_type, "title": info.get("title"),
+            "url": info.get("url"), "modified": info.get("modified"),
+            "statistics": self.get_document_statistics(doc),
+            "view_state": self.get_view_state(doc),
+            "selection": self.get_selection(doc),
+        }
+        if doc_type == "calc":
+            snapshot["active_sheet"] = self.get_sheet_summary(doc)
+        elif doc_type == "impress":
+            snapshot["active_slide"] = self.get_slide_content(doc)
+        elif doc_type == "draw":
+            snapshot["active_page"] = self.get_draw_page(doc)
+        elif doc_type != "writer":
+            snapshot["warning"] = f"No active-object detail available for document type '{doc_type}'"
+        return snapshot
+
+    def extract_document_text(self, doc: Any) -> Dict[str, Any]:
+        """Return a flat plain-text extraction of the whole document (new
+        tool, Brian's new-tools assignment priority #15, the last of the
+        Phase 6 new-tools list) -- "give me everything readable as text"
+        regardless of document type, for search/embedding/context use
+        rather than the structured, per-container reads
+        get_slide_content_live/get_draw_page_live/get_sheet_summary_live
+        already provide.
+
+        Writer: doc.getText().getString(), the plain body text --
+        footnotes/headers/footers are a separate surface this doesn't
+        reach, same scope boundary get_document_statistics's word_count
+        already has.
+
+        Calc: each sheet's used range (bounded the same
+        gotoStartOfUsedArea()/gotoEndOfUsedArea() way get_used_range()
+        establishes -- never the full 1M-row grid), read via the bulk
+        getDataArray() rather than a per-cell loop. Same genuinely-blank-
+        sheet guard get_sheet_summary() uses (a collapsed single-cell
+        used range is checked for real content before being trusted) --
+        without it, an empty sheet's default numeric 0.0 read back from
+        getDataArray() would otherwise be misreported as real text "0.0"
+        for a sheet that has nothing in it. Stops (truncated: true)
+        after _FIND_CELLS_MAX_SCANNED_CELLS cells across all sheets
+        combined, the same runaway-scan backstop find_cells() uses.
+
+        Impress/Draw: composes get_presentation_content()/get_draw_page()
+        (#5/#10) per slide/page rather than re-deriving shape-text
+        extraction a third time -- every shape's text, plus Impress notes.
+        """
+        doc_type = self._get_document_type(doc)
+        truncated = False
+        if doc_type == "writer":
+            text = doc.getText().getString()
+        elif doc_type == "calc":
+            parts: List[str] = []
+            scanned = 0
+            sheets = doc.getSheets()
+            for i in range(sheets.getCount()):
+                if truncated:
+                    break
+                sheet_obj = sheets.getByIndex(i)
+                used = self.get_used_range(doc, sheet_obj.Name)
+                single_cell = used["start_column"] == used["end_column"] and used["start_row"] == used["end_row"]
+                if single_cell:
+                    cell = sheet_obj.getCellByPosition(used["start_column"], used["start_row"])
+                    if not (cell.getString() or cell.getFormula()):
+                        continue  # genuinely blank sheet -- same edge case get_sheet_summary() guards against
+                width = used["end_column"] - used["start_column"] + 1
+                height = used["end_row"] - used["start_row"] + 1
+                if scanned + (width * height) > self._FIND_CELLS_MAX_SCANNED_CELLS:
+                    truncated = True
+                    break
+                range_obj = sheet_obj.getCellRangeByPosition(
+                    used["start_column"], used["start_row"], used["end_column"], used["end_row"])
+                for row in range_obj.getDataArray():
+                    for value in row:
+                        if value != "" and value is not None:
+                            parts.append(str(value))
+                scanned += width * height
+            text = "\n".join(parts)
+        elif doc_type == "impress":
+            content = self.get_presentation_content(doc)
+            parts = []
+            for slide in content["slides"]:
+                parts.extend(t["text"] for t in slide["text"])
+                if slide.get("notes"):
+                    parts.append(slide["notes"])
+            text = "\n".join(parts)
+        elif doc_type == "draw":
+            parts = []
+            pages = doc.getDrawPages()
+            for i in range(pages.getCount()):
+                page_content = self.get_draw_page(doc, i)
+                parts.extend(t["text"] for t in page_content["text"])
+            text = "\n".join(parts)
+        else:
+            text = ""
+        result: Dict[str, Any] = {"type": doc_type, "text": text, "character_count": len(text)}
+        if doc_type == "calc":
+            result["truncated"] = truncated
+        return result
 
     _DOCUMENT_PROPERTY_FIELDS = ("Title", "Subject", "Author", "Description", "ModifiedBy")
 
@@ -577,11 +918,21 @@ class UNOBridge:
                                            "description": "Description", "keywords": "Keywords"}
 
     def set_document_properties(self, doc: Any, properties: Dict[str, Any]) -> List[str]:
-        """Set standard document metadata. Returns the list of field names actually applied."""
+        """Set standard document metadata. Returns the list of field names actually applied.
+
+        BUG #13 fix: the original report's own repro passed capitalized
+        keys ({"Title": ..., "Author": ...}) and got them silently
+        ignored -- the field-name lookup was exact-match against
+        lowercase keys only, with no case-insensitivity and no schema
+        documenting that requirement (empty inputSchema, confirmed in
+        set_document_properties_live's tool registration). Not the
+        "wrong shape entirely" the original report guessed (a flat dict
+        IS the right shape -- confirmed by this method's own signature);
+        fixed by matching field names case-insensitively instead."""
         doc_props = doc.getDocumentProperties()
         applied = []
         for key, value in properties.items():
-            uno_field = self._SETTABLE_DOCUMENT_PROPERTY_FIELDS.get(key)
+            uno_field = self._SETTABLE_DOCUMENT_PROPERTY_FIELDS.get(key.lower())
             if uno_field is None:
                 continue  # unknown/unsettable field name -- caller is told via the returned list
             if uno_field == "Keywords":
@@ -841,7 +1192,50 @@ class UNOBridge:
             except Exception as e:
                 state["current_page_name"] = None
                 state["warnings"] = [f"Could not read current page name: {e}"]
+        elif doc_type == "writer":
+            # New addition (Brian's new-tools assignment, priority #6) --
+            # get_view_state_live previously reported no page position at
+            # all for Writer, unlike calc's active_sheet/impress's
+            # current_page_name above. The view cursor implements
+            # com.sun.star.text.XPageCursor, whose getPage() returns the
+            # 1-based page the cursor is currently on -- the same number
+            # Writer's own status bar shows, not a 0-based index.
+            try:
+                view_cursor = controller.getViewCursor()
+                state["current_page_number"] = view_cursor.getPage() if hasattr(view_cursor, "getPage") else None
+            except Exception as e:
+                state["current_page_number"] = None
+                state["warnings"] = [f"Could not read current page number: {e}"]
         return state
+
+    def goto_page(self, doc: Any, page: int) -> Dict[str, Any]:
+        """Move the Writer view cursor to the start of the given page
+        (new tool, Brian's new-tools assignment priority #7) -- the write
+        side companion to get_view_state_live's current_page_number
+        addition (#6), navigating through the same view cursor's
+        com.sun.star.text.XPageCursor interface that reads it.
+
+        Live-verified finding: jumpToPage() past the document's real last
+        page does not raise and does not leave the cursor where it was --
+        it silently clamps to the last real page. Reported back via a
+        warning naming the real page reached, rather than claiming the
+        exact requested page was hit when it wasn't.
+        """
+        self._require_writer(doc, "goto_page")
+        if not isinstance(page, int) or isinstance(page, bool) or page < 1:
+            raise ValueError(f"page must be a positive integer, got {page!r}")
+        view_cursor = self._get_controller(doc).getViewCursor()
+        if not hasattr(view_cursor, "jumpToPage"):
+            raise NotImplementedError("This document's view cursor does not support page navigation.")
+        view_cursor.jumpToPage(page)
+        actual_page = view_cursor.getPage() if hasattr(view_cursor, "getPage") else None
+        result: Dict[str, Any] = {"page": actual_page}
+        if actual_page is not None and actual_page != page:
+            result["warnings"] = [
+                f"Requested page {page} but the document only reaches page {actual_page} -- "
+                "clamped to the last real page rather than failing."
+            ]
+        return result
 
     def set_zoom(self, doc: Any, percent: Optional[int] = None, mode: Optional[str] = None) -> Dict[str, Any]:
         """Set zoom percent (exact value) or a named fit mode. Exactly one
@@ -1033,10 +1427,19 @@ class UNOBridge:
         events) until a buffered event with seq > the snapshot taken at
         entry and a matching event_type appears, or timeout_ms elapses.
         Returns None on timeout rather than raising -- a timeout is an
-        expected, non-error outcome for this tool."""
+        expected, non-error outcome for this tool.
+
+        The actual wait is clamped to min(timeout_ms, _MAX_WAIT_LOCK_HOLD_MS)
+        regardless of the caller-requested timeout_ms -- see that
+        constant's comment for why and how the cap was derived. A capped
+        return still comes back as a plain timeout (this method returns
+        None either way); the caller can't tell a cap from a genuine
+        timeout, which is deliberate. A caller wanting to wait longer
+        than the cap re-issues the call."""
         self._ensure_document_event_capture()
         wanted = set(event_types)
-        deadline = time.monotonic() + max(timeout_ms, 0) / 1000.0
+        clamped_timeout_ms = min(max(timeout_ms, 0), _MAX_WAIT_LOCK_HOLD_MS)
+        deadline = time.monotonic() + clamped_timeout_ms / 1000.0
         with self._event_condition:
             snapshot_seq = self._event_seq
             while True:
@@ -1346,11 +1749,57 @@ class UNOBridge:
         new_doc = self.desktop.loadComponentFromURL(url, "_blank", 0, ())
         if new_doc is None:
             raise RuntimeError(f"LibreOffice returned no document reloading {url}")
+        self.activate_document(new_doc)  # BUG #2 fix, same mechanism as create_document()
         return new_doc
+
+    @staticmethod
+    def _stale_lock_file(doc: Any, file_path: str) -> Optional[str]:
+        """Return the path of a LibreOffice lock marker for file_path if one
+        exists on disk and it isn't doc's own (a document that already has
+        file_path as its stored location legitimately holds that lock
+        itself), else None.
+
+        BUG #6 finding (from the original report, not independently
+        reproduced this pass -- see save_as_document()'s docstring): a
+        stale `.~lock.<name>#` file left behind by a crashed/killed prior
+        soffice process, combined with a pre-existing file at the same
+        output path, was reported to make storeAsURL() silently serialize
+        a different (near-empty, stale-frame) document instead of the live
+        one being saved -- success=true, wrong bytes on disk. The lock
+        marker's own naming convention (`.~lock.<basename>#`, same
+        directory) is LibreOffice's own, not this project's."""
+        directory, name = os.path.split(file_path)
+        lock_path = os.path.join(directory, f".~lock.{name}#")
+        if not os.path.exists(lock_path):
+            return None
+        try:
+            if doc.hasLocation() and doc.getURL() == uno.systemPathToFileUrl(file_path):
+                return None  # doc's own legitimate self-lock, not a stale one
+        except Exception:
+            pass
+        return lock_path
 
     def save_as_document(self, doc: Any, file_path: str, filter_name: Optional[str] = None,
                           filter_options: Optional[Dict[str, Any]] = None, overwrite: bool = False) -> None:
-        """Explicit Save As: changes the document's own stored location, unlike save_copy_document()."""
+        """Explicit Save As: changes the document's own stored location, unlike save_copy_document().
+
+        BUG #6 fix: refuses when a stale LibreOffice lock marker exists
+        for file_path, regardless of `overwrite` -- overwrite only ever
+        meant "yes, replace the file's bytes," never "yes, save through
+        whatever stale frame LibreOffice may have attached because a lock
+        file suggests another session already has this path open." The
+        original report's own manual workaround (kill soffice, delete
+        every .~lock.* AND the old output file before starting) is the
+        exact condition this now enforces instead of leaving as tribal
+        knowledge in a log file -- see docs/HARDENING_PLAN.md."""
+        lock_path = self._stale_lock_file(doc, file_path)
+        if lock_path:
+            raise FileExistsError(
+                f"A LibreOffice lock file exists for {file_path} ({lock_path}). Saving through a stale "
+                f"lock has been reported to silently write the wrong document's content. Confirm no other "
+                f"session actually holds this file, delete the lock file, then retry -- overwrite=true does "
+                f"not address this."
+            )
         if not overwrite and os.path.exists(file_path):
             raise FileExistsError(f"{file_path} already exists; pass overwrite=true to replace it.")
         url = uno.systemPathToFileUrl(file_path)
@@ -1365,7 +1814,19 @@ class UNOBridge:
 
     def save_copy_document(self, doc: Any, file_path: str, filter_name: Optional[str] = None,
                             overwrite: bool = False) -> None:
-        """Store a copy without changing the document's own stored location."""
+        """Store a copy without changing the document's own stored location.
+
+        BUG #6 fix: same stale-lock refusal as save_as_document() -- see
+        its docstring. storeToURL() shares the same "reads a stale
+        attached frame instead of the live document" risk mechanism."""
+        lock_path = self._stale_lock_file(doc, file_path)
+        if lock_path:
+            raise FileExistsError(
+                f"A LibreOffice lock file exists for {file_path} ({lock_path}). Saving through a stale "
+                f"lock has been reported to silently write the wrong document's content. Confirm no other "
+                f"session actually holds this file, delete the lock file, then retry -- overwrite=true does "
+                f"not address this."
+            )
         if not overwrite and os.path.exists(file_path):
             raise FileExistsError(f"{file_path} already exists; pass overwrite=true to replace it.")
         url = uno.systemPathToFileUrl(file_path)
@@ -3299,6 +3760,26 @@ class UNOBridge:
         or end (position="after"), then insertString()+insertControlCharacter()
         (or the reverse order for "after") so the paragraph break lands on
         the correct side of the new text.
+
+        BUG #5 fix (live-verified): when at_paragraph is omitted, the
+        anchor resolves through _current_paragraph_index(doc), which reads
+        the VIEW cursor's position -- but the actual edit above happens
+        through a SEPARATE text cursor (text_obj.createTextCursorByRange()),
+        which never touches the view cursor. Under batch_execute_live
+        (every op runs back-to-back with no idle time between server-side
+        calls), the view cursor never moved, so every batched
+        at_paragraph=None call in a row resolved the identical anchor and
+        piled up in reverse -- confirmed against the reported symptom:
+        insert_table()/insert_image() don't have this bug because, when
+        their own *_position is omitted, they insert directly through
+        controller.getViewCursor() itself (the same object being written
+        through), so it moves as a side effect of the insert. Fixed the
+        same way here: explicitly resync the view cursor to the inserted
+        range afterward, so the next omitted-position call (batched or
+        not) resolves relative to what was just inserted instead of a
+        stale position. Best-effort (doesn't fail an otherwise-successful
+        insert if repositioning itself raises) -- worst case reverts to
+        the pre-fix anchor behavior for the next call, not data loss.
         """
         self._require_writer(doc, "insert_paragraph")
         position = position or "after"
@@ -3317,12 +3798,28 @@ class UNOBridge:
             text_obj.insertControlCharacter(cursor, PARAGRAPH_BREAK, False)
             text_obj.insertString(cursor, text, False)
             new_paragraph_number = anchor_n + 1
+        try:
+            self._get_controller(doc).getViewCursor().gotoRange(cursor, False)
+        except Exception:
+            pass  # best-effort -- see BUG #5 fix note above
         return {"inserted_paragraph": new_paragraph_number, "text": text}
 
     def append_paragraph(self, doc: Any, text: str = "", style_name: Optional[str] = None) -> Dict[str, Any]:
         """Append a new paragraph to the end of the document. Always adds a
-        new paragraph (never reuses an existing empty trailing one)."""
+        new paragraph (never reuses an existing empty trailing one).
+
+        BUG #9 fix (live-verified): an unknown style_name used to raise
+        AFTER the text was already inserted -- the tool layer reports
+        success=false, but the paragraph is still there, unstyled. A
+        caller that only checks success would drop content that actually
+        landed. Fixed by validating style_name BEFORE touching the
+        document at all, so an unknown style now fails atomically (nothing
+        inserted) instead of partially applying behind a failure code."""
         self._require_writer(doc, "append_paragraph")
+        if style_name:
+            family_container = self._get_style_family(doc, "ParagraphStyles")
+            if not family_container.hasByName(style_name):
+                raise KeyError(f"No such paragraph style '{style_name}'.")
         text_obj = doc.getText()
         cursor = text_obj.createTextCursor()
         cursor.gotoEnd(False)
@@ -3330,9 +3827,6 @@ class UNOBridge:
         text_obj.insertString(cursor, text, False)
         style_applied = False
         if style_name:
-            family_container = self._get_style_family(doc, "ParagraphStyles")
-            if not family_container.hasByName(style_name):
-                raise KeyError(f"No such paragraph style '{style_name}'.")
             cursor.ParaStyleName = style_name
             style_applied = True
         return {"appended_paragraph": self._count_paragraphs(doc), "text": text, "style_applied": style_applied}
@@ -3674,6 +4168,24 @@ class UNOBridge:
                     fields.append(field)
         return fields
 
+    def _count_non_comment_text_fields(self, doc: Any) -> int:
+        """Count of doc.getTextFields() entries that are NOT comment
+        annotations (com.sun.star.text.TextField.Annotation) -- the
+        statistics rewrite reports field_count and comment_count as
+        separate figures, so this excludes the exact same
+        Annotation-service fields _enumerate_comments() collects rather
+        than double-counting them under both names."""
+        if not hasattr(doc, "getTextFields"):
+            return 0
+        count = 0
+        enum = doc.getTextFields().createEnumeration()
+        while enum.hasMoreElements():
+            field = enum.nextElement()
+            if hasattr(field, "supportsService") and field.supportsService("com.sun.star.text.TextField.Annotation"):
+                continue
+            count += 1
+        return count
+
     def _comment_id_for(self, field: Any, index: int) -> str:
         try:
             if field.getPropertySetInfo().hasPropertyByName("Id"):
@@ -3965,6 +4477,102 @@ class UNOBridge:
                 continue
         details["style"] = style
         return details
+
+    _FIND_SHAPE_TEXT_MAX_SCANNED_SHAPES = 5000
+
+    def _iter_shape_text_containers(self, doc: Any, container: Optional[Any] = None) -> List[Any]:
+        """Return [(label, page)] pairs to search -- Writer has exactly
+        one (its single document-wide draw page, `container` ignored,
+        same as `_resolve_shape_container`); Calc searches one sheet's
+        draw page if `container` names a sheet, else every sheet's;
+        Impress/Draw searches one page if `container` names/indexes one,
+        else every page. Mirrors find_cells()'s "container given -> just
+        that one; omitted -> every candidate, each match reporting which
+        one it came from" scope discipline."""
+        self._require_shape_capable(doc, "find_shape_text")
+        doc_type = self._get_document_type(doc)
+        if doc_type == "writer":
+            return [("document", doc.getDrawPage())]
+        if doc_type == "calc":
+            sheets = doc.getSheets()
+            if container is not None:
+                sheet = self._resolve_sheet_by_name_or_index(sheets, str(container))
+                return [(sheet.Name, sheet.getDrawPage())]
+            return [(sheets.getByIndex(i).Name, sheets.getByIndex(i).getDrawPage()) for i in range(sheets.getCount())]
+        # impress, draw
+        pages = doc.getDrawPages()
+        if container is not None:
+            page = self._resolve_page_by_name_or_index(pages, container)
+            return [(page.Name, page)]
+        return [(pages.getByIndex(i).Name, pages.getByIndex(i)) for i in range(pages.getCount())]
+
+    def find_shape_text(self, doc: Any, query: str, container: Optional[Any] = None,
+                         match: str = "contains", case_sensitive: bool = False,
+                         max_results: int = 100) -> Dict[str, Any]:
+        """New tool (Brian's new-tools assignment, priority #4, "shared
+        search across Impress/Draw shapes, optionally Writer/Calc drawing
+        objects"). No exact schema was given for this one; `query`/
+        `match`/`case_sensitive`/`max_results` reuse find_cells_live's
+        established search-tool shape rather than inventing a new one,
+        since both are "find text somewhere in the document" primitives.
+
+        Returns {"shapes": [(container_label, shape)], "truncated": bool}
+        -- raw UNO shape objects, not JSON; minting shape_ids via
+        ObjectRegistry is the tool layer's job (find_shape_text_live),
+        same split list_shapes_in_container() already established.
+
+        Stops as soon as `max_results` matches are found OR
+        _FIND_SHAPE_TEXT_MAX_SCANNED_SHAPES shapes have been examined --
+        same runaway-scan backstop shape find_cells() uses, scaled down
+        since a document's shape count is normally orders of magnitude
+        below its cell count.
+        """
+        if match not in ("contains", "exact", "regex"):
+            raise ValueError(f"match must be one of contains/exact/regex, got {match!r}")
+        if match == "regex":
+            try:
+                pattern = re.compile(query, flags=0 if case_sensitive else re.IGNORECASE)
+            except re.error as e:
+                raise ValueError(f"Invalid regex {query!r}: {e}")
+
+            def is_match(candidate: str) -> bool:
+                return pattern.search(candidate) is not None
+        elif match == "exact":
+            needle = query if case_sensitive else query.lower()
+
+            def is_match(candidate: str) -> bool:
+                return (candidate if case_sensitive else candidate.lower()) == needle
+        else:  # contains
+            needle = query if case_sensitive else query.lower()
+
+            def is_match(candidate: str) -> bool:
+                return needle in (candidate if case_sensitive else candidate.lower())
+
+        matches: List[Any] = []
+        scanned = 0
+        truncated = False
+        for label, page in self._iter_shape_text_containers(doc, container):
+            for i in range(page.getCount()):
+                if len(matches) >= max_results:
+                    truncated = True
+                    break
+                if scanned >= self._FIND_SHAPE_TEXT_MAX_SCANNED_SHAPES:
+                    truncated = True
+                    break
+                scanned += 1
+                shape = page.getByIndex(i)
+                if not hasattr(shape, "getString"):
+                    continue
+                try:
+                    text = shape.getString()
+                except Exception:
+                    continue
+                if not text or not is_match(text):
+                    continue
+                matches.append((label, shape))
+            if truncated:
+                break
+        return {"shapes": matches, "truncated": truncated}
 
     _SHAPE_TYPE_SERVICES = {
         "rectangle": "com.sun.star.drawing.RectangleShape",
@@ -4799,6 +5407,220 @@ class UNOBridge:
             "end_column": end_addr.EndColumn, "end_row": end_addr.EndRow,
         }
 
+    def get_sheet_summary(self, doc: Any, sheet: Optional[str] = None) -> Dict[str, Any]:
+        """Return an at-a-glance summary of one sheet -- name, visibility,
+        protection, used-range dimensions, and freeze-panes state -- in
+        one call instead of get_active_sheet_live + get_used_range_live +
+        get_freeze_panes_live (#12) + reading IsVisible/protection
+        separately (new tool, Brian's new-tools assignment priority #13).
+
+        `used_range`/`row_count`/`column_count` are reported as empty
+        (None/0/0) for a genuinely blank sheet, not a misleading "1x1
+        used" -- gotoStartOfUsedArea()/gotoEndOfUsedArea() both collapse
+        to A1 on a sheet with no content at all (the same single cell
+        get_used_range() itself would report), so a single-cell result is
+        checked for real content (text or formula) before being trusted
+        as actual used range rather than this fallback.
+
+        `protected` reads sheet_obj.isProtected() (the paired getter for
+        the protect()/unprotect() calls protect_sheet_live/
+        unprotect_sheet_live already use). `frozen` reuses
+        get_freeze_panes() as-is rather than re-deriving its
+        active-sheet-switch-and-restore handling here.
+
+        Follow-up pass, real gap flagged after this tool first shipped:
+        Brian's original spec also asked for "formula+error counts",
+        missing from the first version entirely. `formula_count`/
+        `error_count` scan this sheet's own used range (bounded by the
+        same `_FIND_CELLS_MAX_SCANNED_CELLS` backstop find_cells()/
+        get_document_statistics() already use, reported via
+        `counts_truncated` when hit) using the same `cell.getType() ==
+        CellContentType.FORMULA` idiom get_document_statistics() found
+        necessary -- `cell.getFormula()` truthiness is NOT "this cell
+        holds a real formula", it's non-empty for every non-blank cell.
+        """
+        self._require_calc(doc, "get_sheet_summary")
+        sheet_obj = self._resolve_sheet(doc, sheet)
+        index = sheet_obj.getCellRangeByName("A1").RangeAddress.Sheet
+        used = self.get_used_range(doc, sheet)
+        single_cell = used["start_column"] == used["end_column"] and used["start_row"] == used["end_row"]
+        has_content = True
+        if single_cell:
+            cell = sheet_obj.getCellByPosition(used["start_column"], used["start_row"])
+            has_content = bool(cell.getString()) or bool(cell.getFormula())
+        formula_count = 0
+        error_count = 0
+        counts_truncated = False
+        if has_content:
+            width = used["end_column"] - used["start_column"] + 1
+            height = used["end_row"] - used["start_row"] + 1
+            if width * height > self._FIND_CELLS_MAX_SCANNED_CELLS:
+                counts_truncated = True
+            else:
+                formula_content_type = uno.Enum("com.sun.star.table.CellContentType", "FORMULA")
+                for r in builtins.range(used["start_row"], used["end_row"] + 1):
+                    for c in builtins.range(used["start_column"], used["end_column"] + 1):
+                        scan_cell = sheet_obj.getCellByPosition(c, r)
+                        if not (scan_cell.getString() or scan_cell.getFormula()):
+                            continue
+                        if scan_cell.getType() == formula_content_type:
+                            formula_count += 1
+                        if scan_cell.getError() != 0:
+                            error_count += 1
+        return {
+            "index": index,
+            "name": sheet_obj.Name,
+            "visible": bool(sheet_obj.IsVisible),
+            "protected": bool(sheet_obj.isProtected()),
+            "used_range": used if has_content else None,
+            "row_count": (used["end_row"] - used["start_row"] + 1) if has_content else 0,
+            "column_count": (used["end_column"] - used["start_column"] + 1) if has_content else 0,
+            "formula_count": formula_count,
+            "error_count": error_count,
+            "counts_truncated": counts_truncated,
+            "frozen": self.get_freeze_panes(doc, sheet),
+        }
+
+    _FIND_CELLS_MAX_SCANNED_CELLS = 200000
+
+    def find_cells(self, doc: Any, query: str, sheet: Optional[str] = None, range: Optional[str] = None,
+                    look_in: str = "values", match: str = "contains", case_sensitive: bool = False,
+                    max_results: int = 100) -> Dict[str, Any]:
+        """Search cell values/formulas/comments for `query`, across one
+        sheet or the whole workbook. New tool (Brian's priority #2, "the
+        biggest obvious Calc hole") -- no prior mechanism in this catalog
+        did substring/regex search over cell content at all.
+
+        Scope, deliberately bounded rather than scanning the full
+        1M+-row grid: `range` given -> just that range (on `sheet` if
+        also given, else the active sheet); `range` omitted -> each
+        candidate sheet's own used range (via the same cursor-based
+        gotoStartOfUsedArea/gotoEndOfUsedArea technique get_used_range()
+        already established), never the whole sheet. `sheet` omitted ->
+        every sheet in the workbook (matching "find this anywhere in the
+        workbook" from the spec) -- each match reports which sheet it
+        came from.
+
+        `look_in="comments"`/`"all"` looks up each candidate cell's
+        annotation via a single pre-built {(col,row): text} dict per
+        sheet (one pass over that sheet's Annotations), not a fresh
+        linear _find_annotation_at() scan per cell -- avoids O(cells x
+        annotations) on a sheet with many comments.
+
+        `match="regex"` uses re.search (a `query` matching anywhere in
+        the candidate string), consistent with "contains"; not
+        re.fullmatch. An invalid regex raises ValueError with the
+        original re.error message rather than silently matching nothing
+        or crashing with an opaque traceback.
+
+        Stops as soon as `max_results` matches are found OR
+        _FIND_CELLS_MAX_SCANNED_CELLS cells have been examined (a
+        runaway-scan backstop distinct from max_results -- protects a
+        huge used range with very few/no matches from scanning
+        indefinitely); `truncated` in the result distinguishes "hit
+        max_results" from "hit the scan backstop" from neither.
+        """
+        self._require_calc(doc, "find_cells")
+        if look_in not in ("values", "formulas", "comments", "all"):
+            raise ValueError(f"look_in must be one of values/formulas/comments/all, got {look_in!r}")
+        if match not in ("contains", "exact", "regex"):
+            raise ValueError(f"match must be one of contains/exact/regex, got {match!r}")
+
+        if match == "regex":
+            try:
+                pattern = re.compile(query, flags=0 if case_sensitive else re.IGNORECASE)
+            except re.error as e:
+                raise ValueError(f"Invalid regex {query!r}: {e}")
+
+            def is_match(candidate: str) -> bool:
+                return pattern.search(candidate) is not None
+        elif match == "exact":
+            needle = query if case_sensitive else query.lower()
+
+            def is_match(candidate: str) -> bool:
+                return (candidate if case_sensitive else candidate.lower()) == needle
+        else:  # contains
+            needle = query if case_sensitive else query.lower()
+
+            def is_match(candidate: str) -> bool:
+                return needle in (candidate if case_sensitive else candidate.lower())
+
+        sheets = doc.getSheets()
+        if sheet is not None:
+            candidate_sheets = [self._resolve_sheet_by_name_or_index(sheets, sheet)]
+        else:
+            candidate_sheets = [sheets.getByIndex(i) for i in builtins.range(sheets.getCount())]
+
+        matches: List[Dict[str, Any]] = []
+        scanned = 0
+        truncated = False
+        for sheet_obj in candidate_sheets:
+            if len(matches) >= max_results:
+                truncated = True
+                break
+            if range is not None:
+                bounds = sheet_obj.getCellRangeByName(range).RangeAddress
+            else:
+                start_cursor = sheet_obj.createCursor()
+                start_cursor.gotoStartOfUsedArea(False)
+                end_cursor = sheet_obj.createCursor()
+                end_cursor.gotoEndOfUsedArea(False)
+                bounds = uno.createUnoStruct("com.sun.star.table.CellRangeAddress")
+                bounds.StartColumn = start_cursor.RangeAddress.StartColumn
+                bounds.StartRow = start_cursor.RangeAddress.StartRow
+                bounds.EndColumn = end_cursor.RangeAddress.EndColumn
+                bounds.EndRow = end_cursor.RangeAddress.EndRow
+
+            annotation_by_position = {}
+            if look_in in ("comments", "all"):
+                annotations = sheet_obj.Annotations
+                for i in builtins.range(annotations.getCount()):
+                    ann = annotations.getByIndex(i)
+                    pos = ann.Position
+                    if bounds.StartColumn <= pos.Column <= bounds.EndColumn and bounds.StartRow <= pos.Row <= bounds.EndRow:
+                        annotation_by_position[(pos.Column, pos.Row)] = ann.getString()
+
+            for row in builtins.range(bounds.StartRow, bounds.EndRow + 1):
+                if len(matches) >= max_results:
+                    truncated = True
+                    break
+                for col in builtins.range(bounds.StartColumn, bounds.EndColumn + 1):
+                    scanned += 1
+                    if scanned > self._FIND_CELLS_MAX_SCANNED_CELLS:
+                        truncated = True
+                        break
+                    cell_obj = sheet_obj.getCellByPosition(col, row)
+                    display_value = cell_obj.getString() if look_in in ("values", "all") else None
+                    formula = cell_obj.getFormula() if look_in in ("formulas", "all") else None
+                    comment = annotation_by_position.get((col, row)) if look_in in ("comments", "all") else None
+
+                    hit = False
+                    if display_value and is_match(display_value):
+                        hit = True
+                    elif formula and is_match(formula):
+                        hit = True
+                    elif comment and is_match(comment):
+                        hit = True
+                    if hit:
+                        # Report value/formula per the schema regardless of
+                        # which look_in mode found the hit -- a caller
+                        # matching on a comment still wants to see what's
+                        # actually in the cell.
+                        matches.append({
+                            "sheet": sheet_obj.Name,
+                            "address": self._column_row_to_a1(col, row),
+                            "value": cell_obj.getString() or None,
+                            "formula": cell_obj.getFormula() or None,
+                        })
+                        if len(matches) >= max_results:
+                            truncated = True
+                            break
+                if scanned > self._FIND_CELLS_MAX_SCANNED_CELLS:
+                    truncated = True
+                    break
+
+        return {"matches": matches, "count": len(matches), "truncated": truncated}
+
     def insert_rows(self, doc: Any, index: int, sheet: Optional[str] = None, count: int = 1) -> None:
         self._require_calc(doc, "insert_rows")
         self._resolve_sheet(doc, sheet).getRows().insertByIndex(index, count)
@@ -5042,6 +5864,52 @@ class UNOBridge:
             controller.setActiveSheet(self._resolve_sheet(doc, sheet))
         controller.freezeAtPosition(0, 0)
 
+    def get_freeze_panes(self, doc: Any, sheet: Optional[str] = None) -> Dict[str, Any]:
+        """Return the current freeze-panes state (new tool, Brian's
+        new-tools assignment priority #12) -- freeze_panes_live/
+        unfreeze_panes_live both existed with no getter to check the
+        result against.
+
+        Freeze state lives on the document's controller (view-wide), not
+        a per-sheet model property directly readable without that sheet
+        being active -- same reason freeze_panes()/unfreeze_panes() above
+        switch the active sheet as part of applying a freeze. Unlike
+        those two mutating tools, though, a caller reading freeze state
+        on a non-active sheet shouldn't come away with a changed active
+        sheet as a side effect of a read: if `sheet` is given and isn't
+        already active, this temporarily switches to read it, then
+        restores whichever sheet was actually active beforehand.
+
+        Live-verified quirk, not a guess: this LibreOffice build's
+        controller.SplitRow reads back one higher than the row actually
+        passed to freezeAtPosition() whenever any row is really frozen
+        (SplitColumn has no such offset, and SplitRow itself is a
+        correct 0 when no row is frozen at all -- confirmed against
+        freezes at every combination of row-only/column-only/both/
+        neither). Corrected here so `columns`/`rows`/`cell` all agree
+        with what freeze_panes_live was actually given, rather than
+        leaking this build's raw off-by-one into the tool's contract.
+        """
+        self._require_calc(doc, "get_freeze_panes")
+        controller = doc.getCurrentController()
+        original_sheet = controller.getActiveSheet()
+        target_sheet = self._resolve_sheet(doc, sheet) if sheet is not None else original_sheet
+        switched = sheet is not None and target_sheet.Name != original_sheet.Name
+        if switched:
+            controller.setActiveSheet(target_sheet)
+        try:
+            frozen = bool(controller.hasFrozenPanes())
+            split_column = int(controller.SplitColumn)
+            raw_split_row = int(controller.SplitRow)
+            split_row = raw_split_row - 1 if raw_split_row > 0 else 0
+        finally:
+            if switched:
+                controller.setActiveSheet(original_sheet)
+        result: Dict[str, Any] = {"frozen": frozen, "columns": split_column, "rows": split_row}
+        if frozen:
+            result["cell"] = self._column_row_to_a1(split_column, split_row)
+        return result
+
     def recalculate(self, doc: Any, hard: bool = False) -> None:
         self._require_calc(doc, "recalculate")
         if hard:
@@ -5176,6 +6044,107 @@ class UNOBridge:
         self._require_draw(doc, "get_active_draw_page")
         page = doc.getCurrentController().getCurrentPage()
         return {"index": self._draw_page_index(doc.getDrawPages(), page), "name": page.Name}
+
+    def activate_draw_page(self, doc: Any, page: Any) -> Dict[str, Any]:
+        """Activate a Draw page (new tool, Brian's new-tools assignment
+        priority #9) -- the Draw counterpart to Impress's activate_slide(),
+        which draw.py's own page tools never grew despite list_draw_pages/
+        get_active_draw_page/insert_draw_page already existing. Same
+        setCurrentPage() mechanism as activate_slide, resolved through
+        _resolve_draw_page() (index or name) rather than a fresh lookup."""
+        self._require_draw(doc, "activate_draw_page")
+        target = self._resolve_draw_page(doc, page)
+        doc.getCurrentController().setCurrentPage(target)
+        return {"index": self._draw_page_index(doc.getDrawPages(), target), "name": target.Name}
+
+    @staticmethod
+    def _draw_page_background_summary(page: Any) -> Dict[str, Any]:
+        """Best-effort summary of a Draw page's Background. Live-verified
+        (see set_draw_page_background()'s docstring): a Draw page's own
+        PropertySetInfo does NOT expose "IsBackgroundVisible"/"FillColor"
+        directly the way an Impress slide's does (get_slide_layout()'s
+        background_visible) -- only the opaque "Background" object
+        reference and the read-only "IsBackgroundDark" flag. Reads
+        through to the Background object's own FillStyle/FillColor when
+        one is actually set, rather than reporting nothing."""
+        summary: Dict[str, Any] = {"set": False, "is_dark": None}
+        try:
+            summary["is_dark"] = bool(page.IsBackgroundDark)
+        except Exception:
+            pass
+        background = getattr(page, "Background", None)
+        summary["set"] = background is not None
+        if background is not None:
+            try:
+                summary["fill_style"] = str(background.FillStyle)
+            except Exception:
+                pass
+            try:
+                summary["fill_color"] = background.FillColor
+            except Exception:
+                pass
+        return summary
+
+    def get_draw_page(self, doc: Any, page: Any = None, include_shape_metadata: bool = False) -> Dict[str, Any]:
+        """Return page metadata plus all text content of a Draw page (new
+        tool, Brian's new-tools assignment priority #10) -- the Draw
+        counterpart to get_slide_content() (#3): "give me everything
+        about this page" instead of list_shapes_live + N get_shape_live
+        calls, without activating it (never calls setCurrentPage). page
+        omitted -> the active page, same _resolve_draw_page() convention
+        every other draw.py page tool uses.
+
+        Follow-up pass, real gap flagged after this tool first shipped:
+        Brian's original spec asked for "name, dimensions, background,
+        shape count, etc., without activating it" -- the first version
+        shipped only the shape-text dump (mirroring get_slide_content()),
+        missing width/height/background/shape_count entirely. Both are
+        useful, so this adds the metadata fields alongside the existing
+        text dump rather than replacing it -- get_document_snapshot()'s
+        active_page and extract_document_text()'s Draw branch already
+        compose this method for its text field, and dropping that would
+        break both.
+
+        Same shape-text extraction loop as get_slide_content() (only
+        shapes with non-empty getString() text are included, same
+        "skip if falsy" convention _shape_summary() established), reused
+        rather than re-derived.
+
+        Live-verified via get-draw-page-probe-windows.py: width/height
+        are a document-wide setting in real LibreOffice Draw -- every
+        page reports the same values regardless of which page's
+        set_draw_page_size() call last set them. Background, unlike
+        size, genuinely is per-page. Reported here as-is (page.Width/
+        page.Height) rather than silently deduplicated to a document
+        field, since that's what the underlying API actually exposes.
+        """
+        self._require_draw(doc, "get_draw_page")
+        target_page = self._resolve_draw_page(doc, page)
+        text_entries: List[Dict[str, Any]] = []
+        for i in range(target_page.getCount()):
+            shape = target_page.getByIndex(i)
+            if not hasattr(shape, "getString"):
+                continue
+            try:
+                text = shape.getString()
+            except Exception:
+                continue
+            if not text:
+                continue
+            entry: Dict[str, Any] = {"shape": shape.Name, "text": text}
+            if include_shape_metadata:
+                entry["type"] = self._get_shape_type(shape)
+                entry.update(self._shape_geometry(shape))
+            text_entries.append(entry)
+        return {
+            "index": self._draw_page_index(doc.getDrawPages(), target_page),
+            "name": target_page.Name,
+            "width": target_page.Width,
+            "height": target_page.Height,
+            "shape_count": target_page.getCount(),
+            "background": self._draw_page_background_summary(target_page),
+            "text": text_entries,
+        }
 
     def insert_draw_page(self, doc: Any, position: Optional[int] = None, name: Optional[str] = None) -> Dict[str, Any]:
         self._require_draw(doc, "insert_draw_page")
@@ -6177,6 +7146,94 @@ class UNOBridge:
     def set_speaker_notes(self, doc: Any, slide: Any, text: str) -> None:
         page = self._resolve_slide(doc, slide)
         self._find_notes_shape(page.NotesPage).setString(text)
+
+    def get_slide_content(self, doc: Any, slide: Any = None, include_notes: bool = True,
+                           include_shape_metadata: bool = False) -> Dict[str, Any]:
+        """New tool (Brian's new-tools assignment, priority #3, "give me
+        all the content of slide 7" instead of list_shapes_live + N
+        get_shape_live calls). Returns the same per-slide shape
+        get_presentation_content_live (priority #5, still queued) will
+        wrap in bulk -- built once here so that tool can reuse it via a
+        loop later rather than duplicating this logic.
+
+        Only shapes with non-empty getString() text are included in
+        `text` (same "skip if falsy" convention _shape_summary() already
+        uses) -- an empty placeholder or a pure image shape contributes
+        nothing to a text-content read. Each entry's `shape` key is the
+        shape's own UNO Name (e.g. "Title 1", "Content 2"), not a
+        registry shape_id -- this is a read-only content dump, not an
+        addressable-object mint; list_shapes_live already covers minting
+        shape_ids for callers that need to act on a specific shape after.
+        include_shape_metadata=True additionally reports each text
+        entry's short type name and geometry (reusing _get_shape_type/
+        _shape_geometry, the same helpers list_shapes_in_container's
+        summaries use) -- optional, since most callers just want text.
+
+        include_notes=False omits the `notes` key entirely rather than
+        setting it to None, so a caller can tell "didn't ask" apart from
+        "asked, page genuinely has no NotesShape" (LookupError -> None).
+        """
+        page = self._resolve_slide(doc, slide)
+        text_entries: List[Dict[str, Any]] = []
+        for i in range(page.getCount()):
+            shape = page.getByIndex(i)
+            if not hasattr(shape, "getString"):
+                continue
+            try:
+                text = shape.getString()
+            except Exception:
+                continue
+            if not text:
+                continue
+            entry: Dict[str, Any] = {"shape": shape.Name, "text": text}
+            if include_shape_metadata:
+                entry["type"] = self._get_shape_type(shape)
+                entry.update(self._shape_geometry(shape))
+            text_entries.append(entry)
+        result: Dict[str, Any] = {
+            "index": self._slide_index(doc.getDrawPages(), page),
+            "name": page.Name,
+            "hidden": not page.Visible,
+            "text": text_entries,
+        }
+        if include_notes:
+            try:
+                result["notes"] = self._find_notes_shape(page.NotesPage).getString()
+            except LookupError:
+                result["notes"] = None
+        return result
+
+    def get_presentation_content(self, doc: Any, slides: Optional[List[Any]] = None,
+                                  include_notes: bool = True, include_shape_metadata: bool = False,
+                                  include_hidden: bool = True) -> Dict[str, Any]:
+        """New tool (Brian's new-tools assignment, priority #5, "give me
+        all the content of the whole deck" -- the bulk counterpart to
+        get_slide_content_live #3). Wraps get_slide_content() in a loop
+        exactly as flagged when that tool was built, rather than
+        duplicating its per-slide read logic.
+
+        slides omitted -> every slide in the deck, in order. slides given
+        -> just those (index or name each, same _resolve_slide()
+        convention every other per-slide impress.py tool uses; scoping a
+        bulk read to specific slides mirrors find_cells_live's sheet/range
+        scoping). include_hidden=False additionally filters out slides
+        whose own get_slide_content() reports hidden=True -- useful for a
+        caller that wants "what the audience sees" without a second
+        get_slide_content_live round-trip per slide to check.
+
+        include_notes/include_shape_metadata pass straight through to
+        get_slide_content() for every slide, same meaning as there.
+        """
+        self._require_impress(doc, "get_presentation_content")
+        pages = doc.getDrawPages()
+        refs: List[Any] = list(range(pages.getCount())) if slides is None else list(slides)
+        entries: List[Dict[str, Any]] = []
+        for ref in refs:
+            content = self.get_slide_content(doc, ref, include_notes, include_shape_metadata)
+            if not include_hidden and content["hidden"]:
+                continue
+            entries.append(content)
+        return {"slides": entries, "count": len(entries)}
 
     def get_slide_transition(self, doc: Any, slide: Any) -> Dict[str, Any]:
         page = self._resolve_slide(doc, slide)
@@ -7747,6 +8804,52 @@ class UNOBridge:
                 pass
         return {"cell": cell, "author_applied": author_applied}
 
+    def update_cell_comment(self, doc: Any, cell: str, sheet: Optional[str] = None, text: Optional[str] = None,
+                             author: Optional[str] = None, visible: Optional[bool] = None) -> Dict[str, Any]:
+        """Update an existing cell comment's text/author/visibility (new
+        tool, Brian's new-tools assignment priority #11).
+
+        Distinct from add_cell_comment_live's upsert semantics (that
+        tool already updates text/author in place at an existing
+        comment, per its own docstring): this one requires the comment
+        to already exist -- KeyError (-> OBJECT_NOT_FOUND, same
+        convention every other "no such X" lookup in this file uses) if
+        there's none at the target cell -- so a caller correcting an
+        existing comment gets a clean failure on a typo'd cell reference
+        instead of silently creating a brand new comment there. Also the
+        only cell-comment tool that can toggle IsVisible (the "always
+        shown, not just on hover" display flag), which
+        add_cell_comment_live never exposed.
+
+        Same author-readonly handling as add_cell_comment (live-verified
+        this LibreOffice build won't let Author be set): caught so a
+        caller-supplied author that can't be honored doesn't take an
+        otherwise-successful text/visible update down with it --
+        author_applied reports whether it landed.
+        """
+        sheet_obj = self._resolve_sheet(doc, sheet)
+        cell_addr = sheet_obj.getCellRangeByName(cell).RangeAddress
+        annotations = sheet_obj.Annotations
+        existing = self._find_annotation_at(annotations, cell_addr.StartColumn, cell_addr.StartRow)
+        if existing is None:
+            raise KeyError(f"No comment exists at cell '{cell}' -- use add_cell_comment_live to create one.")
+        updated: List[str] = []
+        if text is not None:
+            existing.setString(text)
+            updated.append("text")
+        author_applied = False
+        if author is not None:
+            try:
+                existing.Author = author
+                author_applied = True
+                updated.append("author")
+            except Exception:
+                pass
+        if visible is not None:
+            existing.IsVisible = visible
+            updated.append("visible")
+        return {"cell": cell, "updated": updated, "author_applied": author_applied}
+
     def list_cell_comments(self, doc: Any, sheet: Optional[str] = None, range: Optional[str] = None) -> List[Dict[str, Any]]:
         sheet_obj = self._resolve_sheet(doc, sheet)
         bounds = sheet_obj.getCellRangeByName(range).RangeAddress if range is not None else None
@@ -7935,6 +9038,21 @@ class UNOBridge:
         result["column_count"] = columns.ColumnCount
         return result
 
+    # BUG #1 fix (live-verified): the enum type is com.sun.star.style.
+    # PageStyleLayout, not com.sun.star.text.PageStyleLayout -- the wrong
+    # namespace is exactly why the old uno.Enum("com.sun.star.text.
+    # PageStyleLayout", ...) call raised "enum com.sun.star.text.
+    # PageStyleLayout is unknown" (a real type of that name simply doesn't
+    # exist), not the member-name issue the original report guessed at.
+    # Read back live off a real running document rather than trusted from
+    # the report or set_mirror.py's own comment (which had LEFT/RIGHT
+    # swapped): ALL=0, LEFT=1, RIGHT=2, MIRRORED=3. Assigning the raw int
+    # sidesteps constructing a uno.Enum by name entirely -- setPropertyValue
+    # auto-converts an int to the enum type, the same mechanism set_mirror.py's
+    # workaround and update_page_style_live's raw-int path already rely on.
+    _PAGE_STYLE_LAYOUT_ALL = 0
+    _PAGE_STYLE_LAYOUT_MIRRORED = 3
+
     def set_page_layout(self, doc: Any, width: float, height: float, unit: str, orientation: Optional[str] = None,
                          margins: Optional[Dict[str, Any]] = None, mirrored: Optional[bool] = None,
                          gutter: Optional[float] = None, page_style: Optional[str] = None) -> List[str]:
@@ -7953,7 +9071,7 @@ class UNOBridge:
                     setattr(style, prop_name, int(margins[key] * factor))
                     applied.append(f"margins.{key}")
         if mirrored is not None:
-            style.PageStyleLayout = uno.Enum("com.sun.star.text.PageStyleLayout", "MIRRORED" if mirrored else "ALL")
+            style.PageStyleLayout = self._PAGE_STYLE_LAYOUT_MIRRORED if mirrored else self._PAGE_STYLE_LAYOUT_ALL
             applied.append("mirrored")
         if gutter is not None:
             style.GutterMargin = int(gutter * factor)
@@ -8022,7 +9140,17 @@ class UNOBridge:
         verified this alone is sufficient to change the page style from
         that paragraph forward; `insert_break` additionally sets
         BreakType=PAGE_BEFORE for a caller that wants the explicit
-        page-break semantics rather than just a style-region change."""
+        page-break semantics rather than just a style-region change.
+
+        BUG #5-class fix (found auditing the durable-guidance writeup,
+        same mechanism as insert_paragraph()/insert_page_break(), never
+        triggered in the original typeset-run repro): omitted `paragraph`
+        resolves through the VIEW cursor via _current_paragraph_index(doc),
+        but nothing in this method ever moves that cursor -- so two
+        batched, position-omitted calls in a row would resolve the
+        identical paragraph both times instead of advancing. Fixed the
+        same way: resync the view cursor to the paragraph just styled,
+        best-effort (never fails an otherwise-successful apply)."""
         family = self._writer_page_style_family(doc)
         if not family.hasByName(style_name):
             raise KeyError(f"No such page style '{style_name}'.")
@@ -8031,6 +9159,10 @@ class UNOBridge:
         para.PageDescName = style_name
         if insert_break:
             para.BreakType = uno.Enum("com.sun.star.style.BreakType", "PAGE_BEFORE")
+        try:
+            self._get_controller(doc).getViewCursor().gotoRange(para.getStart(), False)
+        except Exception:
+            pass  # best-effort -- see BUG #5-class fix note above
         return {"paragraph": n, "style_name": style_name}
 
     def set_page_columns(self, doc: Any, count: int, spacing: Optional[float] = None,
@@ -8066,13 +9198,22 @@ class UNOBridge:
         """Splits the target paragraph at its start (matching split_
         paragraph's own insertControlCharacter(PARAGRAPH_BREAK) idiom),
         then marks the resulting new paragraph BreakType=PAGE_BEFORE
-        (+PageDescName/PageNumberOffset if given)."""
+        (+PageDescName/PageNumberOffset if given).
+
+        BUG #5 fix: same view-cursor resync as insert_paragraph() -- see
+        its docstring. at_position=None resolves through the view cursor
+        but the actual edit uses a separate text cursor that never moves
+        it, so this is batch-unsafe the same way insert_heading() was."""
         self._require_writer(doc, "insert_page_break")
         n = at_position if at_position is not None else self._current_paragraph_index(doc)
         anchor_para = self._get_paragraph_object(doc, n)
         text_obj = doc.getText()
         cursor = text_obj.createTextCursorByRange(anchor_para.getStart())
         text_obj.insertControlCharacter(cursor, PARAGRAPH_BREAK, False)
+        try:
+            self._get_controller(doc).getViewCursor().gotoRange(cursor, False)
+        except Exception:
+            pass  # best-effort -- see BUG #5 fix note above
         new_para = self._get_paragraph_object(doc, n + 1)
         new_para.BreakType = uno.Enum("com.sun.star.style.BreakType", "PAGE_BEFORE")
         if page_style is not None:
@@ -8086,11 +9227,20 @@ class UNOBridge:
         live-verified None raises "Type 0 is not supported!" (the
         property is string-typed; None isn't a legal UNO string value),
         while "" is accepted and reads back as the same None/unset state
-        insert_page_break's own untouched paragraphs start in."""
+        insert_page_break's own untouched paragraphs start in.
+
+        BUG #5-class fix (same finding as apply_page_style() above): a
+        batched, position-omitted call resolved through the stale view
+        cursor with nothing to advance it. Resynced the same way,
+        best-effort."""
         n = paragraph if paragraph is not None else (position if position is not None else self._current_paragraph_index(doc))
         para = self._get_paragraph_object(doc, n)
         para.BreakType = uno.Enum("com.sun.star.style.BreakType", "NONE")
         para.PageDescName = ""
+        try:
+            self._get_controller(doc).getViewCursor().gotoRange(para.getStart(), False)
+        except Exception:
+            pass  # best-effort -- see BUG #5-class fix note above
         return {"paragraph": n}
 
     _HEADER_FOOTER_TEXT_PROPS = {

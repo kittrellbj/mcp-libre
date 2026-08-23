@@ -93,8 +93,25 @@ class FakeUnoBridge:
     # -- comments --
 
     def add_cell_comment(self, doc, cell, text, sheet=None, author=None):
-        self.comments[cell] = {"text": text, "author": author or "Unknown Author"}
+        self.comments[cell] = {"text": text, "author": author or "Unknown Author", "visible": False}
         return {"cell": cell, "author_applied": author is not None}
+
+    def update_cell_comment(self, doc, cell, sheet=None, text=None, author=None, visible=None):
+        if cell not in self.comments:
+            raise KeyError(f"No comment exists at cell '{cell}' -- use add_cell_comment_live to create one.")
+        updated = []
+        if text is not None:
+            self.comments[cell]["text"] = text
+            updated.append("text")
+        author_applied = False
+        if author is not None:
+            self.comments[cell]["author"] = author
+            author_applied = True
+            updated.append("author")
+        if visible is not None:
+            self.comments[cell]["visible"] = visible
+            updated.append("visible")
+        return {"cell": cell, "updated": updated, "author_applied": author_applied}
 
     def list_cell_comments(self, doc, sheet=None, range=None):
         return [{"cell": c, "text": v["text"], "author": v["author"]} for c, v in self.comments.items()]
@@ -238,6 +255,40 @@ def test_add_cell_comment_live_warns_when_author_not_applied():
     assert "read-only" in result["warnings"][0]
 
 
+def test_update_cell_comment_live_updates_existing_comment():
+    # New tool, 2026-08-22 (Brian's new-tools assignment, priority #11) --
+    # distinct from add_cell_comment_live's upsert: requires the comment
+    # to already exist.
+    context.reset()
+    uno_bridge, _, _ = _install(active_document=FakeDocument())
+    _handler("add_cell_comment_live")(cell="B2", text="Original", author="Sabrina")
+    result = _handler("update_cell_comment_live")(cell="B2", text="Revised", visible=True)
+    assert result["success"] is True
+    assert set(result["result"]["updated"]) == {"text", "visible"}
+    assert uno_bridge.comments["B2"]["text"] == "Revised"
+    assert uno_bridge.comments["B2"]["visible"] is True
+
+
+def test_update_cell_comment_live_requires_existing_comment():
+    context.reset()
+    _install(active_document=FakeDocument())
+    result = _handler("update_cell_comment_live")(cell="Z9", text="Anything")
+    assert result["success"] is False
+    assert result["error"]["code"] == "OBJECT_NOT_FOUND"
+
+
+def test_update_cell_comment_live_warns_when_author_not_applied():
+    context.reset()
+    uno_bridge, _, _ = _install(active_document=FakeDocument())
+    _handler("add_cell_comment_live")(cell="B2", text="Original")
+    uno_bridge.update_cell_comment = lambda doc, cell, sheet=None, text=None, author=None, visible=None: {
+        "cell": cell, "updated": ["text"], "author_applied": False,
+    }
+    result = _handler("update_cell_comment_live")(cell="B2", text="Revised", author="Sabrina")
+    assert result["success"] is True
+    assert "read-only" in result["warnings"][0]
+
+
 # -- protection --
 
 def test_protect_and_unprotect_sheet_live():
@@ -299,6 +350,9 @@ if __name__ == "__main__":
         test_cell_comment_lifecycle_live,
         test_delete_cell_comment_live_not_found,
         test_add_cell_comment_live_warns_when_author_not_applied,
+        test_update_cell_comment_live_updates_existing_comment,
+        test_update_cell_comment_live_requires_existing_comment,
+        test_update_cell_comment_live_warns_when_author_not_applied,
         test_protect_and_unprotect_sheet_live,
         test_set_cell_protection_live_skips_unknown_properties,
         test_list_number_formats_live,

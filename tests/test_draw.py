@@ -44,7 +44,7 @@ class FakeUnoBridge:
     def __init__(self, active_document=None, page_names=None):
         self.ctx = object()
         self.active_document = active_document
-        self.pages = [{"index": i, "name": n} for i, n in enumerate(page_names or ["page1"])]
+        self.pages = [{"index": i, "name": n, "shapes": []} for i, n in enumerate(page_names or ["page1"])]
         self.active_page_name = self.pages[0]["name"]
         self.layers = [
             {"index": 0, "name": "layout", "visible": True, "locked": False, "printable": True},
@@ -78,6 +78,37 @@ class FakeUnoBridge:
     def get_active_draw_page(self, doc):
         idx = next(i for i, p in enumerate(self.pages) if p["name"] == self.active_page_name)
         return {"index": idx, "name": self.active_page_name}
+
+    def activate_draw_page(self, doc, page):
+        name = self._resolve_page_name(page)
+        self.active_page_name = name
+        idx = next(i for i, p in enumerate(self.pages) if p["name"] == name)
+        return {"index": idx, "name": name}
+
+    def get_draw_page(self, doc, page=None, include_shape_metadata=False):
+        name = self._resolve_page_name(page)
+        idx, entry = next((i, p) for i, p in enumerate(self.pages) if p["name"] == name)
+        text_entries = []
+        for s in entry.get("shapes", []):
+            if not s.get("text"):
+                continue
+            item = {"shape": s["name"], "text": s["text"]}
+            if include_shape_metadata:
+                item["type"] = s.get("type", "text")
+                item["width"] = s.get("width", 1000)
+                item["height"] = s.get("height", 500)
+            text_entries.append(item)
+        page_width, page_height, _unit = self.page_size.get(name, (28000, 21000, "mm"))
+        background = self.page_background.get(name)
+        return {
+            "index": idx,
+            "name": name,
+            "width": page_width,
+            "height": page_height,
+            "shape_count": len(entry.get("shapes", [])),
+            "background": {"set": background is not None, "properties": background or {}},
+            "text": text_entries,
+        }
 
     def insert_draw_page(self, doc, position=None, name=None):
         idx = position if position is not None else len(self.pages)
@@ -199,6 +230,97 @@ def test_insert_draw_page_live():
     result = _handler("insert_draw_page_live")(name="NewPage")
     assert result["success"] is True
     assert any(p["name"] == "NewPage" for p in uno_bridge.pages)
+
+
+def test_activate_draw_page_live_by_name():
+    # New tool, 2026-08-22 (Brian's new-tools assignment, priority #9) --
+    # the Draw counterpart to Impress's activate_slide_live.
+    context.reset()
+    uno_bridge, _, _ = _install(active_document=FakeDocument(), page_names=["page1", "page2"])
+    result = _handler("activate_draw_page_live")(page="page2")
+    assert result["success"] is True
+    assert result["result"] == {"index": 1, "name": "page2"}
+    assert uno_bridge.active_page_name == "page2"
+
+
+def test_activate_draw_page_live_by_index():
+    context.reset()
+    _install(active_document=FakeDocument(), page_names=["page1", "page2", "page3"])
+    result = _handler("activate_draw_page_live")(page=2)
+    assert result["success"] is True
+    assert result["result"]["name"] == "page3"
+
+
+def test_activate_draw_page_live_unknown_page():
+    context.reset()
+    _install(active_document=FakeDocument())
+    result = _handler("activate_draw_page_live")(page="Nonexistent")
+    assert result["success"] is False
+
+
+def test_get_draw_page_live_defaults_to_active_page():
+    # New tool, 2026-08-22 (Brian's new-tools assignment, priority #10) --
+    # the Draw counterpart to Impress's get_slide_content_live.
+    context.reset()
+    uno_bridge, _, _ = _install(active_document=FakeDocument(), page_names=["page1", "page2"])
+    uno_bridge.pages[0]["shapes"] = [
+        {"name": "Title 1", "text": "Org Chart", "type": "text"},
+        {"name": "Picture 1", "text": "", "type": "image"},  # empty text -- must be skipped
+    ]
+    result = _handler("get_draw_page_live")()
+    assert result["success"] is True
+    assert result["result"]["index"] == 0
+    assert result["result"]["name"] == "page1"
+    assert result["result"]["text"] == [{"shape": "Title 1", "text": "Org Chart"}]
+    # shape_count reflects every shape on the page, including the one
+    # skipped from "text" for having no text -- not len(text).
+    assert result["result"]["shape_count"] == 2
+
+
+def test_get_draw_page_live_includes_page_metadata():
+    # Follow-up pass, real gap flagged after this tool first shipped:
+    # Brian's original spec asked for "name, dimensions, background,
+    # shape count, etc." -- the first version shipped only the shape-text
+    # dump. This covers the metadata fields added alongside it.
+    context.reset()
+    uno_bridge, _, _ = _install(active_document=FakeDocument(), page_names=["page1"])
+    uno_bridge.set_draw_page_background(None, "page1", {"FillColor": 16711680})
+    result = _handler("get_draw_page_live")()
+    assert result["success"] is True
+    assert result["result"]["width"] == 28000
+    assert result["result"]["height"] == 21000
+    assert result["result"]["shape_count"] == 0
+    assert result["result"]["background"]["set"] is True
+    assert result["result"]["background"]["properties"] == {"FillColor": 16711680}
+
+
+def test_get_draw_page_live_by_name():
+    context.reset()
+    uno_bridge, _, _ = _install(active_document=FakeDocument(), page_names=["page1", "page2"])
+    uno_bridge.pages[1]["shapes"] = [{"name": "Note 1", "text": "Second page text", "type": "text"}]
+    result = _handler("get_draw_page_live")(page="page2")
+    assert result["success"] is True
+    assert result["result"]["index"] == 1
+    assert result["result"]["text"] == [{"shape": "Note 1", "text": "Second page text"}]
+
+
+def test_get_draw_page_live_with_shape_metadata():
+    context.reset()
+    uno_bridge, _, _ = _install(active_document=FakeDocument())
+    uno_bridge.pages[0]["shapes"] = [{"name": "Content 2", "text": "Revenue up", "type": "text",
+                                      "width": 8000, "height": 3000}]
+    result = _handler("get_draw_page_live")(include_shape_metadata=True)
+    assert result["success"] is True
+    entry = result["result"]["text"][0]
+    assert entry["type"] == "text"
+    assert entry["width"] == 8000 and entry["height"] == 3000
+
+
+def test_get_draw_page_live_unknown_page():
+    context.reset()
+    _install(active_document=FakeDocument())
+    result = _handler("get_draw_page_live")(page="Nonexistent")
+    assert result["success"] is False
 
 
 def test_duplicate_draw_page_live():
@@ -335,6 +457,14 @@ if __name__ == "__main__":
         test_list_draw_pages_live,
         test_get_active_draw_page_live,
         test_insert_draw_page_live,
+        test_activate_draw_page_live_by_name,
+        test_activate_draw_page_live_by_index,
+        test_activate_draw_page_live_unknown_page,
+        test_get_draw_page_live_defaults_to_active_page,
+        test_get_draw_page_live_includes_page_metadata,
+        test_get_draw_page_live_by_name,
+        test_get_draw_page_live_with_shape_metadata,
+        test_get_draw_page_live_unknown_page,
         test_duplicate_draw_page_live,
         test_delete_draw_page_live,
         test_move_draw_page_live,
