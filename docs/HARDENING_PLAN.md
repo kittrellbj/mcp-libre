@@ -1067,8 +1067,9 @@ per Morgan's call above. Not tracked anywhere else; this paragraph is
 the record.
 
 ## Phase 6: new tools (Brian's priority order) + `get_document_statistics_live`
-rewrite -- in progress, posting per-tool per the standing "post progress
-per tier" convention rather than batching
+rewrite -- items 2-15 (all 14 new tools) done and live-verified; item 1
+(the statistics rewrite) not started. Posted per-tool per the standing
+"post progress per tier" convention rather than batching.
 
 Brian's 2026-08-21 new-tools assignment, 15 items total, his priority
 order (full rationale/schemas in his own message, quoted verbatim by
