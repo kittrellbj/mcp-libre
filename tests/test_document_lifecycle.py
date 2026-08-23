@@ -79,24 +79,44 @@ class FakeUnoBridge:
         doc.activated = True
 
     def get_document_statistics(self, doc):
-        return {"type": doc.doc_type, "word_count": 42, "character_count": 250}
+        # Part 4 rewrite (Brian's original priority #1) -- comprehensive
+        # per-type counts, not just word_count/character_count. Fake
+        # values only cover a couple of fields per type; the real
+        # UNOBridge implementation's full field set is exercised by the
+        # live probe, not this fakes-based test.
+        if doc.doc_type == "writer":
+            return {"type": "writer", "word_count": 42, "character_count": 250, "table_count": 1, "comment_count": 0}
+        if doc.doc_type == "calc":
+            return {"type": "calc", "sheet_count": 2, "used_cell_count": 10, "formula_count": 3}
+        if doc.doc_type in ("impress", "draw"):
+            return {"type": doc.doc_type, "page_count": 5 if doc.doc_type == "impress" else 2, "shape_count": 4}
+        return {"type": doc.doc_type, "warning": f"No statistics available for document type '{doc.doc_type}'"}
+
+    def get_view_state(self, doc):
+        return {"type": doc.doc_type, "zoom_value": 100, "zoom_mode": None, "has_selection": False}
+
+    def get_selection(self, doc):
+        return {"type": doc.doc_type, "has_selection": False}
 
     def get_document_snapshot(self, doc):
-        snapshot = {"type": doc.doc_type, "title": doc.title, "url": doc.url, "modified": doc.modified}
-        if doc.doc_type == "writer":
-            snapshot["paragraph_count"] = 12
-            snapshot["page_count"] = 3
-        elif doc.doc_type == "calc":
-            snapshot["sheet_count"] = 2
+        # Follow-up pass (folded into Part 4): now composes statistics/
+        # view_state/selection directly, matching the real UNOBridge
+        # implementation's shape, rather than the narrower pre-Part-4
+        # top-level paragraph_count/sheet_count/slide_count fields.
+        snapshot = {
+            "type": doc.doc_type, "title": doc.title, "url": doc.url, "modified": doc.modified,
+            "statistics": self.get_document_statistics(doc),
+            "view_state": self.get_view_state(doc),
+            "selection": self.get_selection(doc),
+        }
+        if doc.doc_type == "calc":
             snapshot["active_sheet"] = {"index": 0, "name": "Sheet1"}
         elif doc.doc_type == "impress":
-            snapshot["slide_count"] = 5
             snapshot["active_slide"] = {"index": 0, "name": "Slide 1"}
         elif doc.doc_type == "draw":
-            snapshot["page_count"] = 2
             snapshot["active_page"] = {"index": 0, "name": "Page1"}
-        else:
-            snapshot["warning"] = f"No snapshot detail available for document type '{doc.doc_type}'"
+        elif doc.doc_type != "writer":
+            snapshot["warning"] = f"No active-object detail available for document type '{doc.doc_type}'"
         return snapshot
 
     def extract_document_text(self, doc):
@@ -275,17 +295,40 @@ def test_get_document_statistics_live():
     assert result["result"]["word_count"] == 42
 
 
+def test_get_document_statistics_live_calc():
+    # Part 4 rewrite (Brian's original priority #1) -- Calc gets sheet
+    # count plus used-cell/formula counts, not just sheet_names.
+    context.reset()
+    _install(active_document=FakeDocument("calc"))
+    result = _handler("get_document_statistics_live")()
+    assert result["success"] is True
+    r = result["result"]
+    assert r["type"] == "calc" and r["sheet_count"] == 2 and r["formula_count"] == 3
+
+
+def test_get_document_statistics_live_impress():
+    context.reset()
+    _install(active_document=FakeDocument("impress"))
+    result = _handler("get_document_statistics_live")()
+    assert result["success"] is True
+    r = result["result"]
+    assert r["type"] == "impress" and r["page_count"] == 5 and r["shape_count"] == 4
+
+
 def test_get_document_snapshot_live_writer():
     # New tool, 2026-08-22 (Brian's new-tools assignment, priority #14) --
-    # cross-doc-type "what's open right now" snapshot.
+    # cross-doc-type "what's open right now" snapshot. Updated for the
+    # Part 4 follow-up: statistics/view_state/selection are now nested,
+    # composed keys rather than a few top-level counts.
     context.reset()
     _install(active_document=FakeDocument("writer", title="Report.odt"))
     result = _handler("get_document_snapshot_live")()
     assert result["success"] is True
     r = result["result"]
     assert r["type"] == "writer" and r["title"] == "Report.odt"
-    assert r["paragraph_count"] == 12 and r["page_count"] == 3
-    assert "sheet_count" not in r and "slide_count" not in r
+    assert r["statistics"]["word_count"] == 42 and r["statistics"]["table_count"] == 1
+    assert r["view_state"]["type"] == "writer" and r["selection"]["type"] == "writer"
+    assert "active_sheet" not in r and "active_slide" not in r and "active_page" not in r
 
 
 def test_get_document_snapshot_live_calc():
@@ -295,7 +338,7 @@ def test_get_document_snapshot_live_calc():
     assert result["success"] is True
     r = result["result"]
     assert r["type"] == "calc"
-    assert r["sheet_count"] == 2
+    assert r["statistics"]["sheet_count"] == 2
     assert r["active_sheet"] == {"index": 0, "name": "Sheet1"}
 
 
@@ -306,7 +349,7 @@ def test_get_document_snapshot_live_impress():
     assert result["success"] is True
     r = result["result"]
     assert r["type"] == "impress"
-    assert r["slide_count"] == 5
+    assert r["statistics"]["page_count"] == 5
     assert r["active_slide"] == {"index": 0, "name": "Slide 1"}
 
 
@@ -317,7 +360,7 @@ def test_get_document_snapshot_live_draw():
     assert result["success"] is True
     r = result["result"]
     assert r["type"] == "draw"
-    assert r["page_count"] == 2
+    assert r["statistics"]["page_count"] == 2
     assert r["active_page"] == {"index": 0, "name": "Page1"}
 
 
@@ -552,6 +595,8 @@ if __name__ == "__main__":
         test_open_from_template_live,
         test_close_document_live_unregisters_and_maps_prompt_error,
         test_get_document_statistics_live,
+        test_get_document_statistics_live_calc,
+        test_get_document_statistics_live_impress,
         test_get_document_snapshot_live_writer,
         test_get_document_snapshot_live_calc,
         test_get_document_snapshot_live_impress,

@@ -1067,9 +1067,9 @@ per Morgan's call above. Not tracked anywhere else; this paragraph is
 the record.
 
 ## Phase 6: new tools (Brian's priority order) + `get_document_statistics_live`
-rewrite -- items 2-15 (all 14 new tools) done and live-verified; item 1
-(the statistics rewrite) not started. Posted per-tool per the standing
-"post progress per tier" convention rather than batching.
+rewrite -- items 1-15 (the statistics rewrite plus all 14 new tools)
+done and live-verified. Posted per-tool per the standing "post progress
+per tier" convention rather than batching.
 
 Brian's 2026-08-21 new-tools assignment, 15 items total, his priority
 order (full rationale/schemas in his own message, quoted verbatim by
@@ -1714,11 +1714,82 @@ real text and numeric cell content, with a genuinely blank second sheet
 confirmed NOT to leak a spurious "0.0"/"0" into the result; Impress's
 real shape text and real speaker notes; Draw's real shape text.
 
-**Phase 6 new-tools list (items #2-15) is now fully complete.** The
-only item remaining before this branch closes is the
-`get_document_statistics_live` rewrite (Brian's priority #1, tracked
-separately above as Part 4 -- not started).
+**Phase 6 new-tools list (items #2-15) was fully complete as of this
+tool.** (Superseded below: the `get_document_statistics_live` rewrite,
+Brian's priority #1/Part 4, has since landed too -- see the next
+entry.)
 
 518/518 tests passing (515 + 3 new). Same bare-`uv run pytest`
 collection gap noted above -- unchanged by this tool, still queued as
 the first item after this step wraps.
+
+**`get_document_statistics_live` rewrite (Part 4, Brian's original
+priority #1 -- the last item of the Phase 6 queue).** Comprehensive
+per-type inventory in place of the old few-field version. Writer: page/
+word/character/character-no-spaces/paragraph counts plus table, image,
+shape, field, bookmark, hyperlink, section, footnote, endnote, comment,
+and tracked-change counts. Calc: sheet count/names plus used-cell,
+formula, and error counts (single-cursor `gotoStartOfUsedArea(False)`/
+`gotoEndOfUsedArea(True)` walk `get_formula_errors()` already
+established, same genuinely-blank-sheet guard and
+`_FIND_CELLS_MAX_SCANNED_CELLS` runaway-scan backstop
+`extract_document_text()`/`find_cells()` already use) plus chart and
+pivot-table counts. Impress/Draw: slide-or-page count plus a
+shape-type breakdown (image/text-object/other), and (Impress only)
+notes and hidden-slide counts. `field_count` is deliberately kept
+mutually exclusive with `comment_count` -- Writer's `getTextFields()`
+includes annotation (comment) fields, so those are excluded from
+`field_count` rather than double-counted under both names.
+
+Real bug caught and fixed by the live probe, not assumed from API
+docs: `cell.getFormula()` truthiness is NOT "this cell holds a real
+formula" -- live-verified it returns a non-empty formula-syntax string
+for every non-blank cell, including a plain typed value (a cell
+holding the number `10` reports `getFormula() == "10"`, not `""`). A
+first-pass version using that truthiness reported `formula_count`
+equal to the sheet's entire `used_cell_count`. Corrected to
+`cell.getType() == uno.Enum("com.sun.star.table.CellContentType",
+"FORMULA")`, the same `uno.Enum()`-comparison idiom already
+established elsewhere in this file (e.g. the `PropertyState` check at
+`uno_bridge.py:1571`) -- `error_count` (`cell.getError()`) was
+unaffected and correct from the start.
+
+Folded into the tail of this pass per Buddy's direction: the
+`get_document_snapshot_live` follow-up flagged after item #14 shipped
+(see below) -- now composes this rewritten `get_document_statistics()`
+directly, plus the already-implemented `get_view_state()`/
+`get_selection()`, matching Brian's original spec for #14 ("document
+info + statistics + modified state + view state + selection +
+document-type-specific active object") instead of the narrower
+top-level paragraph_count/sheet_count/slide_count fields #14 shipped
+with pending this rewrite.
+
+2 new fakes-based tests (`test_get_document_statistics_live_calc`,
+`test_get_document_statistics_live_impress`) plus updated assertions on
+the existing `get_document_snapshot_live` fakes-based tests for the new
+nested `statistics`/`view_state`/`selection` shape. Live-verified
+against real headless LibreOffice across all four document types with a
+new probe, `document-statistics-rewrite-probe-windows.py` -- 39 checks,
+all passing: Writer's `word_count`/`character_count`/
+`character_count_no_spaces` cross-checked against an independent
+`extract_document_text_live` extraction (not a hand-guessed count);
+`paragraph_count` cross-checked against the independently-tested
+`get_paragraph_count_live`; every new Writer structural count built and
+verified against real content (1 table, 1 image, 1 bookmark, 1
+hyperlink, 1 section, 1 footnote, 1 endnote, 1 comment, a real tracked
+edit); Calc's real used-cell/formula/error/chart/pivot counts against
+real cells, a real `DIV/0` error, a real chart, and a real pivot table;
+Impress's real shape-type breakdown, notes, and hidden-slide state;
+Draw's real shape-type breakdown with no Impress-only fields leaking
+in; `get_document_snapshot_live`'s composed `statistics` verified equal
+to `get_document_statistics_live`'s own result on the same document.
+
+520/520 tests passing (518 + 2 new). v2.0.25. Same bare-`uv run pytest`
+collection gap noted above -- unchanged by this tool, still queued as
+the next item.
+
+**Phase 6 is now fully closed** -- all 15 items (the statistics
+rewrite plus all 14 new tools) done and live-verified. The only
+remaining item before this branch is ready to close is the
+pre-existing pytest-collection/venv drift on the 3 test files flagged
+above.

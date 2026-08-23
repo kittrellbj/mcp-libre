@@ -186,7 +186,15 @@ def close_document_live(document_id: Optional[str] = None, save: Any = False) ->
 @register_tool(
     name="get_document_statistics_live",
     priority="P1",
-    purpose="Return pages/slides/sheets/words/chars/tables/images/etc. as applicable.",
+    purpose=(
+        "Comprehensive per-type document inventory (Brian's original priority #1, "
+        "the get_document_statistics_live rewrite, \"Part 4\"): Writer gets page/word/"
+        "character counts plus tables/images/shapes/fields/bookmarks/hyperlinks/"
+        "sections/footnotes/endnotes/comments/tracked changes; Calc gets sheets plus "
+        "used-cell/formula/error counts and chart/pivot-table counts; Impress/Draw "
+        "get slide-or-page count plus a shape-type breakdown, and (Impress only) "
+        "notes and hidden-slide counts."
+    ),
     parameters=schema({"document_id": {"type": "string"}}),
     status="implemented",
 )
@@ -206,10 +214,11 @@ def get_document_statistics_live(document_id: Optional[str] = None) -> Dict[str,
     priority="P1",
     purpose=(
         "Return a compact, type-appropriate \"what's open right now\" "
-        "snapshot -- document identity plus a lightweight per-type status "
-        "(active sheet/slide/page, or paragraph/page counts for Writer) -- "
-        "Brian's new-tools assignment priority #14, for a caller starting "
-        "a session without already knowing what kind of document is active."
+        "snapshot -- document identity, full statistics, view state, and "
+        "selection, plus a document-type-specific active object (active "
+        "sheet/slide/page for Calc/Impress/Draw) -- Brian's new-tools "
+        "assignment priority #14, for a caller starting a session without "
+        "already knowing what kind of document is active."
     ),
     parameters=schema({"document_id": {"type": "string"}}),
     status="implemented",

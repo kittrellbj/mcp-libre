@@ -621,8 +621,43 @@ class UNOBridge:
             pass  # best-effort in headless environments with no real window
 
     def get_document_statistics(self, doc: Any) -> Dict[str, Any]:
-        """Return counts appropriate to the document's type (pages/words/
-        chars for Writer; sheets for Calc; slides/pages for Impress/Draw)."""
+        """Comprehensive canonical "tell me what's in this document" read
+        (Brian's new-tools assignment priority #1 -- Part 4, the last item
+        of the Phase 6 queue, tracked separately from items #2-15 since it
+        rewrites this existing tool's shape rather than adding a new one).
+
+        Writer: full structural inventory -- page/word/character counts
+        plus paragraphs, tables, images, shapes, fields, bookmarks,
+        hyperlinks, sections, footnotes, endnotes, comments, tracked
+        changes. Calc: sheet count/names plus per-cell content stats
+        (used cells, formulas, errors) and container counts (charts,
+        pivot tables). Impress/Draw: slide-or-page count plus a
+        shape-type breakdown (images vs. text objects vs. other), and
+        (Impress only) notes and hidden-slide counts.
+
+        Every count here reuses this file's own established enumeration
+        for that concept rather than re-deriving it: _count_paragraphs()
+        (paragraph_count -- BUG #14 fix, live-verified: a plain top-level
+        enumeration also counts non-paragraph elements like TextTables,
+        so this shares the same filtered enumeration
+        get_paragraph_count_live already uses instead of silently
+        diverging), _enumerate_comments()/_count_non_comment_text_fields()
+        (comment_count vs. field_count -- kept mutually exclusive, not
+        double-counted, since Writer TextFields includes annotation
+        fields), list_hyperlinks(), the getTextTables()/getBookmarks()/
+        getTextSections()/getFootnotes()/getEndnotes() idioms
+        list_tables()/list_bookmarks()/list_sections()/list_footnotes()/
+        list_endnotes() already use, the redlines guard
+        get_track_changes_status() already established, the shape
+        container + _get_shape_type() classification drawing_objects.py's
+        tools use, the single-cursor gotoStartOfUsedArea(False)/
+        gotoEndOfUsedArea(True) walk get_formula_errors() already uses
+        (plus the genuinely-blank-sheet guard and
+        _FIND_CELLS_MAX_SCANNED_CELLS runaway-scan backstop
+        extract_document_text()/find_cells() already established),
+        list_charts(), list_pivot_tables(), and list_slides()'s hidden
+        flag.
+        """
         doc_type = self._get_document_type(doc)
         stats: Dict[str, Any] = {"type": doc_type}
 
@@ -631,30 +666,107 @@ class UNOBridge:
             content = text.getString()
             stats["word_count"] = len(content.split())
             stats["character_count"] = len(content)
-            # BUG #14 fix (live-verified): this used to enumerate every
-            # top-level text element and count them all, including
-            # non-paragraph content (e.g. a TextTable counts as one element
-            # of its own) -- confirmed live it diverges from
-            # get_paragraph_count_live by exactly the table count (12 real
-            # paragraphs + 1 table -> this reported 13, not 12). Now shares
-            # _count_paragraphs() (the same filtered enumeration
-            # get_paragraph_count_live already uses), so the two tools
-            # agree on what "paragraph" means instead of silently counting
-            # different things under the same field name.
+            stats["character_count_no_spaces"] = len("".join(content.split()))
             stats["paragraph_count"] = self._count_paragraphs(doc)
             try:
                 stats["page_count"] = doc.getCurrentController().PageCount
             except Exception:
                 stats["page_count"] = None
+            stats["table_count"] = doc.getTextTables().getCount()
+            draw_page = doc.getDrawPage()
+            shape_count = draw_page.getCount()
+            stats["shape_count"] = shape_count
+            stats["image_count"] = sum(
+                1 for i in range(shape_count)
+                if self._get_shape_type(draw_page.getByIndex(i)) == "image"
+            )
+            stats["field_count"] = self._count_non_comment_text_fields(doc)
+            stats["bookmark_count"] = doc.getBookmarks().getCount()
+            stats["hyperlink_count"] = len(self.list_hyperlinks(doc))
+            stats["section_count"] = doc.getTextSections().getCount()
+            stats["footnote_count"] = doc.getFootnotes().getCount()
+            stats["endnote_count"] = doc.getEndnotes().getCount()
+            stats["comment_count"] = len(self._enumerate_comments(doc))
+            stats["tracked_change_count"] = doc.getRedlines().getCount() if hasattr(doc, "getRedlines") else None
         elif doc_type == "calc":
             sheets = doc.getSheets()
-            stats["sheet_count"] = sheets.getCount()
-            stats["sheet_names"] = [sheets.getByIndex(i).getName() for i in range(sheets.getCount())]
+            sheet_count = sheets.getCount()
+            stats["sheet_count"] = sheet_count
+            stats["sheet_names"] = [sheets.getByIndex(i).getName() for i in range(sheet_count)]
+            used_cell_count = 0
+            formula_count = 0
+            error_count = 0
+            scanned = 0
+            truncated = False
+            formula_content_type = uno.Enum("com.sun.star.table.CellContentType", "FORMULA")
+            for i in range(sheet_count):
+                if truncated:
+                    break
+                sheet_obj = sheets.getByIndex(i)
+                used = self.get_used_range(doc, sheet_obj.Name)
+                single_cell = used["start_column"] == used["end_column"] and used["start_row"] == used["end_row"]
+                if single_cell:
+                    cell = sheet_obj.getCellByPosition(used["start_column"], used["start_row"])
+                    if not (cell.getString() or cell.getFormula()):
+                        continue  # genuinely blank sheet -- same edge case get_sheet_summary()/extract_document_text() guard against
+                width = used["end_column"] - used["start_column"] + 1
+                height = used["end_row"] - used["start_row"] + 1
+                if scanned + (width * height) > self._FIND_CELLS_MAX_SCANNED_CELLS:
+                    truncated = True
+                    break
+                for r in builtins.range(used["start_row"], used["end_row"] + 1):
+                    for c in builtins.range(used["start_column"], used["end_column"] + 1):
+                        cell = sheet_obj.getCellByPosition(c, r)
+                        if not (cell.getString() or cell.getFormula()):
+                            continue
+                        used_cell_count += 1
+                        # Live-verified: cell.getFormula() truthiness is NOT
+                        # "has a real formula" -- it returns a non-empty
+                        # formula-syntax string for every non-blank cell,
+                        # including plain typed values (e.g. a cell holding
+                        # the number 10 reports getFormula() == "10", not
+                        # ""). getType() against CellContentType.FORMULA is
+                        # the actual "is this a formula cell" signal.
+                        if cell.getType() == formula_content_type:
+                            formula_count += 1
+                        if cell.getError() != 0:
+                            error_count += 1
+                scanned += width * height
+            stats["used_cell_count"] = used_cell_count
+            stats["formula_count"] = formula_count
+            stats["error_count"] = error_count
+            stats["truncated"] = truncated
+            stats["chart_count"] = sum(sheets.getByIndex(i).getCharts().getCount() for i in range(sheet_count))
+            stats["pivot_count"] = sum(sheets.getByIndex(i).DataPilotTables.getCount() for i in range(sheet_count))
         elif doc_type in ("impress", "draw"):
-            try:
-                stats["page_count"] = doc.getDrawPages().getCount()
-            except Exception:
-                stats["page_count"] = None
+            pages = doc.getDrawPages()
+            page_count = pages.getCount()
+            stats["page_count"] = page_count
+            shape_count = 0
+            image_count = 0
+            text_object_count = 0
+            for i in range(page_count):
+                page = pages.getByIndex(i)
+                shape_count += page.getCount()
+                for j in range(page.getCount()):
+                    shape_type = self._get_shape_type(page.getByIndex(j))
+                    if shape_type == "image":
+                        image_count += 1
+                    elif shape_type == "text":
+                        text_object_count += 1
+            stats["shape_count"] = shape_count
+            stats["image_count"] = image_count
+            stats["text_object_count"] = text_object_count
+            if doc_type == "impress":
+                notes_count = 0
+                for i in range(page_count):
+                    try:
+                        if self._find_notes_shape(pages.getByIndex(i).NotesPage).getString():
+                            notes_count += 1
+                    except LookupError:
+                        pass
+                stats["notes_count"] = notes_count
+                stats["hidden_slide_count"] = sum(1 for i in range(page_count) if not pages.getByIndex(i).Visible)
         else:
             stats["warning"] = f"No statistics available for document type '{doc_type}'"
 
@@ -667,41 +779,41 @@ class UNOBridge:
         for a caller starting a session without already knowing what kind
         of document is active.
 
-        Deliberately does NOT reuse get_document_statistics() -- that
-        tool is separately queued for its own rewrite (Brian's priority
-        #1, tracked at the top of this Phase 6 section, different shape
-        expected) -- so this method's own Writer counts are derived
-        independently (same _count_paragraphs()/PageCount reads, just not
-        routed through the tool about to change under it. For Calc/
-        Impress/Draw, this composes the bulk-read tools this same pass
-        already built (get_sheet_summary() #13, get_slide_content() #3,
-        get_draw_page() #10) for the active sheet/slide/page, rather than
-        re-deriving their per-type logic a second time.
+        Follow-up pass (folded into Part 4, the get_document_statistics
+        rewrite, per Buddy's direction): the original shipped version
+        deliberately did NOT reuse get_document_statistics() because that
+        tool was still separately queued for its own rewrite -- Writer's
+        counts were derived independently instead, and Calc/Impress/Draw
+        only got sheet_count/slide_count/page_count, not the fuller
+        statistics/view_state/selection Brian's original spec asked for
+        ("document info + statistics + modified state + view state +
+        selection + document-type-specific active object"). Now that
+        get_document_statistics() has the comprehensive shape, this
+        composes it directly (plus get_view_state()/get_selection(),
+        already-implemented tools this was always meant to reuse) rather
+        than re-deriving any of their per-type logic a second time. For
+        Calc/Impress/Draw, the "active object" detail still composes the
+        bulk-read tools this file already built (get_sheet_summary() #13,
+        get_slide_content() #3, get_draw_page() #10) for the active
+        sheet/slide/page.
         """
         info = self.get_document_info(doc)
         doc_type = info.get("type")
         snapshot: Dict[str, Any] = {
             "type": doc_type, "title": info.get("title"),
             "url": info.get("url"), "modified": info.get("modified"),
+            "statistics": self.get_document_statistics(doc),
+            "view_state": self.get_view_state(doc),
+            "selection": self.get_selection(doc),
         }
-        if doc_type == "writer":
-            snapshot["paragraph_count"] = self._count_paragraphs(doc)
-            try:
-                snapshot["page_count"] = doc.getCurrentController().PageCount
-            except Exception:
-                snapshot["page_count"] = None
-        elif doc_type == "calc":
-            sheets = doc.getSheets()
-            snapshot["sheet_count"] = sheets.getCount()
+        if doc_type == "calc":
             snapshot["active_sheet"] = self.get_sheet_summary(doc)
         elif doc_type == "impress":
-            snapshot["slide_count"] = doc.getDrawPages().getCount()
             snapshot["active_slide"] = self.get_slide_content(doc)
         elif doc_type == "draw":
-            snapshot["page_count"] = doc.getDrawPages().getCount()
             snapshot["active_page"] = self.get_draw_page(doc)
-        else:
-            snapshot["warning"] = f"No snapshot detail available for document type '{doc_type}'"
+        elif doc_type != "writer":
+            snapshot["warning"] = f"No active-object detail available for document type '{doc_type}'"
         return snapshot
 
     def extract_document_text(self, doc: Any) -> Dict[str, Any]:
@@ -4055,6 +4167,24 @@ class UNOBridge:
                 if hasattr(field, "supportsService") and field.supportsService("com.sun.star.text.TextField.Annotation"):
                     fields.append(field)
         return fields
+
+    def _count_non_comment_text_fields(self, doc: Any) -> int:
+        """Count of doc.getTextFields() entries that are NOT comment
+        annotations (com.sun.star.text.TextField.Annotation) -- the
+        statistics rewrite reports field_count and comment_count as
+        separate figures, so this excludes the exact same
+        Annotation-service fields _enumerate_comments() collects rather
+        than double-counting them under both names."""
+        if not hasattr(doc, "getTextFields"):
+            return 0
+        count = 0
+        enum = doc.getTextFields().createEnumeration()
+        while enum.hasMoreElements():
+            field = enum.nextElement()
+            if hasattr(field, "supportsService") and field.supportsService("com.sun.star.text.TextField.Annotation"):
+                continue
+            count += 1
+        return count
 
     def _comment_id_for(self, field: Any, index: int) -> str:
         try:
