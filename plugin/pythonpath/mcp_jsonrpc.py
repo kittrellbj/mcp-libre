@@ -81,7 +81,7 @@ INTERNAL_ERROR = -32603
 # Kept in sync manually with tools/core_runtime.py's EXTENSION_VERSION and
 # plugin/description.xml -- same manual-sync convention used across the
 # extension's other version literals.
-SERVER_INFO = {"name": "LibreOffice MCP Extension", "version": "2.1.0"}
+SERVER_INFO = {"name": "LibreOffice MCP Extension", "version": "2.1.1"}
 
 
 def build_result(request_id: Any, result: Any) -> Dict[str, Any]:

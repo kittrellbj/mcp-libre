@@ -1,7 +1,7 @@
 # LibreOffice MCP Server
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.1.0-blue.svg)](#versioning)
+[![Version](https://img.shields.io/badge/version-2.1.1-blue.svg)](#versioning)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](#requirements)
 [![LibreOffice](https://img.shields.io/badge/LibreOffice-24.2%2B-18A303.svg)](#requirements)
 
@@ -887,6 +887,95 @@ uv run pytest
 ---
 
 # Versioning
+
+## v2.1.1
+
+Book-layout template examples: two complete book templates built as
+live artifacts through the actual MCP tool surface, checked into
+`examples/templates/`, plus a gap report on what the tool surface
+couldn't actually do. Assigned by Brian as a test of the tools
+themselves ("test the MCP tools by actually building two complete,
+real book-layout templates as live artifacts"), not a content
+deliverable — the templates exist to exercise page/paragraph/character
+styles, TOC, headers/footers, and page-style switching through real
+tool calls against a real headless LibreOffice instance, not to be
+hand-edited afterward.
+
+- **`examples/templates/8x10-nonfiction-for-dummies-style/`** —
+  8x10 nonfiction, "For Dummies"-style design: title page, copyright
+  page, TOC, chapter openers with a distinct sans-serif heading style,
+  section headings, a callout/sidebar box, running headers/footers,
+  mirrored margins, sans-serif headings (Verdana) + serif body
+  (Georgia), a bold gold/amber accent color, back matter
+  (Glossary/Index placeholders).
+- **`examples/templates/6x9-fiction-narrative/`** — 6x9 fiction,
+  classic narrative typesetting: title page, copyright page, TOC
+  (chapter list), chapter headings, a scene break, a blockquote-style
+  epigraph, mirrored margins for print binding, restrained
+  black/white + one burgundy accent, back matter (About the Author
+  placeholder).
+
+Both were driven entirely through `POST /tools/<name>` calls against
+the embedded MCP HTTP server (localhost:8765) — the same mechanism
+this repo's own root-level `*-probe-windows.py` live-verification
+scripts use — via build scripts checked in at
+`.buildscripts/build_nonfiction.py` / `.buildscripts/build_fiction.py`
+as the record of which tool call produced which requirement. Live
+testing performed: both build scripts ran end to end with zero
+tool-call failures; document structure (front matter, chapter
+headings, section headings, callout, epigraph, scene break, back
+matter, in order) was spot-checked via `extract_document_text_live`
+against the live document; the full `uv run pytest` regression suite
+was re-run and still passes at **524/524** (no source changes this
+pass). Pixel-level visual rendering of the exported PDFs was not
+possible — this environment has no `pdftoppm`/ImageMagick/Ghostscript
+— so the `.odt`/`.pdf` files are checked in for direct human review.
+
+Four real tool-surface gaps were found and documented rather than
+silently worked around — full detail, reproduction steps, and evidence
+in [`examples/templates/README.md`](examples/templates/README.md):
+
+1. **Mirrored/alternating running headers don't actually work.** This
+   is the gap Brian specifically flagged as likely. Page margins do
+   mirror correctly (`PageStyleLayout=MIRRORED` via
+   `set_page_layout_live(mirrored=...)` is real), but
+   `set_header_live`'s `left`/`default` variants collapse to the same
+   displayed text regardless of write order — confirmed at three
+   independent layers (tool readback via `get_headers_footers_live`,
+   the raw `.odt` `styles.xml`, and an isolated scratch-page-style
+   repro). Both shipped templates currently show the same header text
+   on every page instead of alternating book-title/chapter-title by
+   page side.
+2. **`get_page_layout_live` doesn't return what its own purpose string
+   promises** — no tool can read back whether a page style's mirroring
+   (`PageStyleLayout`) or header/footer independence
+   (`HeaderIsShared`/`FooterIsShared`) actually took effect.
+3. **Struct-typed style properties are silently dropped** —
+   `create_style_live`/`update_style_live` accept any property key but
+   silently reject struct-typed UNO values (confirmed for
+   `ParaLineSpacing`); the tool still reports success and omits the
+   dropped property from `applied_properties` with no error.
+4. **No dynamic "current chapter" field for running headers** — there's
+   no `TextField.Chapter`-equivalent anywhere in the tool surface, so a
+   running header that should track "whatever chapter this page is in"
+   needs one page style per chapter, a real scaling cost past a
+   handful of chapters.
+
+Version literals bumped across `pyproject.toml`, `src/__init__.py`,
+`plugin/description.xml`, `plugin/pythonpath/mcp_jsonrpc.py`'s
+`SERVER_INFO`, `plugin/pythonpath/tools/core_runtime.py`'s
+`EXTENSION_VERSION`, `plugin/pythonpath/ai_interface.py`,
+`src/libremcp.py`'s `--version` banner, and
+`tests/test_core_runtime.py`'s `get_server_info_live`-reports-real-
+fields assertion.
+
+Bumped a patch dot rather than a minor version: this pass adds new
+examples and documentation (plus the gap report they surfaced) without
+touching the tool surface, the transport, or any tool implementation —
+no new tools, no behavior change, no arc closing.
+
+- 524 automated tests passing (no count change — no source changes
+  this pass).
 
 ## v2.1.0
 
