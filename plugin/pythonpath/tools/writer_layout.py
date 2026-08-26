@@ -7,6 +7,12 @@ Source: LibreOffice_MCP_Complete_Tooling_Specification.md, section
 (scope: Writer). No tools in this section are marked "(existing)"; all
 43 were scaffolded stubs before this pass. 42 of 43 are real.
 
+**Added since (book-template live test, 2026-08-26):** `insert_chapter_field_live`,
+new (not part of the original 43) -- a dynamic "current chapter" field,
+the gap the template pass's own one-page-style-per-chapter workaround
+flagged. This module now registers 44 tools, 43 real / 1 stub
+(`set_chapter_numbering_live`).
+
 Third of the four remaining Phase B/C scaffolds Buddy assigned
 (calc_data.py, calc_page.py done -> writer_layout.py -> writer_tables.py).
 Page style resolution reuses `_get_style_family(doc, "PageStyles")`, the
@@ -339,7 +345,13 @@ def get_headers_footers_live(page_style: Optional[str] = None) -> Dict[str, Any]
 @register_tool(
     name="set_header_live",
     priority="P1",
-    purpose="Enable and set header content for right/left/first page variants.",
+    purpose=(
+        "Enable and set header content for right/left/first page variants. "
+        "Writing a 'left' or 'first' variant automatically clears the matching "
+        "HeaderIsShared/HeaderIsFirstShared flag so the distinct text actually "
+        "renders -- LibreOffice defaults both to shared (True), which otherwise "
+        "makes 'left'/'first' text silently invisible behind the 'default' text."
+    ),
     parameters=schema({
         "text": {"type": "string"},
         "page_style": {"type": "string"},
@@ -363,7 +375,12 @@ def set_header_live(text: str, page_style: Optional[str] = None, variant: str = 
 @register_tool(
     name="set_footer_live",
     priority="P1",
-    purpose="Enable and set footer content for right/left/first page variants.",
+    purpose=(
+        "Enable and set footer content for right/left/first page variants. "
+        "Writing a 'left' or 'first' variant automatically clears the matching "
+        "FooterIsShared/FooterIsFirstShared flag so the distinct text actually "
+        "renders -- same sharing default as set_header_live."
+    ),
     parameters=schema({
         "text": {"type": "string"},
         "page_style": {"type": "string"},
@@ -465,6 +482,40 @@ def insert_page_count_field_live(target: Optional[str] = None, format: Optional[
     try:
         doc, resolved_id = _resolve_and_register(ctx)
         result = ctx.uno_bridge.insert_page_count_field(doc, target, format)
+        return envelope.build_success(result=result, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
+    except Exception as e:
+        return _error_response(e, start)
+
+
+@register_tool(
+    name="insert_chapter_field_live",
+    priority="P1",
+    purpose=(
+        "Insert a dynamic 'current chapter' field that always renders the "
+        "nearest preceding heading at/above the given outline level and "
+        "updates itself automatically -- the running-header alternative to "
+        "the one-page-style-per-chapter workaround (a fixed set_header_live "
+        "string per chapter). DANGER, live-verified: calling this twice in a "
+        "row without an intervening edit (text insert, cursor move, page "
+        "style change) can hang the entire LibreOffice process -- a second "
+        "Chapter field landing adjacent to the first can send LibreOffice's "
+        "own field expansion into a runaway loop. Always insert one field "
+        "per call and let the caller's own next real edit separate repeat calls."
+    ),
+    parameters=schema({
+        "target": {"type": "string"},
+        "level": {"type": "integer", "default": 1},
+        "format": {"type": "string", "enum": ["name", "number", "name_number", "no_prefix_suffix", "digit"]},
+    }),
+    status="implemented",
+)
+def insert_chapter_field_live(target: Optional[str] = None, level: int = 1,
+                               format: Optional[str] = None) -> Dict[str, Any]:
+    start = envelope.start_timer()
+    ctx = context.get_context()
+    try:
+        doc, resolved_id = _resolve_and_register(ctx)
+        result = ctx.uno_bridge.insert_chapter_field(doc, target, level, format)
         return envelope.build_success(result=result, document_id=resolved_id, elapsed_ms=envelope.elapsed_ms_since(start))
     except Exception as e:
         return _error_response(e, start)

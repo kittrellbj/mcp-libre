@@ -1,0 +1,33 @@
+name: Tests
+
+# Lightweight, fakes-based suite only -- pure Python, no LibreOffice
+# install needed (every test here runs against tests/'s own Fake*Bridge
+# stand-ins, never a real UNO connection). Scoped small per Brian's call
+# (2026-08-26): this is not the heavier live-probe suite (every
+# *-probe-windows.py, smoke-test-windows.py), which needs a real
+# LibreOffice install (a self-hosted runner or an `apt-get install
+# libreoffice` step) and is deliberately left for a later, separate
+# infrastructure decision -- see docs/HARDENING_PLAN.md item 3.
+#
+# This would have caught the mcp==2.0.0 dependency-drift bug (fixed in
+# v2.0.28) that once silently broke src/libremcp.py.
+
+on:
+  push:
+    branches: [windows-oxt]
+  pull_request:
+    branches: [windows-oxt]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10
+        with:
+          python-version: "3.12"
+
+      - name: Run test suite
+        run: uv run pytest -v

@@ -1517,7 +1517,11 @@ class UNOBridge:
 
     def create_style(self, doc: Any, family: str, style_name: str, parent_style: Optional[str] = None,
                       properties: Optional[Dict[str, Any]] = None) -> List[str]:
-        """Create a user style. Returns the list of `properties` keys actually applied."""
+        """Create a user style. Returns the list of `properties` keys actually applied.
+
+        Struct-typed properties (e.g. ParaLineSpacing) are coerced from a
+        plain JSON dict into the real UNO struct before setPropertyValue --
+        see _coerce_property_value()'s docstring for the bug this fixes."""
         family_container = self._get_style_family(doc, family)
         if family_container.hasByName(style_name):
             raise FileExistsError(f"Style '{style_name}' already exists in family '{family}'.")
@@ -1531,7 +1535,7 @@ class UNOBridge:
         applied = []
         for key, value in (properties or {}).items():
             try:
-                new_style.setPropertyValue(key, value)
+                new_style.setPropertyValue(key, self._coerce_property_value(new_style, key, value))
                 applied.append(key)
             except Exception:
                 pass
@@ -1578,7 +1582,11 @@ class UNOBridge:
         return failed
 
     def update_style(self, doc: Any, family: str, style_name: str, properties: Dict[str, Any]) -> List[str]:
-        """Update style properties. Returns the list of keys actually applied."""
+        """Update style properties. Returns the list of keys actually applied.
+
+        Struct-typed properties (e.g. ParaLineSpacing) are coerced from a
+        plain JSON dict into the real UNO struct before setPropertyValue --
+        see _coerce_property_value()'s docstring for the bug this fixes."""
         family_container = self._get_style_family(doc, family)
         if not family_container.hasByName(style_name):
             raise KeyError(f"No such style '{style_name}' in family '{family}'.")
@@ -1586,7 +1594,7 @@ class UNOBridge:
         applied = []
         for key, value in properties.items():
             try:
-                style.setPropertyValue(key, value)
+                style.setPropertyValue(key, self._coerce_property_value(style, key, value))
                 applied.append(key)
             except Exception:
                 pass
@@ -3974,6 +3982,60 @@ class UNOBridge:
         resolved_start = self._insert_paragraph_block(doc, entries, destination)
         return {"copied_count": len(entries), "destination": resolved_start}
 
+    def _build_uno_struct(self, type_name: str, fields: Dict[str, Any]) -> Any:
+        """Construct a UNO struct instance (e.g. "com.sun.star.style.
+        LineSpacing") from a plain {field_name: value} dict, setting each
+        field best-effort -- an unknown/unsettable field name on the
+        struct itself is skipped, not fatal, same spirit as the
+        property-level callers below."""
+        struct = uno.createUnoStruct(type_name)
+        for field_name, field_value in fields.items():
+            try:
+                setattr(struct, field_name, field_value)
+            except Exception:
+                continue
+        return struct
+
+    def _coerce_property_value(self, target: Any, key: str, value: Any) -> Any:
+        """Bug fix (book-template live test, 2026-08-26): a struct-typed
+        UNO property -- e.g. ParaLineSpacing (com.sun.star.style.
+        LineSpacing: Mode/Height), a border property (BorderLine2), or
+        ParaTabStops (a sequence of TabStop structs) -- cannot accept a
+        plain JSON dict/list via setPropertyValue(); pyuno raises, and
+        every caller below catches that in a bare except and silently
+        drops the key, reported back as "unknown/unsettable" identically
+        to an actually-invalid property name. Reflects the property's
+        real declared type off getPropertySetInfo() (same TypeClass
+        introspection insert_cross_reference's own comment above already
+        relies on) and, when the caller's value is dict/list-shaped,
+        builds the real struct (or tuple of structs) instead. Only one
+        level deep -- a struct field that is itself another struct isn't
+        recursively coerced, not needed for any property reported so far.
+        Anything not dict/list, or whose property name isn't found, or
+        whose declared type isn't STRUCT/a sequence of STRUCT, passes
+        through unchanged -- primitives, raw-int enum assignments, and
+        already-working plain sequences (e.g. Keywords) are untouched."""
+        if not isinstance(value, (dict, list, tuple)):
+            return value
+        try:
+            uno_type = target.getPropertySetInfo().getPropertyByName(key).Type
+        except Exception:
+            return value
+        # uno_type.typeClass is itself a uno.Enum instance (e.g. "STRUCT"/
+        # "SEQUENCE"), not a member of a `uno.TypeClass` constant group --
+        # live-verified this pyuno build has no `uno.TypeClass` attribute at
+        # all (AttributeError), unlike the enum-VALUE comparisons elsewhere
+        # in this file. Read its .value the same way _uno_value_to_plain()
+        # already reads any other uno.Enum.
+        type_class = uno_type.typeClass.value
+        if type_class == "STRUCT" and isinstance(value, dict):
+            return self._build_uno_struct(uno_type.typeName, value)
+        if type_class == "SEQUENCE" and isinstance(value, (list, tuple)) and value:
+            element_type_name = uno_type.typeName[2:]  # strip the leading "[]"
+            if element_type_name.startswith("com.sun.star.") and all(isinstance(v, dict) for v in value):
+                return tuple(self._build_uno_struct(element_type_name, v) for v in value)
+        return value
+
     def _apply_direct_properties(self, text_range: Any, properties: Dict[str, Any]) -> List[str]:
         """Set each property directly on a Writer text range via
         setPropertyValue, skipping (not raising on) any name/value UNO
@@ -3985,7 +4047,7 @@ class UNOBridge:
         applied = []
         for key, value in properties.items():
             try:
-                text_range.setPropertyValue(key, value)
+                text_range.setPropertyValue(key, self._coerce_property_value(text_range, key, value))
                 applied.append(key)
             except Exception:
                 continue
@@ -9024,6 +9086,21 @@ class UNOBridge:
     _WRITER_PAGE_LAYOUT_PROPS = (
         "Width", "Height", "IsLandscape", "LeftMargin", "RightMargin", "TopMargin", "BottomMargin",
         "GutterMargin", "HeaderIsOn", "FooterIsOn", "HeaderHeight", "FooterHeight",
+        # Gap fix (book-template live test, 2026-08-26): the tool's own purpose
+        # string already promised "mirrored layout" and "header/footer settings"
+        # but this tuple never carried the properties that actually answer
+        # either question. PageStyleLayout round-trips through _uno_value_to_plain
+        # as a readable enum name (e.g. "MIRRORED") the same way IsLandscape's
+        # sibling props already do. HeaderIsShared/FooterIsShared/FirstIsShared
+        # are the other half of the mirrored-header bug fixed in set_header/
+        # set_footer below -- a caller needs to be able to *read* whether
+        # left/first variants are currently sharing the default text, not
+        # just set it blind. FirstIsShared is a single property covering both
+        # header and footer -- live-verified via getPropertySetInfo() against
+        # a real PageStyle: there is no separate HeaderIsFirstShared/
+        # FooterIsFirstShared (unlike the header/footer-specific
+        # HeaderIsShared/FooterIsShared pair).
+        "PageStyleLayout", "HeaderIsShared", "FooterIsShared", "FirstIsShared",
     )
 
     def get_page_layout(self, doc: Any, page_style: Optional[str] = None) -> Dict[str, Any]:
@@ -9248,6 +9325,24 @@ class UNOBridge:
         "first": ("HeaderTextFirst", "FooterTextFirst"),
     }
 
+    # BUG fix (book-template live test, 2026-08-26): "left" and "first" each
+    # write to their own HeaderText*/FooterText* text object regardless of
+    # sharing state, but LibreOffice only *renders* that separate text when
+    # the matching IsShared flag is False -- both default True. Confirmed
+    # live via build_nonfiction.py's own documented workaround
+    # (update_page_style_live(properties={"HeaderIsShared": False, ...})
+    # applied by hand after set_header_live(variant="left") wrote a
+    # different string than variant="default" but the rendered page still
+    # showed the "default" text on every page). "default" has no shared
+    # flag of its own -- it IS the shared text. "first" shares a single
+    # FirstIsShared property across header AND footer (live-verified via
+    # getPropertySetInfo() -- there is no separate Header/FooterIsFirstShared),
+    # unlike "left"'s header/footer-specific pair.
+    _HEADER_FOOTER_SHARED_PROPS = {
+        "left": ("HeaderIsShared", "FooterIsShared"),
+        "first": ("FirstIsShared", "FirstIsShared"),
+    }
+
     def get_headers_footers(self, doc: Any, page_style: Optional[str] = None) -> Dict[str, Any]:
         style, name = self._resolve_page_style(doc, page_style)
         result: Dict[str, Any] = {"page_style": name, "header_on": bool(style.HeaderIsOn), "footer_on": bool(style.FooterIsOn)}
@@ -9260,6 +9355,15 @@ class UNOBridge:
                 result[f"footer_{variant}"] = style.getPropertyValue(footer_prop).getString()
             except Exception:
                 result[f"footer_{variant}"] = None
+        for variant, (header_shared_prop, footer_shared_prop) in self._HEADER_FOOTER_SHARED_PROPS.items():
+            try:
+                result[f"header_{variant}_shared"] = bool(style.getPropertyValue(header_shared_prop))
+            except Exception:
+                result[f"header_{variant}_shared"] = None
+            try:
+                result[f"footer_{variant}_shared"] = bool(style.getPropertyValue(footer_shared_prop))
+            except Exception:
+                result[f"footer_{variant}_shared"] = None
         return result
 
     def set_header(self, doc: Any, text: str, page_style: Optional[str] = None, variant: str = "default",
@@ -9269,8 +9373,12 @@ class UNOBridge:
             raise ValueError(f"Unknown variant '{variant}'. Supported: {sorted(self._HEADER_FOOTER_TEXT_PROPS)}")
         style, _ = self._resolve_page_style(doc, page_style)
         style.HeaderIsOn = True
-        style.getPropertyValue(header_prop).setString(text)
         applied = ["text"]
+        shared_prop, _ = self._HEADER_FOOTER_SHARED_PROPS.get(variant, (None, None))
+        if shared_prop is not None:
+            style.setPropertyValue(shared_prop, False)
+            applied.append(shared_prop)
+        style.getPropertyValue(header_prop).setString(text)
         if properties:
             applied.extend(self._apply_direct_properties(style, properties))
         return applied
@@ -9282,8 +9390,12 @@ class UNOBridge:
             raise ValueError(f"Unknown variant '{variant}'. Supported: {sorted(self._HEADER_FOOTER_TEXT_PROPS)}")
         style, _ = self._resolve_page_style(doc, page_style)
         style.FooterIsOn = True
-        style.getPropertyValue(footer_prop).setString(text)
         applied = ["text"]
+        _, shared_prop = self._HEADER_FOOTER_SHARED_PROPS.get(variant, (None, None))
+        if shared_prop is not None:
+            style.setPropertyValue(shared_prop, False)
+            applied.append(shared_prop)
+        style.getPropertyValue(footer_prop).setString(text)
         if properties:
             applied.extend(self._apply_direct_properties(style, properties))
         return applied
@@ -9364,6 +9476,77 @@ class UNOBridge:
         field.NumberingType = self._resolve_page_number_numbering_type(format)
         cursor.getText().insertTextContent(cursor, field, False)
         return {"target": target or "cursor"}
+
+    # Bug fix (live-verified via the type-description-manager singleton,
+    # not guessed): the real com.sun.star.text.ChapterFormat constant
+    # group members are NAME/NUMBER/NAME_NUMBER/NO_PREFIX_SUFFIX/DIGIT --
+    # an earlier draft of this map guessed "NUMBER_NAME"/"NO_CHAPTER",
+    # which don't exist and would have raised inside
+    # uno.getConstantByName() the first time a caller used them.
+    _CHAPTER_FORMAT_MAP = {"name": "NAME", "number": "NUMBER", "name_number": "NAME_NUMBER",
+                           "no_prefix_suffix": "NO_PREFIX_SUFFIX", "digit": "DIGIT"}
+
+    def insert_chapter_field(self, doc: Any, target: Optional[str] = None, level: int = 1,
+                              format: Optional[str] = None) -> Dict[str, Any]:
+        """Insert a dynamic "current chapter" field -- LibreOffice's own
+        auto-updating com.sun.star.text.TextField.Chapter, which always
+        renders the nearest preceding heading at or above outline `level`
+        (level=1 == Heading 1, the book-template default) and keeps
+        tracking it as the document changes.
+
+        Gap fix (book-template live test, 2026-08-26): no tool exposed
+        this, forcing a one-page-style-per-chapter workaround (a distinct
+        page style plus a literal set_header_live string per chapter --
+        see build_nonfiction.py) instead of a single field that follows
+        the document's real heading structure and updates itself when
+        chapters are reordered, renamed, or added.
+
+        ChapterFormat is a plain SHORT-typed property backed by the
+        com.sun.star.text.ChapterFormat *constants* group, not a real UNO
+        enum -- same non-enum constant-group mechanism as
+        insert_cross_reference's ReferenceFieldSource/Part (see that
+        method's comment above); resolved via uno.getConstantByName(),
+        not uno.Enum(), for the same reason.
+
+        DANGER, live-verified this pass -- not theoretical: inserting a
+        second Chapter field immediately adjacent to (at the same
+        unmoved cursor position as) a first one can send LibreOffice's
+        own field-expansion into a runaway loop -- observed as the
+        first repeat insert's presentation exploding into the same text
+        repeated dozens of times, and the SECOND repeat insert hanging
+        the entire soffice process indefinitely (confirmed: even an
+        unrelated tool call on a different document then blocked forever
+        on the process-wide `_UNO_EXECUTION_LOCK`, recoverable only by
+        killing soffice). This looks like a LibreOffice core bug, not
+        something fixable at this wrapper's level -- same "target=cursor,
+        called twice without moving the cursor" pattern as any other
+        field tool's batch-unsafety (see insert_page_break's BUG#5-class
+        notes), but ordinary fields don't have a catastrophic failure
+        mode when stacked, so this one gets an explicit warning: never
+        call this twice in a row on the same document without an
+        intervening real edit (text insert, cursor move, page style
+        change) between calls."""
+        self._require_writer(doc, "insert_chapter_field")
+        name = self._CHAPTER_FORMAT_MAP.get(format, "NAME" if format is None else None)
+        if name is None:
+            raise ValueError(f"Unknown chapter format '{format}'. Supported: {', '.join(self._CHAPTER_FORMAT_MAP)}.")
+        cursor = self._resolve_field_insertion_point(doc, target)
+        field = doc.createInstance("com.sun.star.text.TextField.Chapter")
+        field.ChapterFormat = uno.getConstantByName(f"com.sun.star.text.ChapterFormat.{name}")
+        field.Level = int(level)
+        cursor.getText().insertTextContent(cursor, field, False)
+        if target in (None, "cursor"):
+            # Best-effort resync (same BUG#5-class handling as insert_paragraph/
+            # insert_page_break above) so a second call at least lands after
+            # this field instead of at the identical unmoved position -- does
+            # not fully close the DANGER case above (a caller could still
+            # move the cursor back), but removes the single most likely
+            # accidental trigger (an omitted-position repeat call).
+            try:
+                self._get_controller(doc).getViewCursor().gotoRange(field.getAnchor().getEnd(), False)
+            except Exception:
+                pass
+        return {"target": target or "cursor", "level": level, "format": name.lower()}
 
     def insert_date_time_field(self, doc: Any, target: Optional[str] = None, fixed: bool = False,
                                 format: Optional[str] = None) -> Dict[str, Any]:
