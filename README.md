@@ -1,7 +1,7 @@
 # LibreOffice MCP Server
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.1.1-blue.svg)](#versioning)
+[![Version](https://img.shields.io/badge/version-2.1.2-blue.svg)](#versioning)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](#requirements)
 [![LibreOffice](https://img.shields.io/badge/LibreOffice-24.2%2B-18A303.svg)](#requirements)
 
@@ -31,6 +31,7 @@ This fork focuses on making the native LibreOffice extension work cleanly on Win
 - [External MCP Server](#external-mcp-server)
 - [Supported File Formats](#supported-file-formats)
 - [Security](#security)
+- [Known Limitations](#known-limitations)
 - [Troubleshooting](#troubleshooting)
 - [Development](#development)
 - [Versioning](#versioning)
@@ -44,7 +45,7 @@ This fork focuses on making the native LibreOffice extension work cleanly on Win
 
 Version 2.0.0 grows the project from the v1.0.0 Windows native-extension baseline into a full LibreOffice automation surface for AI agents: the tool catalog expanded roughly twelvefold, the embedded HTTP server gained real concurrency safety, and the MCP transport itself was brought into spec conformance.
 
-- **411 registered MCP tools** across Writer, Calc, Impress, Draw, and shared LibreOffice services — up from the 32-tool v1.0.0 baseline. 406 are live by default (the original 32 plus 374 fully implemented since); 5 remain stub-only, opt-in, and return `NOT_IMPLEMENTED` until finished (see [Tooling Roadmap](#tooling-roadmap)).
+- **412 registered MCP tools** across Writer, Calc, Impress, Draw, and shared LibreOffice services — up from the 32-tool v1.0.0 baseline. 407 are live by default (the original 32 plus 375 fully implemented since); 5 remain stub-only, opt-in, and return `NOT_IMPLEMENTED` until finished (see [Tooling Roadmap](#tooling-roadmap)).
 - **Concurrency control**: a process-wide UNO execution lock plus a bounded admission semaphore protect the embedded HTTP server from PyUNO bridge corruption under concurrent tool calls. Live-verified at 600/600 concurrent round trips with 0 errors.
 - **MCP transport protocol conformance**: `Mcp-Session-Id` is now enforced end to end, and `MCP-Protocol-Version` is validated and negotiated per the MCP specification on every request.
 - **524 automated tests passing**, plus live install/launch/health-check probes run against a real LibreOffice process for everything that can't be unit-tested outside one.
@@ -84,7 +85,7 @@ Numbers pulled from the project's own history (`docs/MCP_TOOLING_SCAFFOLD_PLAN.m
 - **600/600** concurrent tool-call round trips succeeded with 0 errors in the concurrency-safety probe (2 threads × 300 iterations against two live Writer documents).
 - **15/15** MCP transport protocol-conformance checks passed live against a real running extension (session-id enforcement, protocol-version negotiation).
 - **51 commits** landed since the v1.0.0 baseline (85 commits total across the project's full history).
-- **411 registered MCP tools** across Writer (99), Calc (103), Impress (43), Draw (18), and shared services (116), plus the original 32 legacy tools — 406 live by default, 5 stub-only pending (see [Tooling Roadmap](#tooling-roadmap)).
+- **412 registered MCP tools** across Writer (100), Calc (103), Impress (43), Draw (18), and shared services (116), plus the original 32 legacy tools — 407 live by default, 5 stub-only pending (see [Tooling Roadmap](#tooling-roadmap)).
 
 ---
 
@@ -395,17 +396,17 @@ Full write-up, including the empirical test that found the actual bug, in [`docs
 
 # Writer / Calc / Impress / Draw Automation via MCP
 
-The v2.0.0 catalog registers **411 MCP tools**: the 32-tool v1.0.0 compatibility baseline (always live, Writer-focused) plus 379 tools added since, organized by LibreOffice application area. 406 tools are live by default; 5 remain stub-only until implemented (enable them for development with `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS=1` — each returns a `NOT_IMPLEMENTED` error until finished).
+The v2.0.0 catalog registers **412 MCP tools**: the 32-tool v1.0.0 compatibility baseline (always live, Writer-focused) plus 380 tools added since, organized by LibreOffice application area. 407 tools are live by default; 5 remain stub-only until implemented (enable them for development with `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS=1` — each returns a `NOT_IMPLEMENTED` error until finished).
 
 | Area | Tools | Live by default | Stub-only |
 |---|---:|---:|---:|
 | Writer (v1.0.0 baseline) | 32 | 32 | 0 |
-| Writer (layout, tables, text) | 99 | 97 | 2 |
+| Writer (layout, tables, text) | 100 | 98 | 2 |
 | Calc (sheets, cells, ranges, external data) | 103 | 103 | 0 |
 | Impress (slides, animation, slideshow) | 43 | 40 | 3 |
 | Draw (pages, shapes, connectors) | 18 | 18 | 0 |
 | Shared services (charts, drawing objects, styles, undo/view/selection, document lifecycle, core runtime) | 116 | 116 | 0 |
-| **Total** | **411** | **406** | **5** |
+| **Total** | **412** | **407** | **5** |
 
 <details>
 <summary><strong>v1.0.0 baseline — Document lifecycle</strong></summary>
@@ -490,7 +491,7 @@ The v2.0.0 catalog registers **411 MCP tools**: the 32-tool v1.0.0 compatibility
 The v1.0.0 tool names remain backward-compatible as the interface expands.
 
 <details>
-<summary><strong>v2.0.0 — Writer (99 tools: writer_layout.py, writer_tables.py, writer_text.py)</strong></summary>
+<summary><strong>v2.0.0 — Writer (100 tools: writer_layout.py, writer_tables.py, writer_text.py)</strong></summary>
 
 Page styles and layout, custom page sizes, margins, headers/footers, sections, columns, paragraph/character styles, lists and numbering, tables, frames, images, fields, footnotes/endnotes, bookmarks, cross-references, indexes/TOC, advanced typography, page numbering, document properties.
 
@@ -782,6 +783,16 @@ Future tooling should continue to separate safe read-only operations from destru
 
 ---
 
+# Known Limitations
+
+Two known, deliberate gaps -- documented rather than silently left unexplained. Neither blocks local, single-user use; both are real questions if this project's scope ever changes.
+
+**No per-caller authentication on the MCP endpoint.** As described in [Security](#security) above, the server validates Host/Origin headers (a real, narrow DNS-rebinding mitigation) but has no authentication of its own — any local process can call every tool. This is parked, not scheduled work: fine for the loopback-only, single-trusted-user case this project targets today, but a genuine pre-production question the moment this is ever exposed beyond a single trusted local machine. Revisit if/when there's real demand to expose the endpoint further; see `docs/HARDENING_PLAN.md` item 2 for the full history.
+
+**Original 32 legacy tools use a flatter error envelope than the ~90 tools added since.** The v1.0.0-baseline tools (still dispatched directly by `mcp_server.py`, not through the `tools/` registry every module since has used) return `{"success": False, "error": "<string>"}` on failure — not the modern structured `{"success": False, "error": {"code", "message", "details"}}` shape every tool registered through `tools/registry.py` returns. This is a real, known inconsistency for a caller trying to handle errors uniformly across the full catalog, but migrating 25+ long-stable legacy call sites for a consistency-only win (no reported caller confusion) is disproportionate risk for the payoff. Decision: leave it split, and only convert an individual legacy tool's error shape when it's touched anyway for an unrelated fix — never as a standalone migration pass. See `docs/HARDENING_PLAN.md` item 1/item 4 for the full history.
+
+---
+
 # Troubleshooting
 
 ## Confirm the extension is installed
@@ -820,10 +831,10 @@ dispatch called: mcp:start_mcp_server
 Starting MCP server...
 MCP HTTP server started successfully
 UNO Bridge initialized successfully
-Registered 406 MCP tools
+Registered 407 MCP tools
 ```
 
-(406 by default — the 32-tool v1.0.0 baseline plus the 374 implemented v2.0.0 tools. Set `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS=1` before starting LibreOffice to also register the 5 remaining stub-only tools, for a total of 411.)
+(407 by default — the 32-tool v1.0.0 baseline plus the 375 implemented v2.0.0 tools. Set `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS=1` before starting LibreOffice to also register the 5 remaining stub-only tools, for a total of 412.)
 
 ## Tools menu appears but commands do nothing
 
@@ -887,6 +898,19 @@ uv run pytest
 ---
 
 # Versioning
+
+## v2.1.2
+
+Four tool-surface gaps found by v2.1.1's book-template live test, fixed and live-verified; plus the three follow-up decisions from that pass's parked-items review.
+
+- **Mirrored/alternating running headers actually work now.** `set_header_live`/`set_footer_live` writing a `left` or `first` variant now automatically clears the matching `HeaderIsShared`/`FooterIsShared`/`FirstIsShared` flag (LibreOffice defaults all three to shared/`True`, which silently made the "left"/"first" text invisible behind the "default" text — confirmed live via `build_nonfiction.py`'s own documented hand-applied workaround for this exact gap). `get_headers_footers_live` also now reports each variant's shared state (`header_left_shared`, `footer_first_shared`, etc.).
+- **`get_page_layout_live` reports mirroring/sharing state.** Added `PageStyleLayout`, `HeaderIsShared`, `FooterIsShared`, `FirstIsShared` — the tool's own purpose string already promised "mirrored layout" and "header/footer settings" but never actually returned them.
+- **Struct-typed style properties (e.g. `ParaLineSpacing`) no longer silently dropped.** `create_style_live`/`update_style_live`/`set_paragraph_format_live`/`set_character_format_live`/page-style property setters now coerce a plain JSON dict into the real UNO struct (reflecting the property's declared type off `getPropertySetInfo()`) before `setPropertyValue()` — previously a struct-typed property's dict value raised inside `setPropertyValue()`, silently caught, and reported back as "unknown/unsettable" indistinguishably from an actually-invalid property name.
+- **New tool: `insert_chapter_field_live`.** A dynamic "current chapter" running-header field (LibreOffice's own auto-updating `com.sun.star.text.TextField.Chapter`) — the alternative to the one-page-style-per-chapter workaround the book templates had to use. **Live-verified danger, documented in the tool's own purpose string and its bridge method's docstring:** inserting a second Chapter field immediately adjacent to (at an unmoved cursor position from) a first one can send LibreOffice's own field expansion into a runaway loop that hangs the entire soffice process — confirmed reproducible, looks like a LibreOffice core bug rather than something fixable at this wrapper's level. Never call this twice in a row without an intervening real edit.
+- **README "Known Limitations" section added.** No per-caller authentication on the MCP endpoint (parked — loopback-only is fine for today's single-trusted-user case) and the original 32 legacy tools' flatter error envelope vs. the ~90 tools since (parked — migrate a given legacy tool's error shape only when it's touched anyway for an unrelated fix, never as a standalone pass). Full history in `docs/HARDENING_PLAN.md`.
+- **`.github/workflows/tests.yml` added.** Runs the fakes-based `uv run pytest` suite (pure Python, no LibreOffice needed) on push/PR to `windows-oxt` — would have caught the `mcp==2.0.0` dependency-drift bug (v2.0.28) that once silently broke `src/libremcp.py`. The heavier live-probe suite still needs a LibreOffice-capable runner, deliberately deferred. Pinned `astral-sh/setup-uv@v10.0.1` (confirmed via `gh pr view`/`actions/runs` log, not chat) — `astral-sh/setup-uv` doesn't publish a floating major-version tag like `actions/checkout@v5` does, so the original `@v10` pin failed at "Set up job" before pytest ever ran; `git ls-remote --tags` confirmed only fully-pinned releases exist.
+
+Live-verified against a real headless LibreOffice instance (`book-template-gap-fixes-probe-windows.py`, checked into the repo root alongside the other `*-probe-windows.py` probes). 524/524 fakes-based tests passing.
 
 ## v2.1.1
 

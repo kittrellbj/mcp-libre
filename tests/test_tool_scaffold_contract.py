@@ -134,6 +134,11 @@ EXPECTED_BY_MODULE = {
         "insert_toc_live", "update_index_live", "delete_index_live",
         "insert_alphabetical_index_live", "add_index_mark_live", "get_chapter_numbering_live",
         "set_chapter_numbering_live", "get_line_numbering_live", "set_line_numbering_live",
+        # New tool, 2026-08-26 (book-template live test gap #4, not part of
+        # the original 43-tool spec this module was sourced from) -- a
+        # dynamic "current chapter" running-header field, the alternative
+        # to the one-page-style-per-chapter workaround.
+        "insert_chapter_field_live",
     },
     "writer_tables": {
         "list_tables_live", "insert_table_live", "get_table_live", "get_table_range_live",
@@ -473,12 +478,15 @@ IMPLEMENTED_WRITER_LAYOUT_TOOL_NAMES = {
     "insert_caption_live", "list_document_indexes_live", "insert_toc_live", "update_index_live",
     "delete_index_live", "insert_alphabetical_index_live", "add_index_mark_live", "get_chapter_numbering_live",
     "get_line_numbering_live", "set_line_numbering_live",
+    # New tool, 2026-08-26 -- see EXPECTED_BY_MODULE["writer_layout"]'s
+    # matching comment above.
+    "insert_chapter_field_live",
 }
 
 
 def test_implemented_writer_layout_tools_are_marked_implemented():
     """Same guard as test_implemented_modules_tools_are_marked_implemented,
-    for the 42 individually-implemented tools in the mixed
+    for the 43 individually-implemented tools in the mixed
     writer_layout.py module (see IMPLEMENTED_WRITER_LAYOUT_TOOL_NAMES)."""
     registry = get_registry()
     for name in IMPLEMENTED_WRITER_LAYOUT_TOOL_NAMES:

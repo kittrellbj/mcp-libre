@@ -111,22 +111,25 @@ multi-document-detection heuristic than what this project's addressing
 model uses -- a design decision, not a bug fix. Not implemented; flagged
 here rather than silently left dead code with no explanation.
 
-**Flagged, deferred, needs a scope decision (bigger than this audit
-item):** the **original 32 "legacy" tools** (still live today via
-`mcp_server.py`'s own dispatch, entirely separate from the `tools/`-
-registry pattern every real-implementation pass since Phase A has used)
-return a flat `{"success": False, "error": "<string>"}` shape -- not the
-modern structured `{"success": False, "error": {"code", "message",
-"details"}}` envelope. Confirmed live in the source (~25+ `doc_type !=
-"writer"` checks in `uno_bridge.py`'s legacy methods, e.g. `get_track_
-changes_status()`, still returning bare error strings). This is a
-genuine, real inconsistency, but migrating 25+ long-stable legacy call
-sites to the modern envelope is a much larger undertaking than a
-same-pass audit fix and risks touching code that predates this project's
-whole real-implementation methodology. Not touched this pass -- needs a
-deliberate scope decision (migrate now vs. accept as documented, pre-
-existing legacy-vs-modern split) before further work here, not a silent
-rewrite.
+**Decided (2026-08-26, Brian): park, document, migrate opportunistically
+only -- not a standalone migration task.** The **original 32 "legacy"
+tools** (still live today via `mcp_server.py`'s own dispatch, entirely
+separate from the `tools/`-registry pattern every real-implementation
+pass since Phase A has used) return a flat `{"success": False, "error":
+"<string>"}` shape -- not the modern structured `{"success": False,
+"error": {"code", "message", "details"}}` envelope. Confirmed live in
+the source (~25+ `doc_type != "writer"` checks in `uno_bridge.py`'s
+legacy methods, e.g. `get_track_changes_status()`, still returning bare
+error strings). This is a genuine, real inconsistency, but migrating
+25+ long-stable legacy call sites to the modern envelope for a
+consistency-only win (no reported caller confusion) is disproportionate
+risk for the payoff, and risks touching code that predates this
+project's whole real-implementation methodology. Final call: document
+the split plainly (here and in the README's Known Limitations section)
+as a known, deliberate legacy-vs-modern envelope difference -- not a
+bug -- and only convert an individual legacy tool's error shape when
+it's touched anyway for an unrelated fix, never as a standalone
+migration pass.
 
 **Not yet checked:** `DATABASE_ERROR` (declared, never used) is a live
 candidate given `writer_tables.py`'s new `preview_mail_merge_live` is the
@@ -511,28 +514,36 @@ concurrency control not yet started).
    against a supported-version list. This is explicitly Brian's next
    phase (see the top of this doc) -- named here for completeness, not
    because it was missed.
-2. **No authentication on the MCP endpoint.** Read directly in an
-   earlier research pass (`docs/WRITERAGENT_COMPARISON_MATRIX.md`'s
-   "Security" row): loopback-only, no per-caller authorization for a
-   tool surface that can read/write/delete real documents. `host_trust.
-   py`'s Host/Origin header validation is a real, narrow DNS-rebinding
-   mitigation, not authentication -- marked "both weak, neither strong"
-   against WriterAgent (which has the identical gap, explicitly accepted
-   by WriterAgent as a local-dev-tool risk). Not addressed by this
-   hardening pass; a genuine pre-production question if this is ever
-   exposed beyond a trusted local machine.
-3. **No automated CI.** No `.github/workflows/`, no other CI config --
-   every check in this project's history, including this entire
-   hardening pass, has been run manually. The build script and the new
-   smoke test (`smoke-test-windows.py`) both exist and both work, but
-   nothing runs them automatically on push/PR. Needs its own
-   infrastructure decision (a LibreOffice-capable runner).
-4. **Original 32 legacy tools use a different, flatter error envelope**
-   (`{"success": False, "error": "<string>"}`, not the modern structured
-   `{"code", "message", "details"}` shape) -- flagged in item 1 above.
-   Real inconsistency for any caller trying to handle errors uniformly
-   across the full tool catalog; migrating 25+ long-stable legacy call
-   sites is a bigger undertaking than this pass's scope.
+2. **No authentication on the MCP endpoint -- parked (2026-08-26,
+   Brian's explicit call).** Read directly in an earlier research pass
+   (`docs/WRITERAGENT_COMPARISON_MATRIX.md`'s "Security" row):
+   loopback-only, no per-caller authorization for a tool surface that
+   can read/write/delete real documents. `host_trust.py`'s Host/Origin
+   header validation is a real, narrow DNS-rebinding mitigation, not
+   authentication -- marked "both weak, neither strong" against
+   WriterAgent (which has the identical gap, explicitly accepted by
+   WriterAgent as a local-dev-tool risk). Documented in the README's
+   Known Limitations section; parked until there's real demand to
+   expose this beyond a trusted local machine.
+3. **No automated CI -- fixed for the fakes-based suite (2026-08-26).**
+   `.github/workflows/tests.yml` now runs `uv run pytest` (the pure-
+   Python, no-LibreOffice-needed 524-test suite) on push/PR to
+   `windows-oxt`. This would have caught the `mcp==2.0.0`
+   dependency-drift bug (v2.0.28) that once silently broke
+   `src/libremcp.py`. The heavier live-probe suite (every
+   `*-probe-windows.py`, `smoke-test-windows.py`) still needs a real
+   LibreOffice install (a self-hosted runner or an `apt-get install
+   libreoffice` step) -- deliberately left for later, not blocking.
+4. **Original 32 legacy tools use a different, flatter error envelope
+   -- decided: park, document, migrate opportunistically (2026-08-26,
+   see item 1 above for the full decision).** `{"success": False,
+   "error": "<string>"}`, not the modern structured `{"code", "message",
+   "details"}` shape. Real inconsistency for any caller trying to
+   handle errors uniformly across the full tool catalog, but migrating
+   25+ long-stable legacy call sites for a consistency-only win is
+   disproportionate to the payoff -- documented in the README's Known
+   Limitations section as a deliberate, known split; converted only
+   when an individual legacy tool is touched anyway for an unrelated fix.
 5. **`DATABASE_ERROR` error code still unreachable.** Declared, never
    mapped -- `preview_mail_merge_live` (the only SDBC-touching code in
    the codebase) would currently surface a malformed-query/connection
@@ -558,11 +569,14 @@ concurrency control not yet started).
 Nothing above blocks the tool catalog itself from being correct and
 live-verified -- it is. What blocks calling the *service* production-
 ready, in likely order of consequence if ignored: concurrency control
-(phase 2, already scheduled) and authentication (item 2, not scheduled)
-if this is ever exposed beyond a single trusted local machine; the rest
-(CI, legacy error-envelope migration, `DATABASE_ERROR`, platform
-support) are real but narrower and can reasonably wait for their own
-deliberate scope calls rather than blocking anything today.
+(phase 2, already scheduled) and authentication (item 2, parked by
+explicit decision, not scheduled work) if this is ever exposed beyond a
+single trusted local machine; the rest (legacy error-envelope migration,
+`DATABASE_ERROR`, platform support) are real but narrower and can
+reasonably wait for their own deliberate scope calls rather than
+blocking anything today. CI (item 3) is no longer open -- the
+fakes-based suite runs automatically now; only the heavier live-probe
+CI question remains deferred.
 
 ## Phase 2 (after 1-6): MCP transport concurrency control
 

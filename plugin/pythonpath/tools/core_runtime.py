@@ -48,7 +48,7 @@ from .document_lifecycle import _error_response
 from .registry import register_tool, schema
 
 # Kept in sync manually with plugin/description.xml's <version value="..."/>.
-EXTENSION_VERSION = "2.1.1"
+EXTENSION_VERSION = "2.1.2"
 
 # registration.py hardcodes ai_interface.start_ai_interface(port=8765, ...)
 # with no configuration path that changes it -- safe to report as a constant.
