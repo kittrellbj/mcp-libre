@@ -1,7 +1,7 @@
 # LibreOffice MCP Server
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.24-blue.svg)](#versioning)
+[![Version](https://img.shields.io/badge/version-2.1.0-blue.svg)](#versioning)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](#requirements)
 [![LibreOffice](https://img.shields.io/badge/LibreOffice-24.2%2B-18A303.svg)](#requirements)
 
@@ -44,10 +44,10 @@ This fork focuses on making the native LibreOffice extension work cleanly on Win
 
 Version 2.0.0 grows the project from the v1.0.0 Windows native-extension baseline into a full LibreOffice automation surface for AI agents: the tool catalog expanded roughly twelvefold, the embedded HTTP server gained real concurrency safety, and the MCP transport itself was brought into spec conformance.
 
-- **398 registered MCP tools** across Writer, Calc, Impress, Draw, and shared LibreOffice services — up from the 32-tool v1.0.0 baseline. 392 are live by default (the original 32 plus 360 fully implemented since); 6 remain stub-only, opt-in, and return `NOT_IMPLEMENTED` until finished (see [Tooling Roadmap](#tooling-roadmap)).
+- **411 registered MCP tools** across Writer, Calc, Impress, Draw, and shared LibreOffice services — up from the 32-tool v1.0.0 baseline. 406 are live by default (the original 32 plus 374 fully implemented since); 5 remain stub-only, opt-in, and return `NOT_IMPLEMENTED` until finished (see [Tooling Roadmap](#tooling-roadmap)).
 - **Concurrency control**: a process-wide UNO execution lock plus a bounded admission semaphore protect the embedded HTTP server from PyUNO bridge corruption under concurrent tool calls. Live-verified at 600/600 concurrent round trips with 0 errors.
 - **MCP transport protocol conformance**: `Mcp-Session-Id` is now enforced end to end, and `MCP-Protocol-Version` is validated and negotiated per the MCP specification on every request.
-- **451 automated tests passing**, plus live install/launch/health-check probes run against a real LibreOffice process for everything that can't be unit-tested outside one.
+- **524 automated tests passing**, plus live install/launch/health-check probes run against a real LibreOffice process for everything that can't be unit-tested outside one.
 
 Full history in [`docs/HARDENING_PLAN.md`](docs/HARDENING_PLAN.md).
 
@@ -78,13 +78,13 @@ Validated functionality included:
 
 Numbers pulled from the project's own history (`docs/MCP_TOOLING_SCAFFOLD_PLAN.md`, `docs/HARDENING_PLAN.md`), not estimated. Where a number is a floor rather than an exact total, that's called out explicitly.
 
-- **451 tests passing, 0 failing** — the current fakes-based `pytest` suite (`uv run pytest`).
-- **At least 19 full-suite test runs are individually documented** across the project's history — one recorded at the close of each real-implementation pass, hardening item, and protocol-conformance phase, climbing from the first tracked snapshot (95/95) up to today's 451/451. This is a floor, not the true total: this project has no CI and no captured shell history, so the additional red/green iterations run while writing each test along the way aren't individually counted anywhere.
+- **524 tests passing, 0 failing** — the current fakes-based `pytest` suite (`uv run pytest`).
+- **At least 19 full-suite test runs are individually documented** across the project's history — one recorded at the close of each real-implementation pass, hardening item, and protocol-conformance phase, climbing from the first tracked snapshot (95/95) up to today's 524/524. This is a floor, not the true total: this project has no CI and no captured shell history, so the additional red/green iterations run while writing each test along the way aren't individually counted anywhere.
 - **42 real bugs found and fixed** via live verification against a real, running LibreOffice instance — each caught only because a live round trip was run, not by the fakes-based unit suite alone. Every one is documented at its source with root cause and fix.
 - **600/600** concurrent tool-call round trips succeeded with 0 errors in the concurrency-safety probe (2 threads × 300 iterations against two live Writer documents).
 - **15/15** MCP transport protocol-conformance checks passed live against a real running extension (session-id enforcement, protocol-version negotiation).
 - **51 commits** landed since the v1.0.0 baseline (85 commits total across the project's full history).
-- **398 registered MCP tools** across Writer (99), Calc (99), Impress (41), Draw (16), and shared services (111), plus the original 32 legacy tools — 393 live by default, 5 stub-only pending (see [Tooling Roadmap](#tooling-roadmap)).
+- **411 registered MCP tools** across Writer (99), Calc (103), Impress (43), Draw (18), and shared services (116), plus the original 32 legacy tools — 406 live by default, 5 stub-only pending (see [Tooling Roadmap](#tooling-roadmap)).
 
 ---
 
@@ -395,17 +395,17 @@ Full write-up, including the empirical test that found the actual bug, in [`docs
 
 # Writer / Calc / Impress / Draw Automation via MCP
 
-The v2.0.0 catalog registers **398 MCP tools**: the 32-tool v1.0.0 compatibility baseline (always live, Writer-focused) plus 366 tools added since, organized by LibreOffice application area. 393 tools are live by default; 5 remain stub-only until implemented (enable them for development with `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS=1` — each returns a `NOT_IMPLEMENTED` error until finished).
+The v2.0.0 catalog registers **411 MCP tools**: the 32-tool v1.0.0 compatibility baseline (always live, Writer-focused) plus 379 tools added since, organized by LibreOffice application area. 406 tools are live by default; 5 remain stub-only until implemented (enable them for development with `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS=1` — each returns a `NOT_IMPLEMENTED` error until finished).
 
 | Area | Tools | Live by default | Stub-only |
 |---|---:|---:|---:|
 | Writer (v1.0.0 baseline) | 32 | 32 | 0 |
 | Writer (layout, tables, text) | 99 | 97 | 2 |
-| Calc (sheets, cells, ranges, external data) | 99 | 99 | 0 |
-| Impress (slides, animation, slideshow) | 41 | 38 | 3 |
-| Draw (pages, shapes, connectors) | 16 | 16 | 0 |
-| Shared services (charts, drawing objects, styles, undo/view/selection, document lifecycle, core runtime) | 111 | 111 | 0 |
-| **Total** | **398** | **393** | **5** |
+| Calc (sheets, cells, ranges, external data) | 103 | 103 | 0 |
+| Impress (slides, animation, slideshow) | 43 | 40 | 3 |
+| Draw (pages, shapes, connectors) | 18 | 18 | 0 |
+| Shared services (charts, drawing objects, styles, undo/view/selection, document lifecycle, core runtime) | 116 | 116 | 0 |
+| **Total** | **411** | **406** | **5** |
 
 <details>
 <summary><strong>v1.0.0 baseline — Document lifecycle</strong></summary>
@@ -501,7 +501,7 @@ See `plugin/pythonpath/tools/writer_layout.py`, `writer_tables.py`, `writer_text
 </details>
 
 <details>
-<summary><strong>v2.0.0 — Calc (99 tools: calc_data.py, calc_page.py, calc_sheets.py)</strong></summary>
+<summary><strong>v2.0.0 — Calc (103 tools: calc_data.py, calc_page.py, calc_sheets.py)</strong></summary>
 
 Sheet creation/deletion, cell and range access, formatting, formulas, named ranges, sorting/filtering, conditional formatting, validation, freeze panes, print areas, page styles, data import/export, external linked data areas (`create_external_link_live`/`refresh_external_link_live`/`delete_external_link_live`, built on `com.sun.star.sheet.XAreaLinks` — a genuinely different, CRUD-capable mechanism from the pre-existing read-only `ExternalDocLinks` enumeration `list_external_links_live` also reports).
 
@@ -512,7 +512,7 @@ See `plugin/pythonpath/tools/calc_data.py`, `calc_page.py`, `calc_sheets.py` for
 </details>
 
 <details>
-<summary><strong>v2.0.0 — Impress (41 tools: impress.py)</strong></summary>
+<summary><strong>v2.0.0 — Impress (43 tools: impress.py)</strong></summary>
 
 Slides, layouts, master slides, text boxes, images, shapes, tables, notes, transitions, slide ordering, presentation settings, export, animations (`add_animation_live`/`update_animation_live`/`delete_animation_live`/`reorder_animations_live`, built on the generic `com.sun.star.animations` module — an `AnimateSet` effect wrapped in a `ParallelTimeContainer`, tagged with its trigger via LibreOffice's own `UserData`-based `node-type` mechanism, and appended to the slide's main sequence; scoped to a small honest effect set (`appear`/`disappear`), not LibreOffice's full preset library, which is internal C++ not reachable from the public UNO API at all — see [Tooling Roadmap](#tooling-roadmap)).
 
@@ -523,7 +523,7 @@ See `plugin/pythonpath/tools/impress.py` for the full tool list.
 </details>
 
 <details>
-<summary><strong>v2.0.0 — Draw (16 tools: draw.py)</strong></summary>
+<summary><strong>v2.0.0 — Draw (18 tools: draw.py)</strong></summary>
 
 Pages, shapes, connectors, grouping, alignment, distribution, layers, text, images, geometry, export.
 
@@ -534,7 +534,7 @@ See `plugin/pythonpath/tools/draw.py` for the full tool list.
 </details>
 
 <details>
-<summary><strong>v2.0.0 — Shared LibreOffice services (111 tools: charts.py, drawing_objects.py, styles.py, undo_view_selection.py, document_lifecycle.py, core_runtime.py)</strong></summary>
+<summary><strong>v2.0.0 — Shared LibreOffice services (116 tools: charts.py, drawing_objects.py, styles.py, undo_view_selection.py, document_lifecycle.py, core_runtime.py)</strong></summary>
 
 Charts, drawing objects/shapes, styles, undo/redo, view and selection state, document lifecycle (create/open/save/export across all four applications), and core runtime tools (server info, capability discovery, diagnostics).
 
@@ -820,10 +820,10 @@ dispatch called: mcp:start_mcp_server
 Starting MCP server...
 MCP HTTP server started successfully
 UNO Bridge initialized successfully
-Registered 392 MCP tools
+Registered 406 MCP tools
 ```
 
-(392 by default — the 32-tool v1.0.0 baseline plus the 360 implemented v2.0.0 tools. Set `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS=1` before starting LibreOffice to also register the 6 remaining stub-only tools, for a total of 398.)
+(406 by default — the 32-tool v1.0.0 baseline plus the 374 implemented v2.0.0 tools. Set `MCP_LIBRE_ENABLE_SCAFFOLD_STUBS=1` before starting LibreOffice to also register the 5 remaining stub-only tools, for a total of 411.)
 
 ## Tools menu appears but commands do nothing
 
@@ -887,6 +887,204 @@ uv run pytest
 ---
 
 # Versioning
+
+## v2.1.0
+
+README refresh: catches up the top-of-README stats block and adds the
+four Versioning entries below (v2.0.25-v2.0.28) that had gone
+undocumented despite the README's own standing policy that every
+version-bumping push adds one. No functional or tool-surface changes —
+documentation and version literals only.
+
+The version badge, the "What's New in v2.0.0" summary, the "Project
+Stats" block, and the tool-catalog table were all stale by more than
+just the four versions below — they still reported the 398-tool/
+451-test figures from around the v2.0.0 launch, even though the
+Phase 6 new-tools arc (items #1-15, versions v2.0.10 through v2.0.24)
+had already landed 13 net-new tool registrations without those blocks
+being touched. Refreshed to the current, live-introspected numbers:
+**411 registered MCP tools** (406 live by default, 5 stub-only —
+Writer 99, Calc 103, Impress 43, Draw 18, shared services 116, plus
+the 32-tool v1.0.0 baseline), **524 tests passing**. The per-file
+category mapping and the 5 stub-only tool names/reasons were already
+accurate and unchanged.
+
+Version literals bumped across `pyproject.toml`, `src/__init__.py`,
+`plugin/description.xml`, `plugin/pythonpath/mcp_jsonrpc.py`'s
+`SERVER_INFO`, `plugin/pythonpath/tools/core_runtime.py`'s
+`EXTENSION_VERSION`, `plugin/pythonpath/ai_interface.py`,
+`src/libremcp.py`'s `--version` banner, and
+`tests/test_core_runtime.py`'s `get_server_info_live`-reports-real-
+fields assertion.
+
+Bumped to a minor version rather than another patch dot: this pass
+closes out the entire P0-remediation/Phase-6/hardening arc (15/15 new
+tools per Phase 6, the Part 4 statistics rewrite, two spec-gap
+follow-ups, the pytest/venv drift fix, and `main` unified with
+`windows-oxt`), which reads as a version boundary rather than another
+incremental dot release.
+
+- 524 automated tests passing (no count change from v2.0.28 — this
+  pass is documentation/version-literal only).
+
+## v2.0.28
+
+Fix mcp SDK/venv drift — pin `mcp<2.0.0`, restore bare pytest
+collection.
+
+Root-caused the pytest-collection/venv drift flagged and carried
+through this whole remediation effort as a 3-file test nuisance. It
+was bigger than that: `pyproject.toml` pinned `mcp[cli]>=1.10.1` with
+no upper bound, so `uv sync` had resolved the newly-released
+`mcp==2.0.0`, which renamed/removed the 1.x API surface the code
+actually targets (`mcp.server.fastmcp.FastMCP`,
+`mcp.shared.memory.create_connected_server_and_client_session`). That
+silently broke `src/libremcp.py` itself — the external server, README
+documents as the one usable directly with MCP clients such as Claude
+Desktop today — not just its tests. The `mcp-libre` console-script
+entry point was unimportable in this venv before this fix.
+
+Fix: pinned `mcp[cli]>=1.10.1,<2.0.0` (resolves to 1.29.0, matching
+the API the code targets) and added `requests>=2.31.0` to
+dev-dependencies (`plugin/test_plugin.py`'s separate, unrelated
+`ModuleNotFoundError`). With imports fixed, `tests/test_client.py`'s
+`test_mcp_client` (now collectible) surfaced a second, narrower issue:
+a bare `async def` function pytest tries to call synchronously with no
+`pytest-asyncio` marker. Inspected it first: it shells out to a real
+`soffice` process (same category as this repo's root-level
+`*-probe-windows.py` live-verification scripts, deliberately never
+pytest-collected), uses `print()` instead of assertions, and predates
+the fakes-based test convention `tests/` follows — a manual demo
+script, not a real automated unit test. Renamed `test_mcp_client` ->
+`demo_mcp_client` so pytest stops trying to collect it (still runs
+standalone via `python tests/test_client.py`), documented why.
+
+Bare `uv run pytest` (no `--ignore` flags) now passes clean: **524/524
+tests passing, 0 collection errors.**
+
+This closes the last open item before this branch was ready for
+review/merge.
+
+## v2.0.27
+
+`get_sheet_summary_live` formula/error counts (#13 spec gap).
+
+Brian's original spec for `get_sheet_summary_live` (#13) asked for
+formula+error counts alongside the rest of the sheet summary — missing
+entirely from the first version. Adds `formula_count` and
+`error_count` (scoped to the sheet's own used range, same "skip if
+falsy" cell-content check the rest of `get_sheet_summary()` already
+uses) plus a `counts_truncated` flag, bounded by the same
+`_FIND_CELLS_MAX_SCANNED_CELLS` backstop `find_cells()`/
+`get_document_statistics()` already established.
+
+Reuses the exact `cell.getType() == CellContentType.FORMULA` idiom
+`get_document_statistics()`'s live probe proved necessary —
+`cell.getFormula()` truthiness is NOT "this cell holds a real
+formula": it's non-empty for every non-blank cell, including a plain
+typed value.
+
+Live-verified against real headless LibreOffice with
+`get-sheet-summary-probe-windows.py`, extended with 6 new checks (14
+total, all passing): a real formula cell and a real DIV/0-erroring
+formula cell set alongside the existing plain value cells,
+`formula_count` confirmed as 2 (both formula cells, not the plain
+value), `error_count` confirmed as 1 (only the erroring one).
+
+- 522 automated tests passing (521 + 1 new).
+
+## v2.0.26
+
+`get_draw_page_live` page-metadata follow-up (#10 spec gap).
+
+Brian's original spec for `get_draw_page_live` (#10) asked for "name,
+dimensions, background, shape count, etc., without activating it" —
+the first version shipped only the shape-text dump. Adds `width`,
+`height`, `shape_count`, and a background summary alongside the
+existing text field.
+
+New `UNOBridge._draw_page_background_summary()` static helper: a Draw
+page's own `PropertySetInfo` doesn't expose `IsBackgroundVisible`/
+`FillColor` directly — only the opaque `Background` object reference
+and the read-only `IsBackgroundDark` flag. Reads through to the
+`Background` object's own `FillStyle`/`FillColor` when one is set.
+
+Real behavior caught by the live probe: Draw page width/height are a
+document-wide setting, not truly per-page — every page reports the
+same values regardless of which page's `set_draw_page_size_live` call
+last set them. Background, unlike size, genuinely is per-page.
+Reported as-is rather than silently deduplicated, noted in the
+docstring.
+
+Live-verified against real headless LibreOffice with
+`get-draw-page-probe-windows.py`, extended with 5 new checks (13
+total, all passing): real `set_draw_page_size_live` +
+`set_draw_page_background_live` values cross-checked against
+`get_draw_page_live`'s reported width/height/background; `shape_count`
+confirmed to count all shapes including the text-empty one excluded
+from the text field; page 2 confirmed to report its own unset
+background, not page 1's leaking across pages.
+
+- 521 automated tests passing (520 + 1 new).
+
+## v2.0.25
+
+Part 4 of the typeset-run remediation: `get_document_statistics_live`
+rewrite, Brian's original priority #1 for this remediation pass.
+
+Comprehensive per-type document inventory in place of the old
+few-field version. Writer: page/word/character/character-no-spaces/
+paragraph counts plus table, image, shape, field, bookmark, hyperlink,
+section, footnote, endnote, comment, and tracked-change counts. Calc:
+sheet count/names plus used-cell, formula, and error counts (same
+single-cursor `gotoStartOfUsedArea(False)`/`gotoEndOfUsedArea(True)`
+walk `get_formula_errors()` already established) plus chart and
+pivot-table counts. Impress/Draw: slide-or-page count plus a
+shape-type breakdown (image/text-object/other), and (Impress only)
+notes and hidden-slide counts. `field_count` is deliberately kept
+mutually exclusive with `comment_count` — Writer's `getTextFields()`
+includes annotation fields.
+
+Real bug caught and fixed by the live probe, not assumed from API
+docs: `cell.getFormula()` truthiness is NOT "this cell holds a real
+formula" — live-verified it returns a non-empty formula-syntax string
+for every non-blank cell, including a plain typed value. A first-pass
+version reported `formula_count` equal to the sheet's entire
+`used_cell_count`. Corrected to `cell.getType() ==
+uno.Enum("com.sun.star.table.CellContentType", "FORMULA")`, the same
+`uno.Enum()`-comparison idiom already established elsewhere in this
+file.
+
+Folded into the tail of this pass per Buddy's direction: the
+`get_document_snapshot_live` follow-up flagged after item #14 shipped
+— now composes this rewritten `get_document_statistics()` directly,
+plus the already-implemented `get_view_state()`/`get_selection()`,
+matching Brian's original spec for #14 instead of the narrower
+top-level fields #14 shipped with pending this rewrite.
+
+Live-verified against real headless LibreOffice across all four
+document types with a new probe,
+`document-statistics-rewrite-probe-windows.py` — 39 checks, all
+passing: Writer's `word_count`/`character_count`/
+`character_count_no_spaces` cross-checked against an independent
+`extract_document_text_live` extraction; `paragraph_count`
+cross-checked against the independently-tested
+`get_paragraph_count_live`; every new Writer structural count built
+and verified against real content; Calc's real used-cell/formula/
+error/chart/pivot counts against real cells, a real DIV/0 error, a
+real chart, and a real pivot table; Impress's real shape-type
+breakdown, notes, and hidden-slide state; Draw's real shape-type
+breakdown with no Impress-only fields leaking in;
+`get_document_snapshot_live`'s composed statistics verified equal to
+`get_document_statistics_live`'s own result on the same document.
+
+**Phase 6 (Brian's new-tools assignment, items #1-15) is now fully
+closed.** Only remaining item before this branch was ready to close:
+the pre-existing pytest-collection/venv drift on 3 test files, tracked
+separately (see v2.0.28 above).
+
+- 520 automated tests passing (518 + 2 new).
+- Full writeup: `docs/HARDENING_PLAN.md`'s "Phase 6" section.
 
 ## v2.0.24
 
